@@ -12,24 +12,23 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/setup@v1
         with:
           version: 11.16.0
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: pnpm
+          runtime: node@22
+          install: false
+          cache: true
           cache-dependency-path: web/pnpm-lock.yaml
+          package-json-file: web/package.json
 
       - name: Install frontend dependencies
         working-directory: web
@@ -41,7 +40,12 @@ jobs:
 
       - name: Check deployment scripts
         shell: bash
-        run: bash -n deploy/*.sh
+        run: |
+          bash -n install.sh deploy/*.sh tests/*.sh
+          shellcheck --severity=warning install.sh deploy/*.sh tests/*.sh
+
+      - name: Lint GitHub Actions
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
       - name: Verify Go modules
         run: go mod verify
@@ -91,9 +95,106 @@ jobs:
   secrets:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  e2e-package:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: pnpm/setup@v1
+        with:
+          version: 11.16.0
+          runtime: node@22
+          install: false
+          cache: true
+          cache-dependency-path: web/pnpm-lock.yaml
+          package-json-file: web/package.json
+      - name: Build clean-host test bundle
+        shell: pwsh
+        run: ./scripts/build-release.ps1 -Architecture amd64 -Version v1.0.0-ci
+      - uses: actions/upload-artifact@v7
+        with:
+          name: e2e-linux-amd64
+          path: |
+            output/releases/hyfleet-v1.0.0-ci-linux-amd64.tar.gz
+            output/releases/hyfleet-v1.0.0-ci-linux-amd64.tar.gz.sha256
+          if-no-files-found: error
+
+  native-install:
+    needs: e2e-package
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        base_image: ["ubuntu:24.04", "debian:12", "debian:13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: e2e-linux-amd64
+          path: e2e
+      - name: Extract release bundle
+        shell: bash
+        run: |
+          (cd e2e && sha256sum -c hyfleet-v1.0.0-ci-linux-amd64.tar.gz.sha256)
+          tar -xzf e2e/hyfleet-v1.0.0-ci-linux-amd64.tar.gz -C e2e
+          (cd e2e/hyfleet-v1.0.0-ci-linux-amd64 && sha256sum -c SHA256SUMS)
+      - name: Install, upgrade, back up, and restore
+        shell: bash
+        run: >-
+          bash tests/install-e2e.sh
+          '${{ matrix.base_image }}'
+          e2e/hyfleet-v1.0.0-ci-linux-amd64
+
+  container:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate Compose model
+        run: docker compose --env-file docker/.env.example -f docker/compose.yaml config --quiet
+      - name: Build Server image
+        run: >-
+          docker build
+          --file docker/Dockerfile
+          --build-arg VERSION=v1.0.0-ci
+          --build-arg "COMMIT=${GITHUB_SHA::12}"
+          --build-arg BUILD_DATE=ci
+          --tag hyfleet:e2e
+          .
+      - name: Run Server image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cleanup() { docker rm -f hyfleet-container-e2e >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run --detach --name hyfleet-container-e2e \
+            --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+            --publish 127.0.0.1:18080:8080 \
+            --env HYFLEET_PUBLIC_URL=https://panel.example.com \
+            hyfleet:e2e
+          healthy=false
+          for _ in {1..30}; do
+            health_status="$(docker inspect --format '{{.State.Health.Status}}' hyfleet-container-e2e)"
+            if curl --fail --silent http://127.0.0.1:18080/healthz >/dev/null 2>&1 && \
+              [[ "${health_status}" == "healthy" ]]; then
+              healthy=true
+              break
+            fi
+            sleep 1
+          done
+          [[ "${healthy}" == true ]]
+          docker exec hyfleet-container-e2e \
+            /usr/local/bin/hyfleet-server -check-database /data/server.db

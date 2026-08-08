@@ -8,7 +8,7 @@
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
-    "lint:docs": "markdownlint-cli2 --config ../.markdownlint-cli2.yaml \"../README.md\" \"../docs/**/*.md\"",
+    "lint:docs": "markdownlint-cli2 --config ../.markdownlint-cli2.yaml \"../*.md\" \"../docs/**/*.md\"",
     "build": "vue-tsc --noEmit && vite build"
   },
   "dependencies": {

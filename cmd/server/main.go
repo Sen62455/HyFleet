@@ -21,6 +21,8 @@ import (
 func main() {
 	configPath := flag.String("config", "", "path to server YAML config")
 	checkConfig := flag.Bool("check-config", false, "validate configuration and exit")
+	backupDatabase := flag.String("backup-database", "", "write a consistent database backup and exit")
+	checkDatabase := flag.String("check-database", "", "validate a database backup and exit")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -28,13 +30,37 @@ func main() {
 		return
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if *checkDatabase != "" {
+		if *backupDatabase != "" || *checkConfig {
+			logger.Error("database check cannot be combined with another one-shot action")
+			os.Exit(2)
+		}
+		if err := store.CheckDatabase(context.Background(), *checkDatabase); err != nil {
+			logger.Error("database validation failed", "error", err)
+			os.Exit(1)
+		}
+		fmt.Println("database backup is valid")
+		return
+	}
 	cfg, err := config.LoadServer(*configPath)
 	if err != nil {
 		logger.Error("load configuration failed", "error", err)
 		os.Exit(1)
 	}
 	if *checkConfig {
+		if *backupDatabase != "" {
+			logger.Error("config check cannot be combined with database backup")
+			os.Exit(2)
+		}
 		fmt.Println("server configuration is valid")
+		return
+	}
+	if *backupDatabase != "" {
+		if err := store.BackupDatabase(context.Background(), cfg.DatabasePath, *backupDatabase); err != nil {
+			logger.Error("database backup failed", "error", err)
+			os.Exit(1)
+		}
+		fmt.Println("database backup created")
 		return
 	}
 	masterKey, created, err := cryptoutil.LoadOrCreateKey(cfg.MasterKeyFile)

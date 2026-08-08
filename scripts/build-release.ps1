@@ -4,7 +4,7 @@ param(
     [string]$Architecture = "amd64",
 
     [ValidatePattern("^[0-9A-Za-z][0-9A-Za-z._-]*$")]
-    [string]$Version = "v0.6.0-dev"
+    [string]$Version = "v1.0.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,7 +32,7 @@ function Invoke-Checked {
     }
 }
 
-foreach ($commandName in @("git", "go", "pnpm", "tar")) {
+foreach ($commandName in @("git", "go", "pnpm")) {
     if (-not (Get-Command $commandName -ErrorAction SilentlyContinue)) {
         throw "Required command is missing: $commandName"
     }
@@ -148,11 +148,31 @@ $configSource = Join-Path (Join-Path $repositoryRoot "configs") "*"
 $unitSource = Join-Path (Join-Path (Join-Path $repositoryRoot "deploy") "systemd") "*"
 Copy-Item $configSource (Join-Path $bundlePath "configs")
 Copy-Item $unitSource (Join-Path (Join-Path $bundlePath "deploy") "systemd")
-foreach ($scriptName in @("install-server.sh", "install-agent.sh", "diagnose.sh", "configure-hysteria.sh", "update-component.sh")) {
+foreach ($scriptName in @(
+    "install-server.sh",
+    "install-agent.sh",
+    "backup-server.sh",
+    "restore-server.sh",
+    "diagnose.sh",
+    "configure-hysteria.sh",
+    "update-component.sh"
+)) {
     Copy-Item (Join-Path (Join-Path $repositoryRoot "deploy") $scriptName) (Join-Path $bundlePath "deploy")
 }
-foreach ($documentName in @("10-systemd-deployment.md", "11-phase-2-native-users.md", "12-phase-3-traffic-and-updates.md", "13-phase-4-unified-subscriptions.md", "14-phase-5-sui-adapter.md", "15-phase-6-operations.md")) {
+foreach ($documentName in @(
+    "10-systemd-deployment.md",
+    "11-phase-2-native-users.md",
+    "12-phase-3-traffic-and-updates.md",
+    "13-phase-4-unified-subscriptions.md",
+    "14-phase-5-sui-adapter.md",
+    "15-phase-6-operations.md",
+    "16-phase-7-public-release.md",
+    "compatibility.md"
+)) {
     Copy-Item (Join-Path (Join-Path $repositoryRoot "docs") $documentName) (Join-Path $bundlePath "docs")
+}
+foreach ($rootFileName in @("install.sh", "README.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md")) {
+    Copy-Item (Join-Path $repositoryRoot $rootFileName) $bundlePath
 }
 
 $textFiles = Get-ChildItem -Path $bundlePath -Recurse -File | Where-Object {
@@ -195,8 +215,15 @@ $checksumLines = Get-ChildItem -Path $bundlePath -Recurse -File |
     [System.Text.UTF8Encoding]::new($false)
 )
 
-$tarArguments = @("-czf", $archivePath, "-C", $releaseRoot, $packageName)
-Invoke-Checked -Command tar -Arguments $tarArguments
+$packageScript = Join-Path (Join-Path $repositoryRoot "scripts") "package-release.go"
+$packageArguments = @(
+    "run",
+    $packageScript,
+    "-source", $bundlePath,
+    "-output", $archivePath,
+    "-root", $packageName
+)
+Invoke-Checked -Command go -Arguments $packageArguments
 $archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash.ToLowerInvariant()
 [System.IO.File]::WriteAllText(
     $archiveChecksumPath,

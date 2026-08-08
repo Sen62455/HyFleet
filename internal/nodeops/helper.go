@@ -1,6 +1,8 @@
 package nodeops
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	pathpkg "path"
@@ -21,7 +24,12 @@ import (
 	"github.com/hyfleet/hyfleet/internal/protocol"
 )
 
-const maxConfigBackupBytes = 8 * 1024 * 1024
+const (
+	maxConfigBackupBytes        int64 = 8 * 1024 * 1024
+	maxConfigBackupArchiveBytes int64 = maxConfigBackupBytes + 1024*1024
+	maxConfigBackupEntries            = 512
+	maxConfigBackupDepth              = 16
+)
 
 var helperUnitPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,127}$`)
 
@@ -239,8 +247,35 @@ func (helper *Helper) createBackup(operationID string) (*protocol.Backup, error)
 	if err != nil {
 		return nil, fmt.Errorf("inspect core configuration: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maxConfigBackupBytes {
-		return nil, errors.New("core configuration must be a bounded regular file")
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("core configuration cannot be a symbolic link")
+	}
+	if err := helper.prepareBackupDir(); err != nil {
+		return nil, err
+	}
+	switch {
+	case info.Mode().IsRegular():
+		return helper.createFileBackup(operationID, info)
+	case info.IsDir():
+		return helper.createDirectoryBackup(operationID, info)
+	default:
+		return nil, errors.New("core configuration must be a bounded regular file or directory")
+	}
+}
+
+func (helper *Helper) prepareBackupDir() error {
+	if err := os.MkdirAll(helper.BackupDir, 0o700); err != nil {
+		return fmt.Errorf("create backup directory: %w", err)
+	}
+	if err := os.Chmod(helper.BackupDir, 0o700); err != nil {
+		return fmt.Errorf("secure backup directory: %w", err)
+	}
+	return nil
+}
+
+func (helper *Helper) createFileBackup(operationID string, info os.FileInfo) (*protocol.Backup, error) {
+	if info.Size() > maxConfigBackupBytes {
+		return nil, errors.New("core configuration exceeds backup size limit")
 	}
 	source, err := os.Open(helper.CoreConfigPath)
 	if err != nil {
@@ -250,12 +285,6 @@ func (helper *Helper) createBackup(operationID string) (*protocol.Backup, error)
 	openedInfo, err := source.Stat()
 	if err != nil || !os.SameFile(info, openedInfo) {
 		return nil, errors.New("core configuration changed while opening")
-	}
-	if err := os.MkdirAll(helper.BackupDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create backup directory: %w", err)
-	}
-	if err := os.Chmod(helper.BackupDir, 0o700); err != nil {
-		return nil, fmt.Errorf("secure backup directory: %w", err)
 	}
 	name := fmt.Sprintf(
 		"%d-%s-%s.bak", helper.now().UnixMilli(), operationID,
@@ -296,15 +325,154 @@ func (helper *Helper) createBackup(operationID string) (*protocol.Backup, error)
 	}, nil
 }
 
+func (helper *Helper) createDirectoryBackup(operationID string, rootInfo os.FileInfo) (*protocol.Backup, error) {
+	name := fmt.Sprintf(
+		"%d-%s-%s.tar.gz", helper.now().UnixMilli(), operationID,
+		filepath.Base(helper.CoreConfigPath),
+	)
+	destinationPath := filepath.Join(helper.BackupDir, name)
+	temporary, err := os.CreateTemp(helper.BackupDir, ".backup-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temporary backup: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return nil, fmt.Errorf("secure temporary backup: %w", err)
+	}
+	hash := sha256.New()
+	gzipWriter := gzip.NewWriter(io.MultiWriter(temporary, hash))
+	gzipWriter.Header.Name = filepath.Base(helper.CoreConfigPath)
+	gzipWriter.Header.ModTime = helper.now()
+	tarWriter := tar.NewWriter(gzipWriter)
+	entries := 0
+	var totalBytes int64
+	walkErr := filepath.WalkDir(helper.CoreConfigPath, func(currentPath string, entry fs.DirEntry, walkError error) error {
+		if walkError != nil {
+			return walkError
+		}
+		if currentPath == helper.CoreConfigPath {
+			return nil
+		}
+		entries++
+		if entries > maxConfigBackupEntries {
+			return errors.New("core configuration directory has too many entries")
+		}
+		relativePath, err := filepath.Rel(helper.CoreConfigPath, currentPath)
+		if err != nil {
+			return errors.New("core configuration entry path is invalid")
+		}
+		archiveName := filepath.ToSlash(relativePath)
+		if err := validateArchiveName(archiveName); err != nil {
+			return err
+		}
+		entryInfo, err := os.Lstat(currentPath)
+		if err != nil {
+			return err
+		}
+		if entryInfo.Mode()&os.ModeSymlink != 0 {
+			return errors.New("core configuration directory contains a symbolic link")
+		}
+		header, err := tar.FileInfoHeader(entryInfo, "")
+		if err != nil {
+			return err
+		}
+		header.Name = archiveName
+		header.Uid = 0
+		header.Gid = 0
+		header.Uname = ""
+		header.Gname = ""
+		switch {
+		case entryInfo.IsDir():
+			header.Name += "/"
+			return tarWriter.WriteHeader(header)
+		case entryInfo.Mode().IsRegular():
+			totalBytes += entryInfo.Size()
+			if entryInfo.Size() < 0 || totalBytes > maxConfigBackupBytes {
+				return errors.New("core configuration directory exceeds backup size limit")
+			}
+			source, err := os.Open(currentPath)
+			if err != nil {
+				return err
+			}
+			openedInfo, statErr := source.Stat()
+			if statErr != nil || !os.SameFile(entryInfo, openedInfo) || openedInfo.Size() != entryInfo.Size() {
+				_ = source.Close()
+				return errors.New("core configuration entry changed while opening")
+			}
+			if err := tarWriter.WriteHeader(header); err != nil {
+				_ = source.Close()
+				return err
+			}
+			written, copyErr := io.Copy(tarWriter, io.LimitReader(source, entryInfo.Size()+1))
+			closeErr := source.Close()
+			if copyErr != nil || closeErr != nil || written != entryInfo.Size() {
+				return errors.New("copy core configuration entry failed")
+			}
+			return nil
+		default:
+			return errors.New("core configuration directory contains an unsupported entry")
+		}
+	})
+	if walkErr == nil {
+		currentInfo, err := os.Lstat(helper.CoreConfigPath)
+		if err != nil || !os.SameFile(rootInfo, currentInfo) || !currentInfo.IsDir() {
+			walkErr = errors.New("core configuration directory changed during backup")
+		}
+	}
+	if walkErr != nil {
+		_ = tarWriter.Close()
+		_ = gzipWriter.Close()
+		_ = temporary.Close()
+		return nil, walkErr
+	}
+	if err := tarWriter.Close(); err != nil {
+		_ = gzipWriter.Close()
+		_ = temporary.Close()
+		return nil, fmt.Errorf("finalize configuration archive: %w", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		_ = temporary.Close()
+		return nil, fmt.Errorf("compress configuration archive: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return nil, fmt.Errorf("sync configuration backup: %w", err)
+	}
+	archiveInfo, err := temporary.Stat()
+	if err != nil || archiveInfo.Size() > maxConfigBackupArchiveBytes {
+		_ = temporary.Close()
+		return nil, errors.New("configuration archive exceeds backup size limit")
+	}
+	if err := temporary.Close(); err != nil {
+		return nil, fmt.Errorf("close configuration backup: %w", err)
+	}
+	if err := os.Rename(temporaryPath, destinationPath); err != nil {
+		return nil, fmt.Errorf("publish configuration backup: %w", err)
+	}
+	if err := os.Chmod(destinationPath, 0o600); err != nil {
+		return nil, fmt.Errorf("secure configuration backup: %w", err)
+	}
+	return &protocol.Backup{
+		LocalPath: destinationPath, SHA256: hex.EncodeToString(hash.Sum(nil)),
+		SizeBytes: archiveInfo.Size(),
+	}, nil
+}
+
 func (helper *Helper) existingOperationBackup(operationID string) (string, bool) {
 	entries, err := os.ReadDir(helper.BackupDir)
+	if err != nil {
+		return "", false
+	}
+	suffix, err := helper.configBackupSuffix()
 	if err != nil {
 		return "", false
 	}
 	needle := "-" + operationID + "-"
 	for _, entry := range entries {
 		if entry.Type()&os.ModeSymlink == 0 && strings.Contains(entry.Name(), needle) &&
-			strings.HasSuffix(entry.Name(), "-"+filepath.Base(helper.CoreConfigPath)+".bak") {
+			strings.HasSuffix(entry.Name(), "-"+suffix) {
 			return filepath.Join(helper.BackupDir, entry.Name()), true
 		}
 	}
@@ -314,7 +482,7 @@ func (helper *Helper) existingOperationBackup(operationID string) (string, bool)
 func (helper *Helper) backupMetadata(backupPath string) (*protocol.Backup, error) {
 	info, err := os.Lstat(backupPath)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
-		info.Size() > maxConfigBackupBytes {
+		info.Size() > maxConfigBackupArchiveBytes {
 		return nil, errors.New("existing configuration backup is invalid")
 	}
 	file, err := os.Open(backupPath)
@@ -323,8 +491,8 @@ func (helper *Helper) backupMetadata(backupPath string) (*protocol.Backup, error
 	}
 	defer file.Close()
 	hash := sha256.New()
-	written, err := io.Copy(hash, io.LimitReader(file, maxConfigBackupBytes+1))
-	if err != nil || written > maxConfigBackupBytes {
+	written, err := io.Copy(hash, io.LimitReader(file, maxConfigBackupArchiveBytes+1))
+	if err != nil || written > maxConfigBackupArchiveBytes {
 		return nil, errors.New("read existing configuration backup failed")
 	}
 	return &protocol.Backup{
@@ -340,6 +508,10 @@ func (helper *Helper) latestBackup(exclude string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	suffix, err := helper.configBackupSuffix()
+	if err != nil {
+		return "", err
+	}
 	type candidate struct {
 		path     string
 		modified time.Time
@@ -348,7 +520,7 @@ func (helper *Helper) latestBackup(exclude string) (string, error) {
 	for _, entry := range entries {
 		candidatePath := filepath.Join(helper.BackupDir, entry.Name())
 		if candidatePath == exclude || entry.Type()&os.ModeSymlink != 0 ||
-			!strings.HasSuffix(entry.Name(), "-"+filepath.Base(helper.CoreConfigPath)+".bak") {
+			!strings.HasSuffix(entry.Name(), "-"+suffix) {
 			continue
 		}
 		info, err := entry.Info()
@@ -369,12 +541,27 @@ func (helper *Helper) latestBackup(exclude string) (string, error) {
 func (helper *Helper) restoreBackup(backupPath string) error {
 	backupInfo, err := os.Lstat(backupPath)
 	if err != nil || !backupInfo.Mode().IsRegular() || backupInfo.Mode()&os.ModeSymlink != 0 ||
-		!strings.HasPrefix(filepath.Clean(backupPath), filepath.Clean(helper.BackupDir)+string(os.PathSeparator)) {
+		backupInfo.Size() > maxConfigBackupArchiveBytes || !helper.isBackupPath(backupPath) {
 		return errors.New("rollback backup is invalid")
 	}
 	destinationInfo, err := os.Lstat(helper.CoreConfigPath)
-	if err != nil || !destinationInfo.Mode().IsRegular() || destinationInfo.Mode()&os.ModeSymlink != 0 {
+	if err != nil || destinationInfo.Mode()&os.ModeSymlink != 0 {
 		return errors.New("rollback destination is invalid")
+	}
+	switch {
+	case destinationInfo.Mode().IsRegular() && strings.HasSuffix(backupPath, ".bak"):
+		return helper.restoreFileBackup(backupPath, destinationInfo)
+	case destinationInfo.IsDir() && strings.HasSuffix(backupPath, ".tar.gz"):
+		return helper.restoreDirectoryBackup(backupPath, destinationInfo)
+	default:
+		return errors.New("rollback backup type does not match destination")
+	}
+}
+
+func (helper *Helper) restoreFileBackup(backupPath string, destinationInfo os.FileInfo) error {
+	backupInfo, err := os.Lstat(backupPath)
+	if err != nil || backupInfo.Size() > maxConfigBackupBytes {
+		return errors.New("rollback file backup exceeds size limit")
 	}
 	source, err := os.Open(backupPath)
 	if err != nil {
@@ -404,6 +591,137 @@ func (helper *Helper) restoreBackup(backupPath string) error {
 		return err
 	}
 	return replaceHelperFile(temporaryPath, helper.CoreConfigPath)
+}
+
+func (helper *Helper) restoreDirectoryBackup(backupPath string, destinationInfo os.FileInfo) error {
+	temporaryRoot, err := os.MkdirTemp(filepath.Dir(helper.CoreConfigPath), ".hyfleet-rollback-*")
+	if err != nil {
+		return fmt.Errorf("create rollback directory: %w", err)
+	}
+	defer os.RemoveAll(temporaryRoot)
+	if err := os.Chmod(temporaryRoot, destinationInfo.Mode().Perm()); err != nil {
+		return fmt.Errorf("prepare rollback directory: %w", err)
+	}
+	if err := extractDirectoryBackup(backupPath, temporaryRoot); err != nil {
+		return err
+	}
+	return replaceHelperDirectory(temporaryRoot, helper.CoreConfigPath)
+}
+
+func (helper *Helper) configBackupSuffix() (string, error) {
+	info, err := os.Lstat(helper.CoreConfigPath)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("core configuration is unavailable")
+	}
+	switch {
+	case info.Mode().IsRegular():
+		return filepath.Base(helper.CoreConfigPath) + ".bak", nil
+	case info.IsDir():
+		return filepath.Base(helper.CoreConfigPath) + ".tar.gz", nil
+	default:
+		return "", errors.New("core configuration has an unsupported type")
+	}
+}
+
+func (helper *Helper) isBackupPath(backupPath string) bool {
+	relativePath, err := filepath.Rel(helper.BackupDir, backupPath)
+	return err == nil && relativePath != "." && relativePath != "" &&
+		!filepath.IsAbs(relativePath) && relativePath != ".." &&
+		!strings.HasPrefix(relativePath, ".."+string(os.PathSeparator)) &&
+		filepath.Dir(relativePath) == "."
+}
+
+func validateArchiveName(name string) error {
+	if name == "" || len(name) > 256 || strings.ContainsRune(name, '\x00') || pathpkg.IsAbs(name) ||
+		pathpkg.Clean(name) != name || name == "." || name == ".." ||
+		strings.HasPrefix(name, "../") || strings.Count(name, "/") >= maxConfigBackupDepth {
+		return errors.New("core configuration archive path is invalid")
+	}
+	return nil
+}
+
+func extractDirectoryBackup(backupPath, destinationRoot string) error {
+	archive, err := os.Open(backupPath)
+	if err != nil {
+		return fmt.Errorf("open configuration archive: %w", err)
+	}
+	defer archive.Close()
+	gzipReader, err := gzip.NewReader(io.LimitReader(archive, maxConfigBackupArchiveBytes+1))
+	if err != nil {
+		return errors.New("configuration archive is not valid gzip data")
+	}
+	defer gzipReader.Close()
+	tarReader := tar.NewReader(gzipReader)
+	type directoryMode struct {
+		path string
+		mode os.FileMode
+	}
+	directories := make([]directoryMode, 0)
+	entries := 0
+	var totalBytes int64
+	for {
+		header, err := tarReader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return errors.New("read configuration archive failed")
+		}
+		entries++
+		if entries > maxConfigBackupEntries {
+			return errors.New("configuration archive has too many entries")
+		}
+		archiveName := strings.TrimSuffix(header.Name, "/")
+		if err := validateArchiveName(archiveName); err != nil {
+			return err
+		}
+		destinationPath := filepath.Join(destinationRoot, filepath.FromSlash(archiveName))
+		relativePath, err := filepath.Rel(destinationRoot, destinationPath)
+		if err != nil || relativePath == "." || relativePath == ".." ||
+			strings.HasPrefix(relativePath, ".."+string(os.PathSeparator)) {
+			return errors.New("configuration archive escapes restore directory")
+		}
+		mode := os.FileMode(header.Mode) & os.ModePerm
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(destinationPath, 0o700); err != nil {
+				return fmt.Errorf("create restored configuration directory: %w", err)
+			}
+			directories = append(directories, directoryMode{path: destinationPath, mode: mode})
+		case tar.TypeReg, tar.TypeRegA:
+			if header.Size < 0 {
+				return errors.New("configuration archive file size is invalid")
+			}
+			totalBytes += header.Size
+			if totalBytes > maxConfigBackupBytes {
+				return errors.New("configuration archive exceeds restore size limit")
+			}
+			if err := os.MkdirAll(filepath.Dir(destinationPath), 0o700); err != nil {
+				return fmt.Errorf("create restored configuration parent: %w", err)
+			}
+			file, err := os.OpenFile(destinationPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+			if err != nil {
+				return errors.New("configuration archive contains a duplicate or invalid file")
+			}
+			written, copyErr := io.CopyN(file, tarReader, header.Size)
+			syncErr := file.Sync()
+			closeErr := file.Close()
+			if copyErr != nil || syncErr != nil || closeErr != nil || written != header.Size {
+				return errors.New("restore configuration archive file failed")
+			}
+			if err := os.Chmod(destinationPath, mode); err != nil {
+				return fmt.Errorf("restore configuration file mode: %w", err)
+			}
+		default:
+			return errors.New("configuration archive contains an unsupported entry")
+		}
+	}
+	for index := len(directories) - 1; index >= 0; index-- {
+		if err := os.Chmod(directories[index].path, directories[index].mode); err != nil {
+			return fmt.Errorf("restore configuration directory mode: %w", err)
+		}
+	}
+	return nil
 }
 
 func (helper *Helper) loadResult(operation protocol.NodeOperation) (HelperResponse, bool) {

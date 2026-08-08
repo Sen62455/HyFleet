@@ -4,11 +4,11 @@ HyFleet is a lightweight control plane for a small fleet of Hysteria2 VPS nodes.
 It provides centralized node, user, traffic, subscription, and health management
 without replacing Hysteria2 or sing-box.
 
-The working name is provisional. The repository now contains the local
-**Phase 6: operations and recovery** implementation. Native Hysteria2 and
-compatible S-UI nodes share one user, traffic, status, credential, and
-subscription control plane. Standalone sing-box supports bounded operations and
-health monitoring, while its user and subscription adapter remains out of scope.
+The repository contains the **v1.0 public release** implementation. Native
+Hysteria2 and compatible S-UI nodes share one user, traffic, status, credential,
+and subscription control plane. Standalone sing-box supports bounded operations,
+split-directory backup, and health monitoring, while its user and subscription
+adapter remains out of scope.
 
 ## Current capabilities
 
@@ -38,12 +38,14 @@ health monitoring, while its user and subscription adapter remains out of scope.
   controller.
 - Clash Meta output with a default `HyFleet` selector and `MATCH` rule, so rule
   mode routes through the generated proxy group.
-- Private GitHub Release builds and a local parallel updater for the three-node
+- Signed GitHub Release builds and a local parallel updater for a small-node
   fleet with per-component health checks and rollback.
 - Durable bounded-operation delivery with Agent-side result Outbox, manual
   retries, restricted core restart/log/backup actions, and restart rollback.
 - Active alert reconciliation for offline, core, traffic, synchronization, and
   operation failures, with acknowledgement and automatic recovery.
+- Native Debian/Ubuntu bootstrap, a rootless Server container, consistent SQLite
+  backup/restore, SPDX SBOMs, and keyless Sigstore release signatures.
 
 ## Initial scope
 
@@ -102,6 +104,35 @@ health monitoring, while its user and subscription adapter remains out of scope.
 
 - [Operations, recovery, backups, and alerts](docs/15-phase-6-operations.md)
 
+## Phase 7 documents
+
+- [Public installation, upgrade, and disaster recovery](docs/16-phase-7-public-release.md)
+- [Compatibility matrix](docs/compatibility.md)
+- [Security policy](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+
+## Install on Debian or Ubuntu
+
+Download and inspect the bootstrap from the same tag you intend to install:
+
+```bash
+curl --fail --location --proto '=https' --tlsv1.2 \
+  -o install.sh \
+  https://raw.githubusercontent.com/Sen62455/HyFleet/v1.0.0/install.sh
+less install.sh
+sudo bash install.sh server \
+  --version v1.0.0 \
+  --public-url https://panel.example.com
+```
+
+The native Server binds to loopback and requires an HTTPS reverse proxy. Agents
+use the same bootstrap with the `agent` component after their node and one-time
+enrollment Token have been created in the control plane. See the Phase 7 guide
+before installing or restoring a production host.
+
+For a containerized control plane, use [docker/compose.yaml](docker/compose.yaml).
+Agents remain native systemd services and never receive the Docker socket.
+
 ## Local development
 
 Required tools are Go 1.26, Node.js 22, and pnpm 11.16.
@@ -123,7 +154,7 @@ Set `HYFLEET_BOOTSTRAP_TOKEN` before the first server start. Example files are i
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
-  -Architecture amd64 -Version v0.6.0-dev
+  -Architecture amd64 -Version v1.0.0
 ```
 
 The archive, external checksum, Linux ELF binaries, idempotent installers, and
@@ -133,11 +164,11 @@ a Windows preview executable to a VPS.
 
 ## Status
 
-Phase 6 adds durable, bounded node operations and alerting without introducing
-remote shell access. S-UI read-only imports remain excluded from quotas and
+v1.0 is release-ready for native Debian/Ubuntu Server and Agent deployment and a
+Docker Server deployment. S-UI read-only imports remain excluded from quotas and
 subscriptions until explicitly adopted and successfully applied. Standalone
-sing-box can now be enrolled for health, restart, limited logs, configuration
-backup, and alerts; its user and subscription membership remains gated on a
-future adapter phase.
+sing-box can be enrolled for health, restart, limited logs, bounded file or
+directory configuration backup, and alerts; its user and subscription membership
+remains gated on a future adapter phase.
 Secrets, IP addresses, API tokens, private keys, full subscription URLs, and
 unredacted configurations must not be committed.

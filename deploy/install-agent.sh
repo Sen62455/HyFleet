@@ -38,7 +38,7 @@ Options:
   --adapter TYPE      One adapter from the list above
   --service-unit UNIT Override the adapter's default systemd unit
   --core-config-path PATH
-                       Override the config inside the adapter's /etc directory
+                       Config file or directory inside the adapter's /etc directory
   --s-ui-api-url URL  Local S-UI HTTP API ending in /apiv2 (S-UI only)
   --replace-config    Replace /etc/hyfleet/agent.yaml with generated settings
   -h, --help          Show this help
@@ -106,7 +106,9 @@ done
 
 [[ "${EUID}" -eq 0 ]] || fail "run this installer with sudo"
 
-for command_name in curl getent groupadd install runuser systemctl systemd-analyze useradd; do
+for command_name in \
+  awk curl getent grep groupadd install journalctl mktemp od runuser sed systemctl \
+  systemd-analyze tr uname useradd; do
   command -v "${command_name}" >/dev/null 2>&1 || fail "required command is missing: ${command_name}"
 done
 
@@ -176,7 +178,7 @@ if [[ ! -f "${config_path}" || "${replace_config}" == true ]]; then
       "${core_config_path}" != *"//"* && "${core_config_path}" != *"/./"* &&
       "${core_config_path}" != *"/../"* && "${core_config_path}" != */. &&
       "${core_config_path}" != */.. && "${core_config_path}" != */ ]] ||
-      fail "--core-config-path must be a normalized file path below /etc"
+      fail "--core-config-path must be a normalized path below /etc without a trailing slash"
     if [[ "${adapter_type}" == "native_hysteria2" ]]; then
       [[ "${core_config_path}" == /etc/hysteria/* ]] ||
         fail "native Hysteria2 config must be below /etc/hysteria"
@@ -184,6 +186,8 @@ if [[ ! -f "${config_path}" || "${replace_config}" == true ]]; then
       [[ "${core_config_path}" == /etc/sing-box/* ]] ||
         fail "standalone sing-box config must be below /etc/sing-box"
     fi
+    [[ ! -L "${core_config_path}" && ( -f "${core_config_path}" || -d "${core_config_path}" ) ]] ||
+      fail "--core-config-path must identify an existing regular file or directory, not a symlink"
   fi
 elif [[ -n "${server_url}${node_name}${adapter_type}${service_unit}${core_config_path}${s_ui_api_url}" ]]; then
   printf 'Keeping existing %s; supplied configuration options were not applied.\n' "${config_path}"

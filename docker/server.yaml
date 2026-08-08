@@ -1,0 +1,11 @@
+listen: 0.0.0.0:8080
+public_url: https://hyfleet.example.com
+
+database_path: /data/server.db
+master_key_file: /data/master.key
+cookie_secure: true
+
+session_lifetime: 12h
+session_idle_timeout: 30m
+stale_after: 45s
+offline_after: 90s

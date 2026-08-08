@@ -1,0 +1,10 @@
+.git
+.github
+output
+scripts/fleet.local.psd1
+数据.txt
+web/node_modules
+web/dist
+*.db
+*.key
+*.env

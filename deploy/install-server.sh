@@ -66,7 +66,9 @@ done
 
 [[ "${EUID}" -eq 0 ]] || fail "run this installer with sudo"
 
-for command_name in curl getent groupadd install openssl runuser systemctl systemd-analyze useradd; do
+for command_name in \
+  awk curl getent grep groupadd head install journalctl mktemp od openssl runuser sed \
+  systemctl systemd-analyze tr uname useradd; do
   command -v "${command_name}" >/dev/null 2>&1 || fail "required command is missing: ${command_name}"
 done
 

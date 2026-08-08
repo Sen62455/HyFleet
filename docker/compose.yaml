@@ -1,0 +1,25 @@
+services:
+  server:
+    image: ghcr.io/sen62455/hyfleet:${HYFLEET_VERSION:-v1.0.0}
+    container_name: hyfleet-server
+    restart: unless-stopped
+    read_only: true
+    user: "10001:10001"
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      HYFLEET_PUBLIC_URL: ${HYFLEET_PUBLIC_URL:?set HYFLEET_PUBLIC_URL in .env}
+      HYFLEET_BOOTSTRAP_TOKEN: ${HYFLEET_BOOTSTRAP_TOKEN:-}
+    volumes:
+      - hyfleet-data:/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+
+volumes:
+  hyfleet-data:
+    name: hyfleet-data

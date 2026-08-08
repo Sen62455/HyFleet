@@ -48,7 +48,7 @@ systemd socket 按需启动的 `hyfleet-agent-ops` helper 以 root 运行。help
 | `probe_core` | `systemctl is-active` 配置中的固定 unit | 无参数 |
 | `restart_core` | 备份、重启、健康检查，失败时恢复 | 45 秒 Agent deadline |
 | `tail_core_log` | 固定 unit 的 `journalctl` | 200 行、32 KiB |
-| `backup_config` | 复制配置中的固定文件 | 单文件最大 8 MiB |
+| `backup_config` | 复制配置中的固定文件或受限分片目录 | 解压后最大 8 MiB |
 
 helper 不解释 shell，不接受命令字符串，也不能切换到其他 systemd unit。Hysteria2
 配置必须位于 `/etc/hysteria`，sing-box 配置必须位于 `/etc/sing-box`；这与 systemd
@@ -64,10 +64,14 @@ S-UI 的运行数据在 SQLite 中，在线复制数据库可能得到不一致�
 
 ```text
 /var/lib/hyfleet-backups       root:root 0700
-  <time>-<operation-id>-<name>.bak  root:root 0600
+  <time>-<operation-id>-<name>.bak     root:root 0600
+  <time>-<operation-id>-<dir>.tar.gz   root:root 0600
 /var/lib/hyfleet-agent-ops     root:root 0700
   <operation-id>.json              root:root 0600
 ```
+
+v1.0 起，`core_config_path` 也可以指向 `/etc/sing-box` 下的实际配置目录。目录快照最多
+512 个条目、16 层，拒绝符号链接和特殊文件，并在失败回滚时替换完整目录树。
 
 控制面只保存备份路径、SHA-256、大小、时间和 operation ID，不上传配置正文。备份因此
 不会把节点密钥集中复制到 DMIT，但也意味着恢复必须在原节点完成。

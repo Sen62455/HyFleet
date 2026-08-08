@@ -35,6 +35,7 @@ jobs:
           install: false
           cache: true
           cache-dependency-path: web/pnpm-lock.yaml
+          package-json-file: web/package.json
       - name: Install frontend dependencies
         working-directory: web
         run: pnpm install --frozen-lockfile
@@ -46,7 +47,9 @@ jobs:
           pnpm --dir web typecheck
           pnpm --dir web test
           pnpm --dir web lint:docs
-          bash -n deploy/*.sh
+          bash -n install.sh deploy/*.sh tests/*.sh
+          shellcheck --severity=warning install.sh deploy/*.sh tests/*.sh
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           git diff --check
 
   build:
@@ -72,6 +75,7 @@ jobs:
           install: false
           cache: true
           cache-dependency-path: web/pnpm-lock.yaml
+          package-json-file: web/package.json
       - name: Build release bundle
         shell: pwsh
         run: >-
@@ -90,21 +94,62 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
+      id-token: write
     steps:
       - uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: release
           merge-multiple: true
-      - name: Publish private repository release
+      - name: Verify native release assets
+        run: |
+          mapfile -t native_assets < <(find release -maxdepth 1 -type f -print | sort)
+          if [[ ${#native_assets[@]} -ne 4 ]]; then
+            printf 'Expected four native release assets, found %s\n' "${#native_assets[@]}" >&2
+            exit 1
+          fi
+          mkdir -p sbom/amd64 sbom/arm64
+          tar -xzf "release/hyfleet-${RELEASE_VERSION}-linux-amd64.tar.gz" -C sbom/amd64
+          tar -xzf "release/hyfleet-${RELEASE_VERSION}-linux-arm64.tar.gz" -C sbom/arm64
+      - name: Generate amd64 SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: sbom/amd64
+          format: spdx-json
+          output-file: release/hyfleet-${{ env.RELEASE_VERSION }}-linux-amd64.spdx.json
+          artifact-name: hyfleet-${{ env.RELEASE_VERSION }}-linux-amd64.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate arm64 SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: sbom/arm64
+          format: spdx-json
+          output-file: release/hyfleet-${{ env.RELEASE_VERSION }}-linux-arm64.spdx.json
+          artifact-name: hyfleet-${{ env.RELEASE_VERSION }}-linux-arm64.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - uses: sigstore/cosign-installer@v4.1.0
+      - name: Sign release blobs with GitHub OIDC
+        run: |
+          mapfile -t unsigned_assets < <(find release -maxdepth 1 -type f -print | sort)
+          if [[ ${#unsigned_assets[@]} -ne 6 ]]; then
+            printf 'Expected six unsigned assets, found %s\n' "${#unsigned_assets[@]}" >&2
+            exit 1
+          fi
+          for asset in "${unsigned_assets[@]}"; do
+            cosign sign-blob --yes --bundle "${asset}.sigstore.json" "${asset}"
+          done
+      - name: Publish public release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           mapfile -t assets < <(find release -maxdepth 1 -type f -print | sort)
-          if [[ ${#assets[@]} -ne 4 ]]; then
-            printf 'Expected four release assets, found %s\n' "${#assets[@]}" >&2
+          if [[ ${#assets[@]} -ne 12 ]]; then
+            printf 'Expected twelve signed release assets, found %s\n' "${#assets[@]}" >&2
             exit 1
           fi
           if gh release view "${RELEASE_VERSION}" >/dev/null 2>&1; then
@@ -116,3 +161,53 @@ jobs:
             fi
             gh release create "${release_args[@]}"
           fi
+
+  container:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_VERSION }}
+          fetch-depth: 0
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/sen62455/hyfleet
+          tags: |
+            type=raw,value=${{ env.RELEASE_VERSION }}
+            type=raw,value=latest,enable=${{ !contains(env.RELEASE_VERSION, '-') }}
+      - id: buildinfo
+        run: printf 'date=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            VERSION=${{ env.RELEASE_VERSION }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.buildinfo.outputs.date }}
+          provenance: mode=max
+          sbom: true
+      - uses: sigstore/cosign-installer@v4.1.0
+      - name: Sign container digest with GitHub OIDC
+        env:
+          IMAGE: ghcr.io/sen62455/hyfleet
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"

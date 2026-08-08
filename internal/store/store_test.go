@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,7 @@ func TestActiveNodeNameMigrationPreservesRelationsAndAllowsReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
+	t.Cleanup(func() { _ = legacy.Close() })
 	if _, err := legacy.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
 		t.Fatalf("enable legacy foreign keys: %v", err)
 	}
@@ -142,5 +144,106 @@ func TestActiveNodeNameMigrationPreservesRelationsAndAllowsReuse(t *testing.T) {
 	}
 	if replacement.ID == nodeID || replacement.Name != "lisahost" {
 		t.Fatalf("unexpected replacement node: %#v", replacement)
+	}
+}
+
+func TestPhaseThreeMigrationPreservesPhaseTwoUsers(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "phase-two.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = legacy.Close() })
+	if _, err := legacy.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		t.Fatalf("disable legacy foreign keys: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `
+		CREATE TABLE schema_migrations (
+			version TEXT PRIMARY KEY,
+			applied_at INTEGER NOT NULL
+		)
+	`); err != nil {
+		t.Fatalf("create migration table: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	for _, name := range []string{"0001_foundation.sql", "0002_active_node_name.sql", "0003_native_users.sql"} {
+		body, readErr := migrations.Files.ReadFile(name)
+		if readErr != nil {
+			t.Fatalf("read %s: %v", name, readErr)
+		}
+		if _, err := legacy.ExecContext(ctx, string(body)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+		if _, err := legacy.ExecContext(ctx,
+			"INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", name, now.UnixMilli(),
+		); err != nil {
+			t.Fatalf("record %s: %v", name, err)
+		}
+	}
+	nodeID := uuid.NewString()
+	userID := uuid.NewString()
+	credentialID := uuid.NewString()
+	assignmentID := uuid.NewString()
+	verifier := sha256.Sum256([]byte("phase-two-secret"))
+	if _, err := legacy.ExecContext(ctx, `
+		INSERT INTO nodes(id, name, adapter_type, created_at, updated_at)
+		VALUES (?, 'LisaHost', 'native_hysteria2', ?, ?)
+	`, nodeID, now.UnixMilli(), now.UnixMilli()); err != nil {
+		t.Fatalf("seed phase two node: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `
+		INSERT INTO users(id, username, display_name, enabled, created_at, updated_at)
+		VALUES (?, 'existing-user', 'Existing User', 1, ?, ?)
+	`, userID, now.UnixMilli(), now.UnixMilli()); err != nil {
+		t.Fatalf("seed phase two user: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `
+		INSERT INTO user_credentials(
+			id, user_id, node_id, protocol, secret_ciphertext, verifier_sha256,
+			secret_fingerprint, state, created_at
+		) VALUES (?, ?, ?, 'hysteria2', ?, ?, 'fp_existing', 'applied', ?)
+	`, credentialID, userID, nodeID, []byte("encrypted"), verifier[:], now.UnixMilli()); err != nil {
+		t.Fatalf("seed phase two credential: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `
+		INSERT INTO node_user_assignments(
+			id, node_id, user_id, desired_credential_id, applied_credential_id,
+			enabled, desired_version, applied_version, state, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, 1, 1, 1, 'applied', ?, ?)
+	`, assignmentID, nodeID, userID, credentialID, credentialID,
+		now.UnixMilli(), now.UnixMilli()); err != nil {
+		t.Fatalf("seed phase two assignment: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close phase two database: %v", err)
+	}
+
+	database, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open(upgrade) error = %v", err)
+	}
+	defer database.Close()
+	user, err := database.GetUser(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetUser(upgraded) error = %v", err)
+	}
+	if user.Username != "existing-user" || user.TrafficUsedBytes != 0 || user.QuotaState != "unlimited" ||
+		len(user.Assignments) != 1 || user.Assignments[0].CredentialFingerprint != "fp_existing" {
+		t.Fatalf("upgraded user = %#v", user)
+	}
+	var violations int
+	rows, err := database.DB().QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	for rows.Next() {
+		violations++
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close foreign_key_check: %v", err)
+	}
+	if violations != 0 {
+		t.Fatalf("foreign key violations after upgrade = %d", violations)
 	}
 }

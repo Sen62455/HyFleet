@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing tag to package
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_VERSION }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: pnpm/setup@v1
+        with:
+          version: 11.16.0
+          runtime: node@22
+          install: false
+          cache: true
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install frontend dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: Verify source
+        run: |
+          go test ./...
+          go test -race ./...
+          go vet ./...
+          pnpm --dir web typecheck
+          pnpm --dir web test
+          pnpm --dir web lint:docs
+          bash -n deploy/*.sh
+          git diff --check
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_VERSION }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: pnpm/setup@v1
+        with:
+          version: 11.16.0
+          runtime: node@22
+          install: false
+          cache: true
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Build release bundle
+        shell: pwsh
+        run: >-
+          ./scripts/build-release.ps1
+          -Architecture ${{ matrix.architecture }}
+          -Version $env:RELEASE_VERSION
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.architecture }}
+          path: |
+            output/releases/hyfleet-${{ env.RELEASE_VERSION }}-linux-${{ matrix.architecture }}.tar.gz
+            output/releases/hyfleet-${{ env.RELEASE_VERSION }}-linux-${{ matrix.architecture }}.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Publish private repository release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mapfile -t assets < <(find release -maxdepth 1 -type f -print | sort)
+          if [[ ${#assets[@]} -ne 4 ]]; then
+            printf 'Expected four release assets, found %s\n' "${#assets[@]}" >&2
+            exit 1
+          fi
+          if gh release view "${RELEASE_VERSION}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_VERSION}" "${assets[@]}" --clobber
+          else
+            release_args=("${RELEASE_VERSION}" "${assets[@]}" --verify-tag --generate-notes --title "HyFleet ${RELEASE_VERSION}")
+            if [[ "${RELEASE_VERSION}" == *-* ]]; then
+              release_args+=(--prerelease)
+            fi
+            gh release create "${release_args[@]}"
+          fi

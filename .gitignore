@@ -17,6 +17,8 @@ bin/
 # Node-specific inventory must never be committed.
 inventory.local.yaml
 docs/inventory.local.md
+数据.txt
+scripts/fleet.local.psd1
 
 # Frontend and editor output
 node_modules/

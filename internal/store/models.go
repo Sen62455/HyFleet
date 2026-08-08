@@ -12,6 +12,7 @@ var (
 	ErrExpired         = errors.New("expired")
 	ErrUnauthorized    = errors.New("unauthorized")
 	ErrVersionConflict = errors.New("version conflict")
+	ErrUnsupported     = errors.New("unsupported")
 )
 
 func unixTime(value int64) time.Time {

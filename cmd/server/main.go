@@ -73,6 +73,7 @@ func main() {
 	}
 	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go enforceExpiredUsers(shutdownContext, database, logger)
 	go func() {
 		<-shutdownContext.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -85,5 +86,24 @@ func main() {
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("HTTP server stopped", "error", err)
 		os.Exit(1)
+	}
+}
+
+func enforceExpiredUsers(ctx context.Context, database *store.Store, logger *slog.Logger) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		if count, err := database.EnforceExpiredUsers(ctx, time.Now().UTC(), 100); err != nil {
+			if ctx.Err() == nil {
+				logger.Error("enforce expired users failed", "error", err)
+			}
+		} else if count > 0 {
+			logger.Info("expired users enforced", "count", count)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }

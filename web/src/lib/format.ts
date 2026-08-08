@@ -28,6 +28,10 @@ export function formatPercent(value: number): string {
   return `${Math.max(0, Math.min(100, value)).toFixed(value >= 10 ? 0 : 1)}%`;
 }
 
+export function quotaPercent(used: number, limit: number): number {
+  return limit > 0 ? percent(used, limit) : 0;
+}
+
 export function relativeTime(value: string | null, now = Date.now()): string {
   if (!value) return "尚未连接";
   const time = new Date(value).getTime();
@@ -50,6 +54,20 @@ export function formatUptime(seconds: number): string {
   const minutes = Math.floor((seconds % 3600) / 60);
   if (hours > 0) return `${hours} 小时 ${minutes} 分钟`;
   return `${minutes} 分钟`;
+}
+
+export function formatDateTime(value: string | null, neverLabel = true): string {
+  if (!value) return neverLabel ? "永不过期" : "-";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "时间未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 export const adapterLabels: Record<AdapterType, string> = {

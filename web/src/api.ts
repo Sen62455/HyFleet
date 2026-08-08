@@ -1,4 +1,16 @@
-import type { EnrollmentToken, NodeInput, NodeRecord, Session, SetupStatus } from "./types";
+import type {
+  AssignUserResponse,
+  AssignmentInput,
+  CreateUserResponse,
+  EnrollmentToken,
+  NodeInput,
+  NodeRecord,
+  Session,
+  SetupStatus,
+  UserCredential,
+  UserInput,
+  UserRecord,
+} from "./types";
 
 export class APIError extends Error {
   readonly status: number;
@@ -110,5 +122,58 @@ export const api = {
     request<EnrollmentToken>(`/api/v1/nodes/${encodeURIComponent(id)}/enrollment-token`, {
       method: "POST",
       body: "{}",
+    }),
+
+  async listUsers() {
+    const result = await request<{ users: UserRecord[] }>("/api/v1/users");
+    return result.users;
+  },
+
+  createUser: (input: UserInput) =>
+    request<CreateUserResponse>("/api/v1/users", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  updateUser: (id: string, input: UserInput) =>
+    request<UserRecord>(`/api/v1/users/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+
+  archiveUser: (id: string) =>
+    request<void>(`/api/v1/users/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      body: "{}",
+    }),
+
+  assignUser: (userId: string, nodeId: string, trafficLimitBytes = 0) =>
+    request<AssignUserResponse>(`/api/v1/users/${encodeURIComponent(userId)}/assignments`, {
+      method: "POST",
+      body: JSON.stringify({ node_id: nodeId, traffic_limit_bytes: trafficLimitBytes }),
+    }),
+
+  updateAssignment: (userId: string, nodeId: string, input: AssignmentInput) =>
+    request<UserRecord>(
+      `/api/v1/users/${encodeURIComponent(userId)}/assignments/${encodeURIComponent(nodeId)}`,
+      { method: "PUT", body: JSON.stringify(input) },
+    ),
+
+  unassignUser: (userId: string, nodeId: string) =>
+    request<void>(
+      `/api/v1/users/${encodeURIComponent(userId)}/assignments/${encodeURIComponent(nodeId)}`,
+      { method: "DELETE", body: "{}" },
+    ),
+
+  revealCredential: (userId: string, nodeId: string) =>
+    request<UserCredential>(
+      `/api/v1/users/${encodeURIComponent(userId)}/assignments/${encodeURIComponent(nodeId)}/credential`,
+      { method: "POST", body: "{}" },
+    ),
+
+  kickUser: (userId: string, nodeId = "") =>
+    request<{ requested_nodes: number }>(`/api/v1/users/${encodeURIComponent(userId)}/kick`, {
+      method: "POST",
+      body: JSON.stringify({ node_id: nodeId }),
     }),
 };

@@ -20,40 +20,54 @@ type nodeRequest struct {
 }
 
 type nodeResponse struct {
-	ID                  string     `json:"id"`
-	Name                string     `json:"name"`
-	Provider            string     `json:"provider"`
-	Region              string     `json:"region"`
-	AdapterType         string     `json:"adapter_type"`
-	Enabled             bool       `json:"enabled"`
-	Status              string     `json:"status"`
-	StatusReason        string     `json:"status_reason"`
-	DesiredVersion      int64      `json:"desired_version"`
-	AppliedVersion      int64      `json:"applied_version"`
-	AgentInstallationID string     `json:"agent_installation_id,omitempty"`
-	AgentVersion        string     `json:"agent_version"`
-	ProtocolVersion     int        `json:"protocol_version"`
-	OSName              string     `json:"os_name"`
-	OSVersion           string     `json:"os_version"`
-	Architecture        string     `json:"architecture"`
-	CoreName            string     `json:"core_name"`
-	CoreVersion         string     `json:"core_version"`
-	CoreRunning         bool       `json:"core_running"`
-	UptimeSeconds       int64      `json:"uptime_seconds"`
-	CPUPercent          float64    `json:"cpu_percent"`
-	MemoryUsedBytes     int64      `json:"memory_used_bytes"`
-	MemoryTotalBytes    int64      `json:"memory_total_bytes"`
-	DiskUsedBytes       int64      `json:"disk_used_bytes"`
-	DiskTotalBytes      int64      `json:"disk_total_bytes"`
-	NetworkRXBPS        int64      `json:"network_rx_bps"`
-	NetworkTXBPS        int64      `json:"network_tx_bps"`
-	Load1               float64    `json:"load_1"`
-	Load5               float64    `json:"load_5"`
-	Load15              float64    `json:"load_15"`
-	LastSeenAt          *time.Time `json:"last_seen_at"`
-	LastAppliedAt       *time.Time `json:"last_applied_at"`
-	CreatedAt           time.Time  `json:"created_at"`
-	UpdatedAt           time.Time  `json:"updated_at"`
+	ID                       string     `json:"id"`
+	Name                     string     `json:"name"`
+	Provider                 string     `json:"provider"`
+	Region                   string     `json:"region"`
+	AdapterType              string     `json:"adapter_type"`
+	Enabled                  bool       `json:"enabled"`
+	Status                   string     `json:"status"`
+	StatusReason             string     `json:"status_reason"`
+	DesiredVersion           int64      `json:"desired_version"`
+	AppliedVersion           int64      `json:"applied_version"`
+	AgentInstallationID      string     `json:"agent_installation_id,omitempty"`
+	AgentVersion             string     `json:"agent_version"`
+	ProtocolVersion          int        `json:"protocol_version"`
+	OSName                   string     `json:"os_name"`
+	OSVersion                string     `json:"os_version"`
+	Architecture             string     `json:"architecture"`
+	CoreName                 string     `json:"core_name"`
+	CoreVersion              string     `json:"core_version"`
+	CoreRunning              bool       `json:"core_running"`
+	UptimeSeconds            int64      `json:"uptime_seconds"`
+	CPUPercent               float64    `json:"cpu_percent"`
+	MemoryUsedBytes          int64      `json:"memory_used_bytes"`
+	MemoryTotalBytes         int64      `json:"memory_total_bytes"`
+	DiskUsedBytes            int64      `json:"disk_used_bytes"`
+	DiskTotalBytes           int64      `json:"disk_total_bytes"`
+	NetworkRXBPS             int64      `json:"network_rx_bps"`
+	NetworkTXBPS             int64      `json:"network_tx_bps"`
+	Load1                    float64    `json:"load_1"`
+	Load5                    float64    `json:"load_5"`
+	Load15                   float64    `json:"load_15"`
+	UsageEnabled             bool       `json:"usage_enabled"`
+	UsageAvailable           bool       `json:"usage_available"`
+	UsageOutboxBatches       int        `json:"usage_outbox_batches"`
+	UsageErrorCode           string     `json:"usage_error_code"`
+	UsageSampledAt           *time.Time `json:"usage_sampled_at"`
+	TrafficUploadBytes       int64      `json:"traffic_upload_bytes"`
+	TrafficDownloadBytes     int64      `json:"traffic_download_bytes"`
+	TrafficUnattributedBytes int64      `json:"traffic_unattributed_bytes"`
+	TrafficLastReportAt      *time.Time `json:"traffic_last_report_at"`
+	OnlineUsers              int        `json:"online_users"`
+	OnlineConnections        int        `json:"online_connections"`
+	OnlineUnknownUsers       int        `json:"online_unknown_users"`
+	OnlineSampledAt          *time.Time `json:"online_sampled_at"`
+	OnlineLastReportAt       *time.Time `json:"online_last_report_at"`
+	LastSeenAt               *time.Time `json:"last_seen_at"`
+	LastAppliedAt            *time.Time `json:"last_applied_at"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
 }
 
 func (a *App) handleListNodes(response http.ResponseWriter, request *http.Request) {
@@ -155,6 +169,10 @@ func (a *App) handleArchiveNode(response http.ResponseWriter, request *http.Requ
 		a.writeError(response, request, http.StatusNotFound, "node_not_found", "node not found")
 		return
 	}
+	if errors.Is(err, store.ErrConflict) {
+		a.writeError(response, request, http.StatusConflict, "node_has_assignments", "remove active user assignments or wait for the agent to apply pending removals before archiving the node")
+		return
+	}
 	if err != nil {
 		a.writeError(response, request, http.StatusInternalServerError, "node_archive_failed", "could not archive node")
 		return
@@ -231,6 +249,14 @@ func (a *App) presentNode(node store.Node, now time.Time) nodeResponse {
 		DiskUsedBytes: node.DiskUsedBytes, DiskTotalBytes: node.DiskTotalBytes,
 		NetworkRXBPS: node.NetworkRXBPS, NetworkTXBPS: node.NetworkTXBPS,
 		Load1: node.Load1, Load5: node.Load5, Load15: node.Load15,
+		UsageEnabled: node.UsageEnabled, UsageAvailable: node.UsageAvailable,
+		UsageOutboxBatches: node.UsageOutboxBatches, UsageErrorCode: node.UsageErrorCode,
+		UsageSampledAt: node.UsageSampledAt, TrafficUploadBytes: node.TrafficUploadBytes,
+		TrafficDownloadBytes:     node.TrafficDownloadBytes,
+		TrafficUnattributedBytes: node.TrafficUnattributedBytes,
+		TrafficLastReportAt:      node.TrafficLastReportAt, OnlineUsers: node.OnlineUsers,
+		OnlineConnections: node.OnlineConnections, OnlineUnknownUsers: node.OnlineUnknownUsers,
+		OnlineSampledAt: node.OnlineSampledAt, OnlineLastReportAt: node.OnlineLastReportAt,
 		LastSeenAt: node.LastSeenAt, LastAppliedAt: node.LastAppliedAt,
 		CreatedAt: node.CreatedAt, UpdatedAt: node.UpdatedAt,
 	}

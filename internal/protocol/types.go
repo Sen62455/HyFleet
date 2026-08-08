@@ -2,7 +2,10 @@ package protocol
 
 import "time"
 
-const MajorVersion = 1
+const (
+	MajorVersion            = 1
+	MaxTrafficItemsPerBatch = 1000
+)
 
 type ErrorResponse struct {
 	Error APIError `json:"error"`
@@ -50,6 +53,7 @@ type HeartbeatRequest struct {
 	Agent          AgentInfo   `json:"agent"`
 	Core           CoreInfo    `json:"core"`
 	Host           HostMetrics `json:"host"`
+	Usage          UsageInfo   `json:"usage"`
 	SampledAt      time.Time   `json:"sampled_at"`
 }
 
@@ -62,6 +66,14 @@ type CoreInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version,omitempty"`
 	Running bool   `json:"running"`
+}
+
+type UsageInfo struct {
+	Enabled       bool       `json:"enabled"`
+	Available     bool       `json:"available"`
+	OutboxBatches int        `json:"outbox_batches"`
+	LastSampledAt *time.Time `json:"last_sampled_at,omitempty"`
+	LastErrorCode string     `json:"last_error_code,omitempty"`
 }
 
 type HostMetrics struct {
@@ -89,6 +101,7 @@ type DesiredSnapshot struct {
 	Version       int64         `json:"version"`
 	Adapter       string        `json:"adapter"`
 	Users         []DesiredUser `json:"users"`
+	Kicks         []DesiredKick `json:"kicks"`
 	GeneratedAt   time.Time     `json:"generated_at"`
 }
 
@@ -107,6 +120,11 @@ type DesiredCredential struct {
 	VerifierSHA256 string `json:"verifier_sha256,omitempty"`
 }
 
+type DesiredKick struct {
+	UserID     string `json:"user_id"`
+	Generation int64  `json:"generation"`
+}
+
 type DesiredEnvelope struct {
 	Snapshot  DesiredSnapshot `json:"snapshot"`
 	SHA256    string          `json:"sha256"`
@@ -120,4 +138,51 @@ type DesiredAckRequest struct {
 	DurationMS   int64  `json:"duration_ms"`
 	ErrorCode    string `json:"error_code,omitempty"`
 	Message      string `json:"message,omitempty"`
+}
+
+type TrafficBatchesRequest struct {
+	Batches []TrafficBatch `json:"batches"`
+}
+
+type TrafficBatch struct {
+	ID             string         `json:"id"`
+	InstallationID string         `json:"installation_id"`
+	SourceEpoch    string         `json:"source_epoch"`
+	Sequence       int64          `json:"sequence"`
+	SampledAt      time.Time      `json:"sampled_at"`
+	Items          []TrafficDelta `json:"items"`
+}
+
+type TrafficDelta struct {
+	UserID        string `json:"user_id"`
+	UploadBytes   int64  `json:"upload_bytes"`
+	DownloadBytes int64  `json:"download_bytes"`
+}
+
+type TrafficBatchesResponse struct {
+	Results    []TrafficBatchResult `json:"results"`
+	ServerTime time.Time            `json:"server_time"`
+}
+
+type TrafficBatchResult struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+type OnlineSnapshotRequest struct {
+	SnapshotID     string       `json:"snapshot_id"`
+	InstallationID string       `json:"installation_id"`
+	SampledAt      time.Time    `json:"sampled_at"`
+	Users          []OnlineUser `json:"users"`
+}
+
+type OnlineUser struct {
+	UserID      string `json:"user_id"`
+	Connections int    `json:"connections"`
+}
+
+type OnlineSnapshotResponse struct {
+	Accepted   bool      `json:"accepted"`
+	ServerTime time.Time `json:"server_time"`
 }

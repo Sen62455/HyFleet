@@ -1,0 +1,308 @@
+<script setup lang="ts">
+import { computed, ref, watch } from "vue";
+import { KeyRound, LogOut, Pencil, Plus, Save, Trash2, Wifi } from "@lucide/vue";
+import {
+  NButton,
+  NDrawer,
+  NDrawerContent,
+  NIcon,
+  NInputNumber,
+  NProgress,
+  NSelect,
+  NSwitch,
+  NTag,
+  NTooltip,
+} from "naive-ui";
+import { formatBytes, formatDateTime, quotaPercent, relativeTime } from "../../lib/format";
+import type { NodeRecord, UserAssignment, UserRecord } from "../../types";
+
+const props = defineProps<{
+  show: boolean;
+  user: UserRecord | null;
+  nativeNodes: NodeRecord[];
+  working: string;
+}>();
+const emit = defineEmits<{
+  "update:show": [show: boolean];
+  edit: [user: UserRecord];
+  "toggle-user": [user: UserRecord, enabled: boolean];
+  assign: [user: UserRecord, nodeId: string, trafficLimitBytes: number];
+  "toggle-assignment": [user: UserRecord, assignment: UserAssignment, enabled: boolean];
+  unassign: [user: UserRecord, assignment: UserAssignment];
+  reveal: [user: UserRecord, assignment: UserAssignment];
+  "update-assignment-limit": [user: UserRecord, assignment: UserAssignment, trafficLimitBytes: number];
+  "kick-user": [user: UserRecord];
+  "kick-assignment": [user: UserRecord, assignment: UserAssignment];
+}>();
+
+const selectedNodeID = ref<string | null>(null);
+const selectedLimitGiB = ref(0);
+const assignmentLimits = ref<Record<string, number>>({});
+const assignedNodeIDs = computed(() => new Set(props.user?.assignments.map((item) => item.node_id) ?? []));
+const availableOptions = computed(() =>
+  props.nativeNodes
+    .filter((node) => !assignedNodeIDs.value.has(node.id))
+    .map((node) => ({ label: node.name, value: node.id, disabled: !node.enabled })),
+);
+
+watch(
+  () => [props.show, props.user?.id] as const,
+  () => {
+    selectedNodeID.value = null;
+    selectedLimitGiB.value = 0;
+    assignmentLimits.value = Object.fromEntries(
+      (props.user?.assignments ?? []).map((assignment) => [
+        assignment.id,
+        assignment.traffic_limit_bytes / 1024 ** 3,
+      ]),
+    );
+  },
+);
+
+function assign() {
+  if (!props.user || !selectedNodeID.value) return;
+  emit("assign", props.user, selectedNodeID.value, Math.round(selectedLimitGiB.value * 1024 ** 3));
+  selectedNodeID.value = null;
+  selectedLimitGiB.value = 0;
+}
+
+function saveAssignmentLimit(assignment: UserAssignment) {
+  if (!props.user) return;
+  const value = assignmentLimits.value[assignment.id] ?? 0;
+  emit("update-assignment-limit", props.user, assignment, Math.round(value * 1024 ** 3));
+}
+
+function assignmentState(assignment: UserAssignment) {
+  if (assignment.state === "failed") return { label: "失败", type: "error" as const };
+  if (assignment.state === "applied" && assignment.applied_version >= assignment.desired_version) {
+    return { label: "已同步", type: "success" as const };
+  }
+  return { label: "等待同步", type: "warning" as const };
+}
+</script>
+
+<template>
+  <n-drawer
+    :show="show"
+    width="min(520px, 100vw)"
+    placement="right"
+    @update:show="emit('update:show', $event)"
+  >
+    <n-drawer-content v-if="user" :title="user.display_name || user.username" closable>
+      <div class="user-detail-heading">
+        <div>
+          <span>@{{ user.username }}</span>
+          <n-tag v-if="user.status === 'expired'" type="error" size="small" :bordered="false">已到期</n-tag>
+          <n-tag v-else-if="!user.enabled" size="small" :bordered="false">已停用</n-tag>
+          <n-tag v-else type="success" size="small" :bordered="false">启用</n-tag>
+        </div>
+        <n-switch
+          :value="user.enabled"
+          :loading="working === `user:${user.id}`"
+          aria-label="启用用户"
+          @update:value="emit('toggle-user', user, $event)"
+        />
+      </div>
+
+      <section class="detail-section">
+        <h2>账户</h2>
+        <dl class="detail-list">
+          <div><dt>到期时间</dt><dd>{{ formatDateTime(user.expires_at) }}</dd></div>
+          <div><dt>创建时间</dt><dd>{{ formatDateTime(user.created_at, false) }}</dd></div>
+          <div><dt>最后更新</dt><dd>{{ relativeTime(user.updated_at) }}</dd></div>
+        </dl>
+        <p v-if="user.notes" class="user-notes">{{ user.notes }}</p>
+      </section>
+
+      <section class="detail-section">
+        <div class="detail-section__heading">
+          <h2>流量与在线</h2>
+          <n-tag v-if="user.quota_state === 'limited'" type="error" size="small" :bordered="false">
+            额度用尽
+          </n-tag>
+          <span v-else>{{ user.online_connections }} 台设备</span>
+        </div>
+        <n-progress
+          v-if="user.traffic_limit_bytes > 0"
+          type="line"
+          :percentage="quotaPercent(user.traffic_used_bytes, user.traffic_limit_bytes)"
+          :show-indicator="false"
+          :status="user.quota_state === 'limited' ? 'error' : 'success'"
+          processing
+        />
+        <dl class="detail-list detail-list--two traffic-summary">
+          <div><dt>已用 / 额度</dt><dd>{{ formatBytes(user.traffic_used_bytes) }} / {{ user.traffic_limit_bytes ? formatBytes(user.traffic_limit_bytes) : '不限额' }}</dd></div>
+          <div><dt>在线节点</dt><dd>{{ user.online_nodes }} / {{ user.assignments.length }}</dd></div>
+          <div><dt>上传</dt><dd>{{ formatBytes(user.traffic_upload_bytes) }}</dd></div>
+          <div><dt>下载</dt><dd>{{ formatBytes(user.traffic_download_bytes) }}</dd></div>
+        </dl>
+      </section>
+
+      <section class="detail-section">
+        <div class="detail-section__heading">
+          <h2>节点分配</h2>
+          <span>{{ user.assignments.length }}</span>
+        </div>
+        <div class="assignment-add">
+          <n-select
+            v-model:value="selectedNodeID"
+            filterable
+            clearable
+            :options="availableOptions"
+            :disabled="availableOptions.length === 0"
+            placeholder="选择原生 HY2 节点"
+          />
+          <n-input-number
+            v-model:value="selectedLimitGiB"
+            :min="0"
+            :max="8388607"
+            :precision="2"
+            size="small"
+            placeholder="额度 GiB"
+          />
+          <n-button
+            type="primary"
+            :disabled="!selectedNodeID"
+            :loading="working === `assign:${user.id}`"
+            @click="assign"
+          >
+            <template #icon><n-icon><plus /></n-icon></template>
+            分配
+          </n-button>
+        </div>
+
+        <div v-if="user.assignments.length" class="assignment-list">
+          <article v-for="assignment in user.assignments" :key="assignment.id" class="assignment-item">
+            <header>
+              <div>
+                <strong>{{ assignment.node_name }}</strong>
+                <span>v{{ assignment.applied_version }} / {{ assignment.desired_version }}</span>
+              </div>
+              <n-tag :type="assignmentState(assignment).type" size="small" :bordered="false">
+                {{ assignmentState(assignment).label }}
+              </n-tag>
+            </header>
+            <p v-if="assignment.last_error_message" class="assignment-error">
+              {{ assignment.last_error_message }}
+            </p>
+            <div class="assignment-usage">
+              <div>
+                <span>{{ formatBytes(assignment.traffic_used_bytes) }}</span>
+                <span v-if="assignment.traffic_limit_bytes"> / {{ formatBytes(assignment.traffic_limit_bytes) }}</span>
+                <span v-else> / 不限额</span>
+              </div>
+              <span :class="{ 'assignment-online--active': assignment.online_connections > 0 }">
+                <wifi :size="13" aria-hidden="true" />{{ assignment.online_connections }}
+              </span>
+            </div>
+            <n-progress
+              v-if="assignment.traffic_limit_bytes > 0"
+              type="line"
+              :percentage="quotaPercent(assignment.traffic_used_bytes, assignment.traffic_limit_bytes)"
+              :show-indicator="false"
+              :status="assignment.quota_state === 'limited' ? 'error' : 'success'"
+            />
+            <div class="assignment-limit-row">
+              <n-input-number
+                v-model:value="assignmentLimits[assignment.id]"
+                :min="0"
+                :max="8388607"
+                :precision="2"
+                size="small"
+              >
+                <template #suffix>GiB</template>
+              </n-input-number>
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <n-button
+                    circle
+                    secondary
+                    size="small"
+                    :loading="working === `limit:${assignment.id}`"
+                    :aria-label="`保存 ${assignment.node_name} 流量额度`"
+                    @click="saveAssignmentLimit(assignment)"
+                  >
+                    <template #icon><n-icon><save /></n-icon></template>
+                  </n-button>
+                </template>
+                保存节点额度
+              </n-tooltip>
+            </div>
+            <footer>
+              <span>{{ assignment.credential_fingerprint }}</span>
+              <div class="assignment-actions">
+                <n-switch
+                  size="small"
+                  :value="assignment.enabled"
+                  :loading="working === `toggle:${assignment.id}`"
+                  :aria-label="`启用 ${assignment.node_name} 分配`"
+                  @update:value="emit('toggle-assignment', user, assignment, $event)"
+                />
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-button
+                      circle
+                      quaternary
+                      :loading="working === `kick:${assignment.id}`"
+                      :aria-label="`将用户从 ${assignment.node_name} 踢下线`"
+                      @click="emit('kick-assignment', user, assignment)"
+                    >
+                      <template #icon><n-icon><log-out /></n-icon></template>
+                    </n-button>
+                  </template>
+                  踢下线
+                </n-tooltip>
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-button
+                      circle
+                      quaternary
+                      :loading="working === `reveal:${assignment.id}`"
+                      :aria-label="`查看 ${assignment.node_name} 凭据`"
+                      @click="emit('reveal', user, assignment)"
+                    >
+                      <template #icon><n-icon><key-round /></n-icon></template>
+                    </n-button>
+                  </template>
+                  查看凭据
+                </n-tooltip>
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-button
+                      circle
+                      quaternary
+                      type="error"
+                      :aria-label="`取消 ${assignment.node_name} 分配`"
+                      @click="emit('unassign', user, assignment)"
+                    >
+                      <template #icon><n-icon><trash2 /></n-icon></template>
+                    </n-button>
+                  </template>
+                  取消分配
+                </n-tooltip>
+              </div>
+            </footer>
+          </article>
+        </div>
+        <div v-else class="assignment-empty">尚未分配节点</div>
+      </section>
+
+      <template #footer>
+        <div class="drawer-actions">
+          <n-button @click="emit('edit', user)">
+            <template #icon><n-icon><pencil /></n-icon></template>
+            编辑用户
+          </n-button>
+          <n-button
+            secondary
+            :loading="working === `kick:${user.id}`"
+            @click="emit('kick-user', user)"
+          >
+            <template #icon><n-icon><log-out /></n-icon></template>
+            全部踢下线
+          </n-button>
+        </div>
+      </template>
+    </n-drawer-content>
+  </n-drawer>
+</template>

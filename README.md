@@ -1,15 +1,15 @@
 # HyFleet
 
 HyFleet is a lightweight control plane for a small fleet of Hysteria2 VPS nodes.
-It provides centralized node, user, subscription, traffic, and health management
-without replacing Hysteria2 or sing-box.
+It provides centralized node, user, traffic, and health management without
+replacing Hysteria2 or sing-box. Subscription delivery remains a later phase.
 
 The working name is provisional. The repository now contains the local
-**Phase 1: foundation** implementation. The control plane and Agent are strictly
-read-only toward proxy cores in this phase; no production proxy configuration
-should be modified from this tree yet.
+**Phase 3: traffic and online state** implementation. Native Hysteria2 nodes can
+serve local HTTP authentication from a persistent Agent cache. Standalone
+sing-box and S-UI remain read-only until their later adapter phases.
 
-## Phase 1 capabilities
+## Current capabilities
 
 - Single-administrator bootstrap, Argon2id login, server-side sessions, and CSRF
   protection.
@@ -19,8 +19,15 @@ should be modified from this tree yet.
 - Responsive Chinese management console embedded in one Go server binary.
 - Pure-Go SQLite WAL storage, native systemd units, CI, and Linux amd64/arm64
   release builds.
-- Local tests proving enrollment replay, Agent restart, auth rate limiting, and
-  the Phase 1 read-only boundary.
+- Global user CRUD, expiry and enable controls, and native-node assignments.
+- Independent encrypted credentials for each user and node assignment.
+- Hysteria2 HTTP authentication backed by an atomic Agent-side verifier cache.
+- Controlled `/etc/hysteria/config.yaml` migration with backup, service checks,
+  automatic failure recovery, and an explicit rollback command.
+- Persistent Agent traffic Outbox, idempotent control-plane accounting, online
+  snapshots, kick generations, and global/per-node quotas.
+- Private GitHub Release builds and a local parallel updater for the three-node
+  fleet with per-component health checks and rollback.
 
 ## Initial scope
 
@@ -59,6 +66,14 @@ should be modified from this tree yet.
 - [Foundation implementation and acceptance](docs/09-phase-1-foundation.md)
 - [Native systemd deployment](docs/10-systemd-deployment.md)
 
+## Phase 2 documents
+
+- [Native Hysteria2 users, upgrade, migration, and acceptance](docs/11-phase-2-native-users.md)
+
+## Phase 3 documents
+
+- [Traffic, online state, quotas, and fleet updates](docs/12-phase-3-traffic-and-updates.md)
+
 ## Local development
 
 Required tools are Go 1.26, Node.js 22, and pnpm 11.16.
@@ -80,7 +95,7 @@ Set `HYFLEET_BOOTSTRAP_TOKEN` before the first server start. Example files are i
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
-  -Architecture amd64 -Version v0.1.0-dev
+  -Architecture amd64 -Version v0.3.0-dev
 ```
 
 The archive, external checksum, Linux ELF binaries, idempotent installers, and
@@ -90,7 +105,7 @@ a Windows preview executable to a VPS.
 
 ## Status
 
-Phase 1 is implemented and locally testable without production access. Its exit
-gate still requires a read-only test Agent to report real host metrics before a
-`v0.1.0` tag. Secrets, IP addresses, API tokens, private keys, full subscription
-URLs, and unredacted configurations must not be committed.
+Phase 3 is implemented and locally testable. Its final exit gate requires the
+documented LisaHost traffic-stats migration and controller-outage test before a `v0.3.0` tag.
+Secrets, IP addresses, API tokens, private keys, full subscription URLs, and
+unredacted configurations must not be committed.

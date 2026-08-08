@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { h } from "vue";
-import { Archive, KeyRound, MoreHorizontal, Pencil, ServerCog } from "@lucide/vue";
+import { Archive, KeyRound, MoreHorizontal, Pencil, ServerCog, Wifi } from "@lucide/vue";
 import { NButton, NDropdown, NIcon, NTooltip, type DropdownOption } from "naive-ui";
 import MetricBar from "../../components/MetricBar.vue";
 import StatusIndicator from "../../components/StatusIndicator.vue";
@@ -45,6 +45,7 @@ function choose(key: string | number, node: NodeRecord) {
           <th>状态</th>
           <th>资源</th>
           <th>网络</th>
+          <th>用量</th>
           <th>最后上报</th>
           <th><span class="sr-only">操作</span></th>
         </tr>
@@ -86,6 +87,12 @@ function choose(key: string | number, node: NodeRecord) {
           <td>
             <span class="network-value network-value--down">↓ {{ formatRate(node.network_rx_bps) }}</span>
             <span class="network-value network-value--up">↑ {{ formatRate(node.network_tx_bps) }}</span>
+          </td>
+          <td>
+            <span class="traffic-value">{{ formatBytes(node.traffic_upload_bytes + node.traffic_download_bytes) }}</span>
+            <span class="table-secondary online-inline" :class="{ 'online-inline--active': node.online_connections > 0 }">
+              <wifi :size="12" aria-hidden="true" />{{ node.online_connections }} 台设备
+            </span>
           </td>
           <td>
             <span class="last-seen">{{ relativeTime(node.last_seen_at) }}</span>
@@ -142,6 +149,7 @@ function choose(key: string | number, node: NodeRecord) {
         <span>↓ {{ formatRate(node.network_rx_bps) }}</span>
         <span>↑ {{ formatRate(node.network_tx_bps) }}</span>
         <span>配置 v{{ node.applied_version }} / {{ node.desired_version }}</span>
+        <span><wifi :size="11" aria-hidden="true" /> {{ node.online_connections }} · {{ formatBytes(node.traffic_upload_bytes + node.traffic_download_bytes) }}</span>
       </footer>
     </article>
   </div>

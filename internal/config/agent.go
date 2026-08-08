@@ -3,10 +3,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -15,29 +17,43 @@ var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var systemdUnitPattern = regexp.MustCompile(`^[A-Za-z0-9_.@:-]+$`)
 
 type Agent struct {
-	ServerURL       string
-	EnrollmentToken string
-	StatePath       string
-	NodeName        string
-	AdapterType     string
-	CoreName        string
-	ServiceUnit     string
-	HeartbeatEvery  time.Duration
-	DesiredEvery    time.Duration
-	AllowHTTP       bool
+	ServerURL           string
+	EnrollmentToken     string
+	StatePath           string
+	NodeName            string
+	AdapterType         string
+	CoreName            string
+	ServiceUnit         string
+	HeartbeatEvery      time.Duration
+	DesiredEvery        time.Duration
+	AllowHTTP           bool
+	AuthListen          string
+	AuthPath            string
+	AuthCachePath       string
+	TrafficStatsURL     string
+	TrafficStatsSecret  string
+	TrafficDatabasePath string
+	TrafficEvery        time.Duration
 }
 
 type agentFile struct {
-	ServerURL          string `yaml:"server_url"`
-	EnrollmentTokenEnv string `yaml:"enrollment_token_env"`
-	StatePath          string `yaml:"state_path"`
-	NodeName           string `yaml:"node_name"`
-	AdapterType        string `yaml:"adapter_type"`
-	CoreName           string `yaml:"core_name"`
-	ServiceUnit        string `yaml:"service_unit"`
-	HeartbeatEvery     string `yaml:"heartbeat_every"`
-	DesiredEvery       string `yaml:"desired_every"`
-	AllowHTTP          bool   `yaml:"allow_insecure_http"`
+	ServerURL             string `yaml:"server_url"`
+	EnrollmentTokenEnv    string `yaml:"enrollment_token_env"`
+	StatePath             string `yaml:"state_path"`
+	NodeName              string `yaml:"node_name"`
+	AdapterType           string `yaml:"adapter_type"`
+	CoreName              string `yaml:"core_name"`
+	ServiceUnit           string `yaml:"service_unit"`
+	HeartbeatEvery        string `yaml:"heartbeat_every"`
+	DesiredEvery          string `yaml:"desired_every"`
+	AllowHTTP             bool   `yaml:"allow_insecure_http"`
+	AuthListen            string `yaml:"auth_listen"`
+	AuthPath              string `yaml:"auth_path"`
+	AuthCachePath         string `yaml:"auth_cache_path"`
+	TrafficStatsURL       string `yaml:"traffic_stats_url"`
+	TrafficStatsSecretEnv string `yaml:"traffic_stats_secret_env"`
+	TrafficDatabasePath   string `yaml:"traffic_database_path"`
+	TrafficEvery          string `yaml:"traffic_every"`
 }
 
 func LoadAgent(path string) (Agent, error) {
@@ -49,10 +65,12 @@ func LoadAgent(path string) (Agent, error) {
 		return Agent{}, fmt.Errorf("read agent config: %w", err)
 	}
 	file := agentFile{
-		EnrollmentTokenEnv: "HYFLEET_ENROLLMENT_TOKEN",
-		StatePath:          "../var/agent-state.json",
-		HeartbeatEvery:     "15s",
-		DesiredEvery:       "10s",
+		EnrollmentTokenEnv:    "HYFLEET_ENROLLMENT_TOKEN",
+		StatePath:             "../var/agent-state.json",
+		HeartbeatEvery:        "15s",
+		DesiredEvery:          "10s",
+		TrafficStatsSecretEnv: "HYFLEET_HY2_STATS_SECRET",
+		TrafficEvery:          "30s",
 	}
 	if err := decodeYAML(data, &file); err != nil {
 		return Agent{}, fmt.Errorf("parse agent config: %w", err)
@@ -88,6 +106,37 @@ func LoadAgent(path string) (Agent, error) {
 	default:
 		return Agent{}, errors.New("unsupported adapter_type")
 	}
+	statePath := resolvePath(filepath.Dir(path), file.StatePath)
+	if file.AdapterType == "native_hysteria2" {
+		if file.AuthListen == "" {
+			file.AuthListen = "127.0.0.1:18081"
+		}
+		if file.AuthPath == "" {
+			file.AuthPath = "/hysteria/auth"
+		}
+		if file.AuthCachePath == "" {
+			file.AuthCachePath = filepath.Join(filepath.Dir(statePath), "auth-cache.json")
+		}
+		if file.TrafficStatsURL == "" {
+			file.TrafficStatsURL = "http://127.0.0.1:18082"
+		}
+		if file.TrafficDatabasePath == "" {
+			file.TrafficDatabasePath = filepath.Join(filepath.Dir(statePath), "agent.db")
+		}
+		if err := validateLoopbackListener(file.AuthListen); err != nil {
+			return Agent{}, err
+		}
+		if !strings.HasPrefix(file.AuthPath, "/") || strings.ContainsAny(file.AuthPath, "?#") ||
+			len(file.AuthPath) > 128 {
+			return Agent{}, errors.New("auth_path must be an absolute HTTP path without query or fragment")
+		}
+		if err := validateLoopbackHTTPOrigin(file.TrafficStatsURL); err != nil {
+			return Agent{}, err
+		}
+		if !environmentNamePattern.MatchString(file.TrafficStatsSecretEnv) {
+			return Agent{}, errors.New("traffic_stats_secret_env is not a valid environment variable name")
+		}
+	}
 	heartbeat, err := parseDuration("heartbeat_every", file.HeartbeatEvery, 5*time.Second, 5*time.Minute)
 	if err != nil {
 		return Agent{}, err
@@ -96,16 +145,71 @@ func LoadAgent(path string) (Agent, error) {
 	if err != nil {
 		return Agent{}, err
 	}
+	traffic, err := parseDuration("traffic_every", file.TrafficEvery, 10*time.Second, 5*time.Minute)
+	if err != nil {
+		return Agent{}, err
+	}
 	return Agent{
-		ServerURL:       serverURL.String(),
-		EnrollmentToken: os.Getenv(file.EnrollmentTokenEnv),
-		StatePath:       resolvePath(filepath.Dir(path), file.StatePath),
-		NodeName:        file.NodeName,
-		AdapterType:     file.AdapterType,
-		CoreName:        file.CoreName,
-		ServiceUnit:     file.ServiceUnit,
-		HeartbeatEvery:  heartbeat,
-		DesiredEvery:    desired,
-		AllowHTTP:       file.AllowHTTP,
+		ServerURL:           serverURL.String(),
+		EnrollmentToken:     os.Getenv(file.EnrollmentTokenEnv),
+		StatePath:           statePath,
+		NodeName:            file.NodeName,
+		AdapterType:         file.AdapterType,
+		CoreName:            file.CoreName,
+		ServiceUnit:         file.ServiceUnit,
+		HeartbeatEvery:      heartbeat,
+		DesiredEvery:        desired,
+		AllowHTTP:           file.AllowHTTP,
+		AuthListen:          file.AuthListen,
+		AuthPath:            file.AuthPath,
+		AuthCachePath:       resolveOptionalPath(filepath.Dir(path), file.AuthCachePath),
+		TrafficStatsURL:     file.TrafficStatsURL,
+		TrafficStatsSecret:  os.Getenv(file.TrafficStatsSecretEnv),
+		TrafficDatabasePath: resolveOptionalPath(filepath.Dir(path), file.TrafficDatabasePath),
+		TrafficEvery:        traffic,
 	}, nil
+}
+
+func validateLoopbackHTTPOrigin(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil ||
+		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("traffic_stats_url must be a plain HTTP loopback origin")
+	}
+	ip := net.ParseIP(parsed.Hostname())
+	if ip == nil || !ip.IsLoopback() {
+		return errors.New("traffic_stats_url must use a literal loopback IP")
+	}
+	_, port, err := net.SplitHostPort(parsed.Host)
+	if err != nil || port == "" {
+		return errors.New("traffic_stats_url must include a TCP port")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return errors.New("traffic_stats_url port must be between 1 and 65535")
+	}
+	return nil
+}
+
+func validateLoopbackListener(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port == "" {
+		return errors.New("auth_listen must be a loopback IP and TCP port")
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return errors.New("auth_listen must use a literal loopback IP")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return errors.New("auth_listen port must be between 1 and 65535")
+	}
+	return nil
+}
+
+func resolveOptionalPath(base, path string) string {
+	if path == "" {
+		return ""
+	}
+	return resolvePath(base, path)
 }

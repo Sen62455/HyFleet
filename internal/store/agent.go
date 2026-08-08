@@ -259,7 +259,8 @@ func (s *Store) RecordHeartbeat(
 			uptime_seconds = ?, cpu_percent = ?, memory_used_bytes = ?,
 			memory_total_bytes = ?, disk_used_bytes = ?, disk_total_bytes = ?,
 			network_rx_bps = ?, network_tx_bps = ?, load_1 = ?, load_5 = ?, load_15 = ?,
-			last_seen_at = ?, updated_at = ?
+			usage_enabled = ?, usage_available = ?, usage_outbox_batches = ?,
+			usage_error_code = ?, usage_sampled_at = ?, last_seen_at = ?, updated_at = ?
 		WHERE id = ? AND agent_installation_id = ?
 		RETURNING desired_version
 	`, status, heartbeat.Agent.Version, heartbeat.Agent.Protocol,
@@ -269,7 +270,10 @@ func (s *Store) RecordHeartbeat(
 		heartbeat.Host.DiskUsedBytes, heartbeat.Host.DiskTotalBytes,
 		heartbeat.Host.NetworkRXBPS, heartbeat.Host.NetworkTXBPS,
 		heartbeat.Host.Load1, heartbeat.Host.Load5, heartbeat.Host.Load15,
-		now.UnixMilli(), now.UnixMilli(), identity.NodeID, identity.InstallationID,
+		boolInt(heartbeat.Usage.Enabled), boolInt(heartbeat.Usage.Available),
+		heartbeat.Usage.OutboxBatches, heartbeat.Usage.LastErrorCode,
+		nullableUnixMilli(heartbeat.Usage.LastSampledAt), now.UnixMilli(), now.UnixMilli(),
+		identity.NodeID, identity.InstallationID,
 	).Scan(&desiredVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, ErrConflict
@@ -383,6 +387,36 @@ func (s *Store) AcknowledgeDesired(
 			UPDATE nodes SET applied_version = ?, status = ?, status_reason = '',
 				last_applied_at = ?, updated_at = ? WHERE id = ?
 		`, version, resultStatus, now.UnixMilli(), now.UnixMilli(), identity.NodeID)
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `
+				UPDATE user_credentials
+				SET state = 'retired', retired_at = ?
+				WHERE node_id = ? AND state = 'applied'
+				  AND id NOT IN (
+				      SELECT desired_credential_id FROM node_user_assignments WHERE node_id = ?
+				  )
+			`, now.UnixMilli(), identity.NodeID, identity.NodeID)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `
+				UPDATE user_credentials
+				SET state = 'applied', applied_at = COALESCE(applied_at, ?)
+				WHERE node_id = ? AND state = 'staged'
+				  AND id IN (
+				      SELECT desired_credential_id FROM node_user_assignments WHERE node_id = ?
+				  )
+			`, now.UnixMilli(), identity.NodeID, identity.NodeID)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `
+				UPDATE node_user_assignments
+				SET applied_credential_id = desired_credential_id,
+					applied_version = ?, state = 'applied', last_error_code = '',
+					last_error_message = '', last_attempt_at = ?, applied_at = ?, updated_at = ?
+				WHERE node_id = ? AND desired_version <= ?
+			`, version, now.UnixMilli(), now.UnixMilli(), now.UnixMilli(),
+				identity.NodeID, version)
+		}
 	} else {
 		if len(message) > 240 {
 			message = message[:240]
@@ -395,6 +429,14 @@ func (s *Store) AcknowledgeDesired(
 			UPDATE nodes SET status = 'degraded', status_reason = ?, updated_at = ?
 			WHERE id = ?
 		`, reason, now.UnixMilli(), identity.NodeID)
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `
+				UPDATE node_user_assignments
+				SET state = 'failed', last_error_code = ?, last_error_message = ?,
+					last_attempt_at = ?, updated_at = ?
+				WHERE node_id = ? AND desired_version <= ?
+			`, errorCode, message, now.UnixMilli(), now.UnixMilli(), identity.NodeID, version)
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("update desired acknowledgement: %w", err)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes, formatRate, percent, relativeTime } from "./format";
+import { formatBytes, formatDateTime, formatRate, percent, relativeTime } from "./format";
 
 describe("format helpers", () => {
   it("formats byte and network values", () => {
@@ -18,5 +18,11 @@ describe("format helpers", () => {
     const now = Date.parse("2026-08-07T12:00:00Z");
     expect(relativeTime("2026-08-07T11:59:30Z", now)).toBe("30 秒前");
     expect(relativeTime(null, now)).toBe("尚未连接");
+  });
+
+  it("renders empty and invalid expiry values safely", () => {
+    expect(formatDateTime(null)).toBe("永不过期");
+    expect(formatDateTime(null, false)).toBe("-");
+    expect(formatDateTime("not-a-date")).toBe("时间未知");
   });
 });

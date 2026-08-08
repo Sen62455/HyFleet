@@ -133,7 +133,7 @@ func runAgentUntilHeartbeat(t *testing.T, runner *Agent, count func() int, want 
 	}
 }
 
-func TestDesiredStateReadOnlyFoundationBehavior(t *testing.T) {
+func TestNativeDesiredStatePersistsAuthenticationCache(t *testing.T) {
 	nodeID := uuid.NewString()
 	installationID := uuid.NewString()
 	credential := "hya_" + nodeID + ".test-secret"
@@ -177,6 +177,7 @@ func TestDesiredStateReadOnlyFoundationBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() { _ = runner.Close() })
 
 	emptySnapshot := protocol.DesiredSnapshot{
 		SchemaVersion: 1, NodeID: nodeID, Version: 1, Adapter: "native_hysteria2",
@@ -192,11 +193,17 @@ func TestDesiredStateReadOnlyFoundationBehavior(t *testing.T) {
 		t.Fatalf("state after empty desired = %#v", runner.state)
 	}
 
+	userSecret := "generated-high-entropy-user-secret"
+	verifier := sha256.Sum256([]byte(userSecret))
+	userID := uuid.NewString()
 	userSnapshot := protocol.DesiredSnapshot{
 		SchemaVersion: 1, NodeID: nodeID, Version: 2, Adapter: "native_hysteria2",
 		Users: []protocol.DesiredUser{{
-			ID: uuid.NewString(), Username: "future-user", Enabled: true,
-			Credential: protocol.DesiredCredential{Ref: "opaque-ref", Fingerprint: "fingerprint"},
+			ID: userID, Username: "phase-two-user", Enabled: true, QuotaState: "unlimited",
+			Credential: protocol.DesiredCredential{
+				Ref: uuid.NewString(), Fingerprint: "fp_test",
+				VerifierSHA256: base64.RawURLEncoding.EncodeToString(verifier[:]),
+			},
 		}},
 		GeneratedAt: time.Now().UTC().Truncate(time.Millisecond),
 	}
@@ -206,14 +213,17 @@ func TestDesiredStateReadOnlyFoundationBehavior(t *testing.T) {
 	if err := runner.pollDesired(context.Background()); err != nil {
 		t.Fatalf("pollDesired(user) error = %v", err)
 	}
-	if runner.state.AppliedVersion != 1 {
-		t.Fatalf("Agent applied user state in Phase 1: version = %d", runner.state.AppliedVersion)
+	if runner.state.AppliedVersion != 2 {
+		t.Fatalf("Agent applied version = %d, want 2", runner.state.AppliedVersion)
+	}
+	if authenticatedID, ok := runner.authCache.Authenticate(userSecret, time.Now().UTC()); !ok || authenticatedID != userID {
+		t.Fatalf("cached authentication = (%q, %v), want (%q, true)", authenticatedID, ok, userID)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 	if len(acknowledgements) != 2 || acknowledgements[0].Status != "applied" ||
-		acknowledgements[1].Status != "failed" || acknowledgements[1].ErrorCode != "foundation_read_only" {
+		acknowledgements[1].Status != "applied" {
 		t.Fatalf("unexpected acknowledgements: %#v", acknowledgements)
 	}
 }

@@ -4,14 +4,14 @@ param(
     [string]$Architecture = "amd64",
 
     [ValidatePattern("^[0-9A-Za-z][0-9A-Za-z._-]*$")]
-    [string]$Version = "v0.1.0-dev"
+    [string]$Version = "v0.3.0-dev"
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$releaseRoot = Join-Path $repositoryRoot "output\releases"
+$releaseRoot = Join-Path (Join-Path $repositoryRoot "output") "releases"
 $packageName = "hyfleet-$Version-linux-$Architecture"
 $bundlePath = Join-Path $releaseRoot $packageName
 $archivePath = Join-Path $releaseRoot "$packageName.tar.gz"
@@ -130,17 +130,21 @@ foreach ($binaryName in @("hyfleet-server", "hyfleet-agent")) {
     }
 }
 
-foreach ($directory in @("bin", "configs", "deploy\systemd", "docs")) {
+foreach ($directory in @("bin", "configs", (Join-Path "deploy" "systemd"), "docs")) {
     New-Item -ItemType Directory -Force -Path (Join-Path $bundlePath $directory) | Out-Null
 }
 Copy-Item (Join-Path $binaryOutput "hyfleet-server") (Join-Path $bundlePath "bin")
 Copy-Item (Join-Path $binaryOutput "hyfleet-agent") (Join-Path $bundlePath "bin")
-Copy-Item (Join-Path $repositoryRoot "configs\*") (Join-Path $bundlePath "configs")
-Copy-Item (Join-Path $repositoryRoot "deploy\systemd\*") (Join-Path $bundlePath "deploy\systemd")
-Copy-Item (Join-Path $repositoryRoot "deploy\install-server.sh") (Join-Path $bundlePath "deploy")
-Copy-Item (Join-Path $repositoryRoot "deploy\install-agent.sh") (Join-Path $bundlePath "deploy")
-Copy-Item (Join-Path $repositoryRoot "deploy\diagnose.sh") (Join-Path $bundlePath "deploy")
-Copy-Item (Join-Path $repositoryRoot "docs\10-systemd-deployment.md") (Join-Path $bundlePath "docs")
+$configSource = Join-Path (Join-Path $repositoryRoot "configs") "*"
+$unitSource = Join-Path (Join-Path (Join-Path $repositoryRoot "deploy") "systemd") "*"
+Copy-Item $configSource (Join-Path $bundlePath "configs")
+Copy-Item $unitSource (Join-Path (Join-Path $bundlePath "deploy") "systemd")
+foreach ($scriptName in @("install-server.sh", "install-agent.sh", "diagnose.sh", "configure-hysteria.sh", "update-component.sh")) {
+    Copy-Item (Join-Path (Join-Path $repositoryRoot "deploy") $scriptName) (Join-Path $bundlePath "deploy")
+}
+foreach ($documentName in @("10-systemd-deployment.md", "11-phase-2-native-users.md", "12-phase-3-traffic-and-updates.md")) {
+    Copy-Item (Join-Path (Join-Path $repositoryRoot "docs") $documentName) (Join-Path $bundlePath "docs")
+}
 
 $textFiles = Get-ChildItem -Path $bundlePath -Recurse -File | Where-Object {
     $_.Extension -in @(".sh", ".service", ".yaml", ".example", ".md")
@@ -160,10 +164,19 @@ foreach ($textFile in $textFiles) {
     [System.Text.UTF8Encoding]::new($false)
 )
 
+$bundleRootPath = [System.IO.Path]::GetFullPath($bundlePath)
+if (-not $bundleRootPath.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+    $bundleRootPath += [System.IO.Path]::DirectorySeparatorChar
+}
+
 $checksumLines = Get-ChildItem -Path $bundlePath -Recurse -File |
     Sort-Object FullName |
     ForEach-Object {
-        $relativePath = [System.IO.Path]::GetRelativePath($bundlePath, $_.FullName).Replace("\", "/")
+        $fullPath = [System.IO.Path]::GetFullPath($_.FullName)
+        if (-not $fullPath.StartsWith($bundleRootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Package file is outside the bundle root: $fullPath"
+        }
+        $relativePath = $fullPath.Substring($bundleRootPath.Length).Replace("\", "/")
         $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
         "$hash  $relativePath"
     }

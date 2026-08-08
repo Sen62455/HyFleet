@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { LogOut, Plus, RefreshCw, Server } from "@lucide/vue";
+import { LogOut, Plus, RefreshCw, Server, UsersRound } from "@lucide/vue";
 import { NAlert, NButton, NIcon, NSpin, NTooltip, useDialog, useMessage } from "naive-ui";
 import { api, APIError } from "../../api";
 import BrandMark from "../../components/BrandMark.vue";
@@ -10,6 +10,7 @@ import EnrollmentDialog from "./EnrollmentDialog.vue";
 import NodeDetailDrawer from "./NodeDetailDrawer.vue";
 import NodeFormModal from "./NodeFormModal.vue";
 import NodeTable from "./NodeTable.vue";
+import UserDashboard from "../users/UserDashboard.vue";
 
 const props = defineProps<{ session: Session }>();
 const emit = defineEmits<{ logout: []; "session-expired": [] }>();
@@ -25,6 +26,7 @@ const saving = ref(false);
 const editingNode = ref<NodeRecord | null>(null);
 const detailNodeID = ref<string | null>(null);
 const enrollmentNode = ref<NodeRecord | null>(null);
+const activeView = ref<"nodes" | "users">("nodes");
 
 const onlineCount = computed(() => nodes.value.filter((node) => node.status === "online").length);
 const pendingCount = computed(() => nodes.value.filter((node) => node.status === "pending").length);
@@ -130,10 +132,24 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
       <div class="topbar__inner">
         <brand-mark compact />
         <nav class="topbar__nav" aria-label="主导航">
-          <a class="topbar__nav-item topbar__nav-item--active" href="#nodes">
+          <button
+            type="button"
+            class="topbar__nav-item"
+            :class="{ 'topbar__nav-item--active': activeView === 'nodes' }"
+            @click="activeView = 'nodes'"
+          >
             <server :size="16" aria-hidden="true" />
             <span>节点</span>
-          </a>
+          </button>
+          <button
+            type="button"
+            class="topbar__nav-item"
+            :class="{ 'topbar__nav-item--active': activeView === 'users' }"
+            @click="activeView = 'users'"
+          >
+            <users-round :size="16" aria-hidden="true" />
+            <span>用户</span>
+          </button>
         </nav>
         <div class="topbar__account">
           <span class="topbar__username">{{ props.session.admin.username }}</span>
@@ -149,7 +165,7 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
       </div>
     </header>
 
-    <main id="nodes" class="workspace">
+    <main v-if="activeView === 'nodes'" id="nodes" class="workspace">
       <div class="page-heading">
         <div>
           <h1>节点</h1>
@@ -215,6 +231,13 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
         />
       </section>
     </main>
+
+    <user-dashboard
+      v-else
+      :nodes="nodes"
+      @nodes-changed="loadNodes(true)"
+      @session-expired="emit('session-expired')"
+    />
 
     <node-form-modal
       v-model:show="formOpen"

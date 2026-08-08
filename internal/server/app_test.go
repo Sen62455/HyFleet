@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,6 +106,15 @@ func requireStatus(t *testing.T, response *httptest.ResponseRecorder, want int) 
 	t.Helper()
 	if response.Code != want {
 		t.Fatalf("status = %d, want %d; body = %s", response.Code, want, response.Body.String())
+	}
+}
+
+func requireCredentialNoStore(t *testing.T, response *httptest.ResponseRecorder) {
+	t.Helper()
+	if response.Header().Get("Cache-Control") != "no-store" ||
+		response.Header().Get("Pragma") != "no-cache" {
+		t.Fatalf("credential response cache headers = %q, %q",
+			response.Header().Get("Cache-Control"), response.Header().Get("Pragma"))
 	}
 }
 
@@ -324,6 +334,99 @@ func TestAgentEnrollmentHeartbeatAndDesiredState(t *testing.T) {
 	}
 }
 
+func TestAgentTrafficAndOnlineEndpoints(t *testing.T) {
+	app := newTestApp(t)
+	app.bootstrap(t)
+	createdNode := app.request(t, http.MethodPost, "/api/v1/nodes", map[string]any{
+		"name": "usage-node", "provider": "local", "region": "test",
+		"adapter_type": "native_hysteria2",
+	}, app.csrf, "")
+	requireStatus(t, createdNode, http.StatusCreated)
+	var node nodeResponse
+	decodeResponse(t, createdNode, &node)
+
+	tokenResponse := app.request(t, http.MethodPost, "/api/v1/nodes/"+node.ID+"/enrollment-token", map[string]any{}, app.csrf, "")
+	requireStatus(t, tokenResponse, http.StatusCreated)
+	var token struct {
+		EnrollmentToken string `json:"enrollment_token"`
+	}
+	decodeResponse(t, tokenResponse, &token)
+	installationID := cryptoutil.NewID()
+	enrollmentRequestID := cryptoutil.NewID()
+	enrolled := agentRequest(t, app.handler, http.MethodPost, "/agent/v1/enroll", protocol.EnrollRequest{
+		EnrollmentToken: token.EnrollmentToken,
+		InstallationID:  installationID,
+		RequestID:       enrollmentRequestID,
+		AgentVersion:    "v0.3.0-test",
+		OS:              "linux",
+		OSVersion:       "24.04",
+		Architecture:    "amd64",
+		Capabilities:    []string{"traffic_outbox", "online_users", "kick_user"},
+		Adapter:         protocol.EnrollmentAdapter{Type: "native_hysteria2", CoreName: "hysteria"},
+	}, "", enrollmentRequestID)
+	requireStatus(t, enrolled, http.StatusOK)
+	var enrollment protocol.EnrollResponse
+	decodeResponse(t, enrolled, &enrollment)
+
+	createdUser := app.request(t, http.MethodPost, "/api/v1/users", map[string]any{
+		"username": "usage-user", "enabled": true, "node_ids": []string{node.ID},
+	}, app.csrf, "")
+	requireStatus(t, createdUser, http.StatusCreated)
+	var userPayload struct {
+		User userResponse `json:"user"`
+	}
+	decodeResponse(t, createdUser, &userPayload)
+	userID := userPayload.User.ID
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	batch := protocol.TrafficBatch{
+		ID:             cryptoutil.NewID(),
+		InstallationID: installationID,
+		SourceEpoch:    cryptoutil.NewID(),
+		Sequence:       1,
+		SampledAt:      now,
+		Items: []protocol.TrafficDelta{{
+			UserID: userID, UploadBytes: 256, DownloadBytes: 512,
+		}},
+	}
+	trafficBody := protocol.TrafficBatchesRequest{Batches: []protocol.TrafficBatch{batch}}
+	traffic := agentRequest(t, app.handler, http.MethodPost, "/agent/v1/traffic-batches",
+		trafficBody, enrollment.NodeCredential, cryptoutil.NewID())
+	requireStatus(t, traffic, http.StatusOK)
+	var trafficResult protocol.TrafficBatchesResponse
+	decodeResponse(t, traffic, &trafficResult)
+	if len(trafficResult.Results) != 1 || trafficResult.Results[0].Status != "accepted" {
+		t.Fatalf("traffic result = %#v, want accepted", trafficResult.Results)
+	}
+
+	duplicate := agentRequest(t, app.handler, http.MethodPost, "/agent/v1/traffic-batches",
+		trafficBody, enrollment.NodeCredential, cryptoutil.NewID())
+	requireStatus(t, duplicate, http.StatusOK)
+	decodeResponse(t, duplicate, &trafficResult)
+	if len(trafficResult.Results) != 1 || trafficResult.Results[0].Status != "duplicate" {
+		t.Fatalf("duplicate traffic result = %#v, want duplicate", trafficResult.Results)
+	}
+
+	online := agentRequest(t, app.handler, http.MethodPost, "/agent/v1/online-snapshot", protocol.OnlineSnapshotRequest{
+		SnapshotID: installationID, InstallationID: installationID, SampledAt: now,
+		Users: []protocol.OnlineUser{{UserID: userID, Connections: 3}},
+	}, enrollment.NodeCredential, cryptoutil.NewID())
+	requireStatus(t, online, http.StatusOK)
+	var onlineResult protocol.OnlineSnapshotResponse
+	decodeResponse(t, online, &onlineResult)
+	if !onlineResult.Accepted {
+		t.Fatal("online snapshot was not accepted")
+	}
+
+	user, err := app.store.GetUser(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("GetUser() error = %v", err)
+	}
+	if user.TrafficUploadBytes != 256 || user.TrafficDownloadBytes != 512 ||
+		len(user.Assignments) != 1 || user.Assignments[0].OnlineConnections != 3 {
+		t.Fatalf("usage state = %#v", user)
+	}
+}
+
 func agentRequest(t *testing.T, handler http.Handler, method, path string, body any, credential, requestID string) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader io.Reader
@@ -361,5 +464,165 @@ func TestLoginRateLimit(t *testing.T) {
 			want = http.StatusTooManyRequests
 		}
 		requireStatus(t, response, want)
+	}
+}
+
+func TestUserLifecycleAPI(t *testing.T) {
+	app := newTestApp(t)
+	app.bootstrap(t)
+
+	createNode := func(name, adapter string) nodeResponse {
+		t.Helper()
+		response := app.request(t, http.MethodPost, "/api/v1/nodes", map[string]any{
+			"name": name, "provider": "Test", "region": "Test",
+			"adapter_type": adapter,
+		}, app.csrf, "http://hyfleet.test")
+		requireStatus(t, response, http.StatusCreated)
+		var node nodeResponse
+		decodeResponse(t, response, &node)
+		return node
+	}
+	nativeOne := createNode("native-one", "native_hysteria2")
+	nativeTwo := createNode("native-two", "native_hysteria2")
+	sui := createNode("s-ui", "s_ui")
+
+	withoutCSRF := app.request(t, http.MethodPost, "/api/v1/users", map[string]any{
+		"username": "alice", "enabled": true,
+	}, "", "")
+	requireStatus(t, withoutCSRF, http.StatusForbidden)
+
+	created := app.request(t, http.MethodPost, "/api/v1/users", map[string]any{
+		"username": "alice", "display_name": "Alice", "notes": "first user",
+		"enabled": true, "traffic_limit_bytes": 1000, "node_ids": []string{nativeOne.ID},
+	}, app.csrf, "http://hyfleet.test")
+	requireStatus(t, created, http.StatusCreated)
+	requireCredentialNoStore(t, created)
+	var createdPayload struct {
+		User        userResponse         `json:"user"`
+		Credentials []credentialResponse `json:"credentials"`
+	}
+	decodeResponse(t, created, &createdPayload)
+	if createdPayload.User.Username != "alice" || createdPayload.User.Status != "active" ||
+		createdPayload.User.TrafficLimitBytes != 1000 || len(createdPayload.User.Assignments) != 1 ||
+		len(createdPayload.Credentials) != 1 {
+		t.Fatalf("unexpected created user: %#v", createdPayload)
+	}
+	firstSecret := createdPayload.Credentials[0].Credential
+	if firstSecret == "" || createdPayload.Credentials[0].NodeID != nativeOne.ID {
+		t.Fatalf("unexpected created credential: %#v", createdPayload.Credentials[0])
+	}
+
+	duplicate := app.request(t, http.MethodPost, "/api/v1/users", map[string]any{
+		"username": "ALICE", "enabled": true,
+	}, app.csrf, "")
+	requireStatus(t, duplicate, http.StatusConflict)
+
+	listed := app.request(t, http.MethodGet, "/api/v1/users", nil, "", "")
+	requireStatus(t, listed, http.StatusOK)
+	listedBody := listed.Body.String()
+	for _, forbidden := range []string{"verifier_sha256", "secret_ciphertext", firstSecret} {
+		if strings.Contains(listedBody, forbidden) {
+			t.Fatalf("user list leaked %q: %s", forbidden, listedBody)
+		}
+	}
+	var list struct {
+		Users []userResponse `json:"users"`
+	}
+	decodeResponse(t, listed, &list)
+	if len(list.Users) != 1 || list.Users[0].ID != createdPayload.User.ID {
+		t.Fatalf("unexpected users list: %#v", list.Users)
+	}
+
+	expiresAt := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	updated := app.request(t, http.MethodPut, "/api/v1/users/"+createdPayload.User.ID, map[string]any{
+		"username": "alice", "display_name": "Alice Updated", "notes": "updated",
+		"enabled": false, "expires_at": expiresAt,
+	}, app.csrf, "")
+	requireStatus(t, updated, http.StatusOK)
+	var updatedUser userResponse
+	decodeResponse(t, updated, &updatedUser)
+	if updatedUser.Enabled || updatedUser.Status != "disabled" || updatedUser.ExpiresAt == nil {
+		t.Fatalf("unexpected updated user: %#v", updatedUser)
+	}
+	if updatedUser.TrafficLimitBytes != 1000 {
+		t.Fatalf("omitted traffic limit was not preserved: %#v", updatedUser)
+	}
+	invalidLimit := app.request(t, http.MethodPut, "/api/v1/users/"+createdPayload.User.ID, map[string]any{
+		"username": "alice", "display_name": "Alice Updated", "notes": "updated",
+		"enabled": false, "expires_at": expiresAt, "traffic_limit_bytes": -1,
+	}, app.csrf, "")
+	requireStatus(t, invalidLimit, http.StatusUnprocessableEntity)
+
+	assigned := app.request(t, http.MethodPost,
+		"/api/v1/users/"+createdPayload.User.ID+"/assignments", map[string]any{
+			"node_id": nativeTwo.ID, "traffic_limit_bytes": 300,
+		}, app.csrf, "")
+	requireStatus(t, assigned, http.StatusCreated)
+	requireCredentialNoStore(t, assigned)
+	var assignedPayload struct {
+		User       userResponse       `json:"user"`
+		Credential credentialResponse `json:"credential"`
+	}
+	decodeResponse(t, assigned, &assignedPayload)
+	if assignedPayload.Credential.Credential == "" ||
+		assignedPayload.Credential.Credential == firstSecret ||
+		len(assignedPayload.User.Assignments) != 2 || assignedPayload.Credential.NodeID != nativeTwo.ID {
+		t.Fatalf("unexpected second assignment: %#v", assignedPayload)
+	}
+
+	unsupported := app.request(t, http.MethodPost,
+		"/api/v1/users/"+createdPayload.User.ID+"/assignments", map[string]any{
+			"node_id": sui.ID,
+		}, app.csrf, "")
+	requireStatus(t, unsupported, http.StatusUnprocessableEntity)
+
+	disabled := app.request(t, http.MethodPut,
+		"/api/v1/users/"+createdPayload.User.ID+"/assignments/"+nativeTwo.ID,
+		map[string]any{"enabled": false, "traffic_limit_bytes": 250}, app.csrf, "")
+	requireStatus(t, disabled, http.StatusOK)
+	var disabledUser userResponse
+	decodeResponse(t, disabled, &disabledUser)
+	if len(disabledUser.Assignments) != 2 || disabledUser.Assignments[1].Enabled ||
+		disabledUser.Assignments[1].TrafficLimitBytes != 250 {
+		t.Fatalf("assignment was not disabled: %#v", disabledUser.Assignments)
+	}
+
+	kicked := app.request(t, http.MethodPost, "/api/v1/users/"+createdPayload.User.ID+"/kick",
+		map[string]any{}, app.csrf, "")
+	requireStatus(t, kicked, http.StatusAccepted)
+	var kickResult struct {
+		RequestedNodes int `json:"requested_nodes"`
+	}
+	decodeResponse(t, kicked, &kickResult)
+	if kickResult.RequestedNodes != 2 {
+		t.Fatalf("requested kick nodes = %d, want 2", kickResult.RequestedNodes)
+	}
+
+	revealPath := "/api/v1/users/" + createdPayload.User.ID + "/assignments/" + nativeOne.ID + "/credential"
+	revealWithoutCSRF := app.request(t, http.MethodPost, revealPath, map[string]any{}, "", "")
+	requireStatus(t, revealWithoutCSRF, http.StatusForbidden)
+	revealed := app.request(t, http.MethodPost, revealPath, map[string]any{}, app.csrf, "")
+	requireStatus(t, revealed, http.StatusOK)
+	requireCredentialNoStore(t, revealed)
+	var revealedCredential credentialResponse
+	decodeResponse(t, revealed, &revealedCredential)
+	if revealedCredential.Credential != firstSecret {
+		t.Fatalf("revealed credential = %q, want original", revealedCredential.Credential)
+	}
+
+	unassigned := app.request(t, http.MethodDelete,
+		"/api/v1/users/"+createdPayload.User.ID+"/assignments/"+nativeTwo.ID,
+		nil, app.csrf, "")
+	requireStatus(t, unassigned, http.StatusNoContent)
+
+	archived := app.request(t, http.MethodDelete, "/api/v1/users/"+createdPayload.User.ID, nil, app.csrf, "")
+	requireStatus(t, archived, http.StatusNoContent)
+	notFound := app.request(t, http.MethodGet, "/api/v1/users/"+createdPayload.User.ID, nil, "", "")
+	requireStatus(t, notFound, http.StatusNotFound)
+	listed = app.request(t, http.MethodGet, "/api/v1/users", nil, "", "")
+	requireStatus(t, listed, http.StatusOK)
+	decodeResponse(t, listed, &list)
+	if len(list.Users) != 0 {
+		t.Fatalf("users after archive = %d, want 0", len(list.Users))
 	}
 }

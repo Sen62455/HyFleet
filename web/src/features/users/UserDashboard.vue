@@ -1,0 +1,395 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { Plus, RefreshCw, UsersRound } from "@lucide/vue";
+import { NAlert, NButton, NIcon, NSpin, NTooltip, useDialog, useMessage } from "naive-ui";
+import { api, APIError } from "../../api";
+import type {
+  NodeRecord,
+  UserAssignment,
+  UserCredential,
+  UserInput,
+  UserRecord,
+} from "../../types";
+import CredentialDialog from "./CredentialDialog.vue";
+import UserDetailDrawer from "./UserDetailDrawer.vue";
+import UserFormModal from "./UserFormModal.vue";
+import UserTable from "./UserTable.vue";
+
+const props = defineProps<{ nodes: NodeRecord[] }>();
+const emit = defineEmits<{ "session-expired": []; "nodes-changed": [] }>();
+const message = useMessage();
+const dialog = useDialog();
+
+const users = ref<UserRecord[]>([]);
+const loading = ref(true);
+const refreshing = ref(false);
+const loadError = ref("");
+const formOpen = ref(false);
+const saving = ref(false);
+const editingUser = ref<UserRecord | null>(null);
+const detailUserID = ref<string | null>(null);
+const working = ref("");
+const credentialOpen = ref(false);
+const credentialTitle = ref("用户凭据");
+const credentials = ref<UserCredential[]>([]);
+const credentialReturnUserID = ref<string | null>(null);
+
+const nativeNodes = computed(() => props.nodes.filter((node) => node.adapter_type === "native_hysteria2"));
+const onlineConnections = computed(() => users.value.reduce((total, user) => total + user.online_connections, 0));
+const limitedCount = computed(() => users.value.filter((user) => user.quota_state === "limited").length);
+const unavailableCount = computed(() => users.value.filter((user) => user.status !== "active").length);
+const detailUser = computed(() => users.value.find((user) => user.id === detailUserID.value) ?? null);
+
+function handleAPIError(error: unknown, fallback: string) {
+  if (error instanceof APIError && error.status === 401) {
+    emit("session-expired");
+    return;
+  }
+  const messages: Record<string, string> = {
+    user_conflict: "用户名或节点分配已经存在。",
+    native_nodes_only: "当前阶段只支持分配原生 Hysteria2 节点。",
+    user_resource_not_found: "用户或节点分配已不存在。",
+  };
+  message.error(error instanceof APIError ? (messages[error.code] ?? error.message) : fallback);
+}
+
+async function loadUsers(silent = false) {
+  if (refreshing.value) return;
+  if (!silent) loading.value = users.value.length === 0;
+  refreshing.value = true;
+  loadError.value = "";
+  try {
+    users.value = await api.listUsers();
+  } catch (error) {
+    if (error instanceof APIError && error.status === 401) {
+      emit("session-expired");
+      return;
+    }
+    loadError.value = error instanceof APIError ? error.message : "用户列表加载失败。";
+  } finally {
+    loading.value = false;
+    refreshing.value = false;
+  }
+}
+
+function openCreate() {
+  editingUser.value = null;
+  formOpen.value = true;
+}
+
+function openEdit(user: UserRecord) {
+  editingUser.value = user;
+  formOpen.value = true;
+}
+
+function showCredentials(title: string, items: UserCredential[], returnUserID: string | null) {
+  if (items.length === 0) return false;
+  credentialTitle.value = title;
+  credentials.value = items;
+  credentialReturnUserID.value = returnUserID;
+  detailUserID.value = null;
+  credentialOpen.value = true;
+  return true;
+}
+
+function setCredentialOpen(show: boolean) {
+  credentialOpen.value = show;
+  if (!show && credentialReturnUserID.value) {
+    detailUserID.value = credentialReturnUserID.value;
+    credentialReturnUserID.value = null;
+  }
+}
+
+async function saveUser(input: UserInput) {
+  saving.value = true;
+  try {
+    if (editingUser.value) {
+      const saved = await api.updateUser(editingUser.value.id, input);
+      detailUserID.value = saved.id;
+      message.success("用户已更新");
+    } else {
+      const result = await api.createUser(input);
+      if (!showCredentials("新用户凭据", result.credentials, result.user.id)) {
+        detailUserID.value = result.user.id;
+      }
+      message.success("用户已添加");
+    }
+    formOpen.value = false;
+    editingUser.value = null;
+    await loadUsers(true);
+    emit("nodes-changed");
+  } catch (error) {
+    handleAPIError(error, "用户保存失败。");
+  } finally {
+    saving.value = false;
+  }
+}
+
+function archiveUser(user: UserRecord) {
+  dialog.warning({
+    title: "归档用户",
+    content: `确认归档“${user.display_name || user.username}”？所有节点上的凭据都将被撤销。`,
+    positiveText: "归档",
+    negativeText: "取消",
+    positiveButtonProps: { type: "error" },
+    async onPositiveClick() {
+      try {
+        await api.archiveUser(user.id);
+        if (detailUserID.value === user.id) detailUserID.value = null;
+        await loadUsers(true);
+        emit("nodes-changed");
+        message.success("用户已归档");
+      } catch (error) {
+        handleAPIError(error, "用户归档失败。");
+        return false;
+      }
+      return true;
+    },
+  });
+}
+
+function handleAction(action: "edit" | "manage" | "archive", user: UserRecord) {
+  if (action === "edit") openEdit(user);
+  if (action === "manage") detailUserID.value = user.id;
+  if (action === "archive") archiveUser(user);
+}
+
+function userInput(user: UserRecord, enabled = user.enabled): UserInput {
+  return {
+    username: user.username,
+    display_name: user.display_name,
+    notes: user.notes,
+    enabled,
+    expires_at: user.expires_at,
+    traffic_limit_bytes: user.traffic_limit_bytes,
+    node_ids: [],
+  };
+}
+
+async function toggleUser(user: UserRecord, enabled: boolean) {
+  working.value = `user:${user.id}`;
+  try {
+    await api.updateUser(user.id, userInput(user, enabled));
+    await loadUsers(true);
+    emit("nodes-changed");
+    message.success(enabled ? "用户已启用" : "用户已停用");
+  } catch (error) {
+    handleAPIError(error, "用户状态更新失败。");
+  } finally {
+    working.value = "";
+  }
+}
+
+async function assignUser(user: UserRecord, nodeId: string, trafficLimitBytes: number) {
+  working.value = `assign:${user.id}`;
+  try {
+    const result = await api.assignUser(user.id, nodeId, trafficLimitBytes);
+    showCredentials("新节点凭据", [result.credential], user.id);
+    await loadUsers(true);
+    emit("nodes-changed");
+    message.success("节点已分配");
+  } catch (error) {
+    handleAPIError(error, "节点分配失败。");
+  } finally {
+    working.value = "";
+  }
+}
+
+async function toggleAssignment(user: UserRecord, assignment: UserAssignment, enabled: boolean) {
+  working.value = `toggle:${assignment.id}`;
+  try {
+    await api.updateAssignment(user.id, assignment.node_id, { enabled });
+    await loadUsers(true);
+    emit("nodes-changed");
+    message.success(enabled ? "节点分配已启用" : "节点分配已停用");
+  } catch (error) {
+    handleAPIError(error, "节点分配状态更新失败。");
+  } finally {
+    working.value = "";
+  }
+}
+
+async function updateAssignmentLimit(user: UserRecord, assignment: UserAssignment, trafficLimitBytes: number) {
+  working.value = `limit:${assignment.id}`;
+  try {
+    await api.updateAssignment(user.id, assignment.node_id, { traffic_limit_bytes: trafficLimitBytes });
+    await loadUsers(true);
+    emit("nodes-changed");
+    message.success("节点额度已更新");
+  } catch (error) {
+    handleAPIError(error, "节点额度更新失败。");
+  } finally {
+    working.value = "";
+  }
+}
+
+function kickUser(user: UserRecord, assignment?: UserAssignment) {
+  const target = assignment ? `“${assignment.node_name}”` : "所有已分配节点";
+  dialog.warning({
+    title: "踢下线",
+    content: `确认将“${user.display_name || user.username}”从${target}断开？用户在账户和额度允许时仍可重新连接。`,
+    positiveText: "踢下线",
+    negativeText: "取消",
+    async onPositiveClick() {
+      working.value = assignment ? `kick:${assignment.id}` : `kick:${user.id}`;
+      try {
+        const result = await api.kickUser(user.id, assignment?.node_id ?? "");
+        await loadUsers(true);
+        emit("nodes-changed");
+        message.success(`已向 ${result.requested_nodes} 个节点排队踢线指令`);
+      } catch (error) {
+        handleAPIError(error, "踢线指令提交失败。");
+        return false;
+      } finally {
+        working.value = "";
+      }
+      return true;
+    },
+  });
+}
+
+function unassignUser(user: UserRecord, assignment: UserAssignment) {
+  dialog.warning({
+    title: "取消节点分配",
+    content: `确认从“${assignment.node_name}”移除该用户？对应凭据会立即撤销。`,
+    positiveText: "取消分配",
+    negativeText: "返回",
+    positiveButtonProps: { type: "error" },
+    async onPositiveClick() {
+      working.value = `unassign:${assignment.id}`;
+      try {
+        await api.unassignUser(user.id, assignment.node_id);
+        await loadUsers(true);
+        emit("nodes-changed");
+        message.success("节点分配已取消");
+      } catch (error) {
+        handleAPIError(error, "取消节点分配失败。");
+        return false;
+      } finally {
+        working.value = "";
+      }
+      return true;
+    },
+  });
+}
+
+async function revealCredential(user: UserRecord, assignment: UserAssignment) {
+  working.value = `reveal:${assignment.id}`;
+  try {
+    const credential = await api.revealCredential(user.id, assignment.node_id);
+    showCredentials(`${assignment.node_name} 凭据`, [credential], user.id);
+  } catch (error) {
+    handleAPIError(error, "凭据读取失败。");
+  } finally {
+    working.value = "";
+  }
+}
+
+let refreshTimer: number | undefined;
+onMounted(() => {
+  loadUsers();
+  refreshTimer = window.setInterval(() => {
+    if (document.visibilityState === "visible") loadUsers(true);
+  }, 15_000);
+});
+onBeforeUnmount(() => window.clearInterval(refreshTimer));
+</script>
+
+<template>
+  <main id="users" class="workspace">
+    <div class="page-heading">
+      <div>
+        <h1>用户</h1>
+        <p>账户状态、到期时间与节点授权</p>
+      </div>
+      <div class="page-heading__actions">
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button circle secondary aria-label="刷新用户" :loading="refreshing" @click="loadUsers()">
+              <template #icon><n-icon><refresh-cw /></n-icon></template>
+            </n-button>
+          </template>
+          刷新
+        </n-tooltip>
+        <n-button type="primary" @click="openCreate">
+          <template #icon><n-icon><plus /></n-icon></template>
+          添加用户
+        </n-button>
+      </div>
+    </div>
+
+    <section class="fleet-summary" aria-label="用户摘要">
+      <div class="fleet-summary__item">
+        <span>全部用户</span>
+        <strong>{{ users.length }}</strong>
+      </div>
+      <div class="fleet-summary__item fleet-summary__item--healthy">
+        <span>在线设备</span>
+        <strong>{{ onlineConnections }}</strong>
+      </div>
+      <div class="fleet-summary__item fleet-summary__item--warning">
+        <span>额度用尽</span>
+        <strong>{{ limitedCount }}</strong>
+      </div>
+      <div class="fleet-summary__item fleet-summary__item--danger">
+        <span>不可用账户</span>
+        <strong>{{ unavailableCount }}</strong>
+      </div>
+    </section>
+
+    <n-alert v-if="loadError" type="error" :show-icon="false" class="workspace-alert">
+      <div class="alert-row">
+        <span>{{ loadError }}</span>
+        <n-button text type="error" @click="loadUsers()">重新加载</n-button>
+      </div>
+    </n-alert>
+
+    <section class="node-surface" aria-label="用户列表">
+      <div v-if="loading" class="surface-state"><n-spin :size="28" /></div>
+      <div v-else-if="users.length === 0" class="surface-state surface-state--empty">
+        <users-round :size="28" :stroke-width="1.7" aria-hidden="true" />
+        <strong>尚未添加用户</strong>
+        <n-button type="primary" size="small" @click="openCreate">
+          <template #icon><n-icon><plus /></n-icon></template>
+          添加用户
+        </n-button>
+      </div>
+      <user-table
+        v-else
+        :users="users"
+        @select="detailUserID = $event.id"
+        @action="handleAction"
+      />
+    </section>
+  </main>
+
+  <user-form-modal
+    v-model:show="formOpen"
+    :user="editingUser"
+    :native-nodes="nativeNodes"
+    :saving="saving"
+    @submit="saveUser"
+  />
+  <user-detail-drawer
+    :show="detailUser !== null"
+    :user="detailUser"
+    :native-nodes="nativeNodes"
+    :working="working"
+    @update:show="!$event && (detailUserID = null)"
+    @edit="openEdit"
+    @toggle-user="toggleUser"
+    @assign="assignUser"
+    @toggle-assignment="toggleAssignment"
+    @update-assignment-limit="updateAssignmentLimit"
+    @kick-user="kickUser"
+    @kick-assignment="kickUser"
+    @unassign="unassignUser"
+    @reveal="revealCredential"
+  />
+  <credential-dialog
+    :show="credentialOpen"
+    :title="credentialTitle"
+    :credentials="credentials"
+    @update:show="setCredentialOpen"
+  />
+</template>

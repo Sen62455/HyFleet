@@ -137,7 +137,12 @@ func validHeartbeat(input protocol.HeartbeatRequest) bool {
 	if input.Host.CPUPercent > 100 || input.Host.MemoryUsedBytes < 0 ||
 		input.Host.MemoryTotalBytes < input.Host.MemoryUsedBytes || input.Host.DiskUsedBytes < 0 ||
 		input.Host.DiskTotalBytes < input.Host.DiskUsedBytes || input.Host.NetworkRXBPS < 0 ||
-		input.Host.NetworkTXBPS < 0 || input.SampledAt.IsZero() {
+		input.Host.NetworkTXBPS < 0 || input.SampledAt.IsZero() ||
+		input.Usage.OutboxBatches < 0 || input.Usage.OutboxBatches > 1000000 ||
+		len(input.Usage.LastErrorCode) > 64 {
+		return false
+	}
+	if input.Usage.LastSampledAt != nil && input.Usage.LastSampledAt.IsZero() {
 		return false
 	}
 	return true

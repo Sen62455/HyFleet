@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,40 +14,54 @@ import (
 )
 
 type Node struct {
-	ID                  string
-	Name                string
-	Provider            string
-	Region              string
-	AdapterType         string
-	Enabled             bool
-	Status              string
-	StatusReason        string
-	DesiredVersion      int64
-	AppliedVersion      int64
-	AgentInstallationID string
-	AgentVersion        string
-	ProtocolVersion     int
-	OSName              string
-	OSVersion           string
-	Architecture        string
-	CoreName            string
-	CoreVersion         string
-	CoreRunning         bool
-	UptimeSeconds       int64
-	CPUPercent          float64
-	MemoryUsedBytes     int64
-	MemoryTotalBytes    int64
-	DiskUsedBytes       int64
-	DiskTotalBytes      int64
-	NetworkRXBPS        int64
-	NetworkTXBPS        int64
-	Load1               float64
-	Load5               float64
-	Load15              float64
-	LastSeenAt          *time.Time
-	LastAppliedAt       *time.Time
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	ID                       string
+	Name                     string
+	Provider                 string
+	Region                   string
+	AdapterType              string
+	Enabled                  bool
+	Status                   string
+	StatusReason             string
+	DesiredVersion           int64
+	AppliedVersion           int64
+	AgentInstallationID      string
+	AgentVersion             string
+	ProtocolVersion          int
+	OSName                   string
+	OSVersion                string
+	Architecture             string
+	CoreName                 string
+	CoreVersion              string
+	CoreRunning              bool
+	UptimeSeconds            int64
+	CPUPercent               float64
+	MemoryUsedBytes          int64
+	MemoryTotalBytes         int64
+	DiskUsedBytes            int64
+	DiskTotalBytes           int64
+	NetworkRXBPS             int64
+	NetworkTXBPS             int64
+	Load1                    float64
+	Load5                    float64
+	Load15                   float64
+	LastSeenAt               *time.Time
+	LastAppliedAt            *time.Time
+	UsageEnabled             bool
+	UsageAvailable           bool
+	UsageOutboxBatches       int
+	UsageErrorCode           string
+	UsageSampledAt           *time.Time
+	TrafficUploadBytes       int64
+	TrafficDownloadBytes     int64
+	TrafficUnattributedBytes int64
+	TrafficLastReportAt      *time.Time
+	OnlineUsers              int
+	OnlineConnections        int
+	OnlineUnknownUsers       int
+	OnlineSampledAt          *time.Time
+	OnlineLastReportAt       *time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 type NewNode struct {
@@ -75,7 +90,11 @@ const nodeColumns = `
 	core_name, core_version, core_running, uptime_seconds, cpu_percent,
 	memory_used_bytes, memory_total_bytes, disk_used_bytes, disk_total_bytes,
 	network_rx_bps, network_tx_bps, load_1, load_5, load_15,
-	last_seen_at, last_applied_at, created_at, updated_at
+	last_seen_at, last_applied_at, usage_enabled, usage_available,
+	usage_outbox_batches, usage_error_code, usage_sampled_at,
+	traffic_upload_bytes, traffic_download_bytes, traffic_unattributed_bytes,
+	traffic_last_report_at, online_users, online_connections, online_unknown_users,
+	online_sampled_at, online_last_report_at, created_at, updated_at
 `
 
 type rowScanner interface {
@@ -84,8 +103,9 @@ type rowScanner interface {
 
 func scanNode(row rowScanner) (Node, error) {
 	var node Node
-	var enabled, coreRunning int
-	var lastSeen, lastApplied sql.NullInt64
+	var enabled, coreRunning, usageEnabled, usageAvailable int
+	var lastSeen, lastApplied, usageSampled, trafficLastReport sql.NullInt64
+	var onlineSampled, onlineLastReport sql.NullInt64
 	var created, updated int64
 	err := row.Scan(
 		&node.ID, &node.Name, &node.Provider, &node.Region, &node.AdapterType,
@@ -96,15 +116,26 @@ func scanNode(row rowScanner) (Node, error) {
 		&node.CPUPercent, &node.MemoryUsedBytes, &node.MemoryTotalBytes,
 		&node.DiskUsedBytes, &node.DiskTotalBytes, &node.NetworkRXBPS,
 		&node.NetworkTXBPS, &node.Load1, &node.Load5, &node.Load15,
-		&lastSeen, &lastApplied, &created, &updated,
+		&lastSeen, &lastApplied, &usageEnabled, &usageAvailable,
+		&node.UsageOutboxBatches, &node.UsageErrorCode, &usageSampled,
+		&node.TrafficUploadBytes, &node.TrafficDownloadBytes,
+		&node.TrafficUnattributedBytes, &trafficLastReport,
+		&node.OnlineUsers, &node.OnlineConnections, &node.OnlineUnknownUsers,
+		&onlineSampled, &onlineLastReport, &created, &updated,
 	)
 	if err != nil {
 		return Node{}, err
 	}
 	node.Enabled = enabled == 1
 	node.CoreRunning = coreRunning == 1
+	node.UsageEnabled = usageEnabled == 1
+	node.UsageAvailable = usageAvailable == 1
 	node.LastSeenAt = nullableTime(lastSeen)
 	node.LastAppliedAt = nullableTime(lastApplied)
+	node.UsageSampledAt = nullableTime(usageSampled)
+	node.TrafficLastReportAt = nullableTime(trafficLastReport)
+	node.OnlineSampledAt = nullableTime(onlineSampled)
+	node.OnlineLastReportAt = nullableTime(onlineLastReport)
 	node.CreatedAt = unixTime(created)
 	node.UpdatedAt = unixTime(updated)
 	return node, nil
@@ -222,6 +253,15 @@ func (s *Store) UpdateNode(ctx context.Context, id string, input UpdateNode) (No
 		_ = tx.Rollback()
 		return Node{}, err
 	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE node_user_assignments
+		SET desired_version = ?, state = 'pending', last_error_code = '',
+			last_error_message = '', updated_at = ?
+		WHERE node_id = ?
+	`, version, input.Now.UnixMilli(), id); err != nil {
+		_ = tx.Rollback()
+		return Node{}, fmt.Errorf("mark node assignments pending: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return Node{}, fmt.Errorf("commit update node: %w", err)
 	}
@@ -229,7 +269,41 @@ func (s *Store) UpdateNode(ctx context.Context, id string, input UpdateNode) (No
 }
 
 func (s *Store) ArchiveNode(ctx context.Context, id string, now time.Time) error {
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin archive node: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var assignments int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM node_user_assignments a
+		JOIN users u ON u.id = a.user_id
+		WHERE a.node_id = ? AND (
+			u.archived_at IS NULL OR a.state <> 'applied' OR a.applied_version < a.desired_version
+		)
+	`, id).Scan(&assignments); err != nil {
+		return fmt.Errorf("count node assignments: %w", err)
+	}
+	if assignments != 0 {
+		return ErrConflict
+	}
+	var pendingKickSnapshot int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM nodes n
+			JOIN node_kick_targets k ON k.node_id = n.id
+			WHERE n.id = ? AND COALESCE(n.agent_installation_id, '') <> ''
+			  AND n.applied_version < n.desired_version
+		)
+	`, id).Scan(&pendingKickSnapshot); err != nil {
+		return fmt.Errorf("check pending node removals: %w", err)
+	}
+	if pendingKickSnapshot != 0 {
+		return ErrConflict
+	}
+	result, err := tx.ExecContext(ctx, `
 		UPDATE nodes SET enabled = 0, status = 'disabled', archived_at = ?, updated_at = ?
 		WHERE id = ? AND archived_at IS NULL
 	`, now.UnixMilli(), now.UnixMilli(), id)
@@ -243,16 +317,92 @@ func (s *Store) ArchiveNode(ctx context.Context, id string, now time.Time) error
 	if count == 0 {
 		return ErrNotFound
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit archive node: %w", err)
+	}
 	return nil
 }
 
 func insertSnapshot(ctx context.Context, tx *sql.Tx, nodeID, adapter string, version int64, now time.Time) error {
+	users := make([]protocol.DesiredUser, 0)
+	kicks := make([]protocol.DesiredKick, 0)
+	if adapter == "native_hysteria2" {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT u.id, u.username, c.id, c.secret_fingerprint, c.verifier_sha256,
+			       (u.enabled AND a.enabled AND n.enabled), u.expires_at,
+			       CASE
+			         WHEN u.quota_state = 'limited' OR a.quota_state = 'limited' THEN 'limited'
+			         WHEN u.quota_state = 'unlimited' AND a.quota_state = 'unlimited' THEN 'unlimited'
+			         ELSE 'active'
+			       END
+			FROM node_user_assignments a
+			JOIN users u ON u.id = a.user_id
+			JOIN nodes n ON n.id = a.node_id
+			JOIN user_credentials c ON c.id = a.desired_credential_id
+			WHERE a.node_id = ? AND u.archived_at IS NULL
+			  AND c.state IN ('staged', 'applied')
+			ORDER BY u.id
+		`, nodeID)
+		if err != nil {
+			return fmt.Errorf("read desired users: %w", err)
+		}
+		for rows.Next() {
+			var user protocol.DesiredUser
+			var verifier []byte
+			var enabled int
+			var expiresAt sql.NullInt64
+			if err := rows.Scan(
+				&user.ID, &user.Username, &user.Credential.Ref,
+				&user.Credential.Fingerprint, &verifier, &enabled, &expiresAt,
+				&user.QuotaState,
+			); err != nil {
+				return fmt.Errorf("scan desired user: %w", err)
+			}
+			if len(verifier) != sha256.Size {
+				return errors.New("desired credential verifier has invalid length")
+			}
+			user.Credential.VerifierSHA256 = base64.RawURLEncoding.EncodeToString(verifier)
+			user.Enabled = enabled == 1
+			user.ExpiresAt = nullableTime(expiresAt)
+			users = append(users, user)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("iterate desired users: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close desired users: %w", err)
+		}
+		kickRows, err := tx.QueryContext(ctx, `
+			SELECT user_id, generation FROM node_kick_targets
+			WHERE node_id = ? ORDER BY user_id
+		`, nodeID)
+		if err != nil {
+			return fmt.Errorf("read desired kicks: %w", err)
+		}
+		for kickRows.Next() {
+			var kick protocol.DesiredKick
+			if err := kickRows.Scan(&kick.UserID, &kick.Generation); err != nil {
+				_ = kickRows.Close()
+				return fmt.Errorf("scan desired kick: %w", err)
+			}
+			kicks = append(kicks, kick)
+		}
+		if err := kickRows.Err(); err != nil {
+			_ = kickRows.Close()
+			return fmt.Errorf("iterate desired kicks: %w", err)
+		}
+		if err := kickRows.Close(); err != nil {
+			return fmt.Errorf("close desired kicks: %w", err)
+		}
+	}
 	snapshot := protocol.DesiredSnapshot{
 		SchemaVersion: 1,
 		NodeID:        nodeID,
 		Version:       version,
 		Adapter:       adapter,
-		Users:         []protocol.DesiredUser{},
+		Users:         users,
+		Kicks:         kicks,
 		GeneratedAt:   now.UTC(),
 	}
 	canonical, err := json.Marshal(snapshot)
@@ -268,6 +418,36 @@ func insertSnapshot(ctx context.Context, tx *sql.Tx, nodeID, adapter string, ver
 		return fmt.Errorf("insert desired snapshot: %w", err)
 	}
 	return nil
+}
+
+func bumpNodeSnapshot(ctx context.Context, tx *sql.Tx, nodeID string, now time.Time) (int64, error) {
+	var adapter string
+	var currentVersion int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT adapter_type, desired_version
+		FROM nodes WHERE id = ? AND archived_at IS NULL
+	`, nodeID).Scan(&adapter, &currentVersion); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("read node for snapshot: %w", err)
+	}
+	version := currentVersion + 1
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE nodes SET desired_version = ?, updated_at = ? WHERE id = ?
+	`, version, now.UnixMilli(), nodeID); err != nil {
+		return 0, fmt.Errorf("advance node snapshot version: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE node_snapshots SET superseded_at = ?
+		WHERE node_id = ? AND superseded_at IS NULL
+	`, now.UnixMilli(), nodeID); err != nil {
+		return 0, fmt.Errorf("supersede node snapshot: %w", err)
+	}
+	if err := insertSnapshot(ctx, tx, nodeID, adapter, version, now); err != nil {
+		return 0, err
+	}
+	return version, nil
 }
 
 func boolInt(value bool) int {

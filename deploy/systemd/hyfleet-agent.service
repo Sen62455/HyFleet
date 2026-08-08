@@ -8,6 +8,7 @@ Type=simple
 User=hyfleet-agent
 Group=hyfleet-agent
 EnvironmentFile=-/etc/hyfleet/agent.env
+EnvironmentFile=-/etc/hyfleet/hy2-stats.env
 ExecStart=/usr/local/bin/hyfleet-agent -config /etc/hyfleet/agent.yaml
 Restart=always
 RestartSec=3s

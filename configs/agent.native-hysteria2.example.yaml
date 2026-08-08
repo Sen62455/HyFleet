@@ -4,5 +4,12 @@ adapter_type: native_hysteria2
 core_name: hysteria
 service_unit: hysteria-server.service
 state_path: /var/lib/hyfleet-agent/agent-state.json
+auth_listen: 127.0.0.1:18081
+auth_path: /hysteria/auth
+auth_cache_path: /var/lib/hyfleet-agent/auth-cache.json
+traffic_stats_url: http://127.0.0.1:18082
+traffic_stats_secret_env: HYFLEET_HY2_STATS_SECRET
+traffic_database_path: /var/lib/hyfleet-agent/agent.db
 heartbeat_every: 15s
 desired_every: 10s
+traffic_every: 30s

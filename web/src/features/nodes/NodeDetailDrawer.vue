@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { KeyRound, Pencil } from "@lucide/vue";
-import { NButton, NDrawer, NDrawerContent, NIcon } from "naive-ui";
+import { NButton, NDrawer, NDrawerContent, NIcon, NTag } from "naive-ui";
 import MetricBar from "../../components/MetricBar.vue";
 import StatusIndicator from "../../components/StatusIndicator.vue";
 import {
@@ -56,6 +56,34 @@ const emit = defineEmits<{
           <div><dt>上行速率</dt><dd>{{ formatRate(node.network_tx_bps) }}</dd></div>
           <div><dt>系统负载</dt><dd>{{ node.load_1.toFixed(2) }} / {{ node.load_5.toFixed(2) }} / {{ node.load_15.toFixed(2) }}</dd></div>
           <div><dt>运行时间</dt><dd>{{ formatUptime(node.uptime_seconds) }}</dd></div>
+        </dl>
+      </section>
+
+      <section class="detail-section">
+        <div class="detail-section__heading">
+          <h2>流量与在线</h2>
+          <n-tag
+            v-if="node.adapter_type === 'native_hysteria2'"
+            :type="node.usage_available ? 'success' : (node.usage_enabled ? 'error' : 'warning')"
+            size="small"
+            :bordered="false"
+          >
+            {{ node.usage_available ? "统计正常" : (node.usage_enabled ? "统计异常" : "统计未配置") }}
+          </n-tag>
+        </div>
+        <dl class="detail-list detail-list--two">
+          <div><dt>在线用户 / 设备</dt><dd>{{ node.online_users }} / {{ node.online_connections }}</dd></div>
+          <div><dt>未知在线用户</dt><dd>{{ node.online_unknown_users }}</dd></div>
+          <div><dt>上传</dt><dd>{{ formatBytes(node.traffic_upload_bytes) }}</dd></div>
+          <div><dt>下载</dt><dd>{{ formatBytes(node.traffic_download_bytes) }}</dd></div>
+          <div><dt>未归属流量</dt><dd>{{ formatBytes(node.traffic_unattributed_bytes) }}</dd></div>
+          <div><dt>待上报批次</dt><dd>{{ node.usage_outbox_batches }}</dd></div>
+        </dl>
+        <dl class="detail-list">
+          <div><dt>统计采样</dt><dd>{{ relativeTime(node.usage_sampled_at) }}</dd></div>
+          <div><dt>流量入账</dt><dd>{{ relativeTime(node.traffic_last_report_at) }}</dd></div>
+          <div><dt>在线采样</dt><dd>{{ relativeTime(node.online_sampled_at) }}</dd></div>
+          <div v-if="node.usage_error_code"><dt>统计错误</dt><dd>{{ node.usage_error_code }}</dd></div>
         </dl>
       </section>
 

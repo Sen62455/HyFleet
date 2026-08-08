@@ -73,6 +73,19 @@ func (a *App) Handler() (http.Handler, error) {
 			authenticated.Put("/nodes/{nodeID}", a.handleUpdateNode)
 			authenticated.Delete("/nodes/{nodeID}", a.handleArchiveNode)
 			authenticated.Post("/nodes/{nodeID}/enrollment-token", a.handleEnrollmentToken)
+			authenticated.Get("/users", a.handleListUsers)
+			authenticated.Post("/users", a.handleCreateUser)
+			authenticated.Get("/users/{userID}", a.handleGetUser)
+			authenticated.Put("/users/{userID}", a.handleUpdateUser)
+			authenticated.Delete("/users/{userID}", a.handleArchiveUser)
+			authenticated.Post("/users/{userID}/assignments", a.handleAssignUser)
+			authenticated.Put("/users/{userID}/assignments/{nodeID}", a.handleUpdateAssignment)
+			authenticated.Delete("/users/{userID}/assignments/{nodeID}", a.handleUnassignUser)
+			authenticated.Post(
+				"/users/{userID}/assignments/{nodeID}/credential",
+				a.handleRevealAssignmentCredential,
+			)
+			authenticated.Post("/users/{userID}/kick", a.handleKickUser)
 		})
 	})
 	router.Route("/agent/v1", func(agent chi.Router) {
@@ -82,6 +95,8 @@ func (a *App) Handler() (http.Handler, error) {
 			secured.Post("/heartbeat", a.handleAgentHeartbeat)
 			secured.Get("/desired", a.handleAgentDesired)
 			secured.Post("/desired/{version}/ack", a.handleAgentDesiredAck)
+			secured.Post("/traffic-batches", a.handleAgentTrafficBatches)
+			secured.Post("/online-snapshot", a.handleAgentOnlineSnapshot)
 		})
 	})
 	router.NotFound(func(response http.ResponseWriter, request *http.Request) {

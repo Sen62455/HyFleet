@@ -13,6 +13,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -23,14 +24,38 @@ import (
 )
 
 type Agent struct {
-	config    config.Agent
-	logger    *slog.Logger
-	client    *http.Client
-	collector Collector
-	state     State
+	config      config.Agent
+	logger      *slog.Logger
+	client      *http.Client
+	collector   Collector
+	state       State
+	authCache   *AuthCache
+	localStore  *localStore
+	statsClient *hysteriaStatsClient
+	usage       protocol.UsageInfo
 }
 
 func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
+	if cfg.AdapterType == "native_hysteria2" {
+		if cfg.AuthListen == "" {
+			cfg.AuthListen = "127.0.0.1:18081"
+		}
+		if cfg.AuthPath == "" {
+			cfg.AuthPath = "/hysteria/auth"
+		}
+		if cfg.AuthCachePath == "" {
+			cfg.AuthCachePath = filepath.Join(filepath.Dir(cfg.StatePath), "auth-cache.json")
+		}
+		if cfg.TrafficStatsURL == "" {
+			cfg.TrafficStatsURL = "http://127.0.0.1:18082"
+		}
+		if cfg.TrafficDatabasePath == "" {
+			cfg.TrafficDatabasePath = filepath.Join(filepath.Dir(cfg.StatePath), "agent.db")
+		}
+		if cfg.TrafficEvery <= 0 {
+			cfg.TrafficEvery = 30 * time.Second
+		}
+	}
 	state, err := LoadState(cfg.StatePath)
 	if err != nil {
 		return nil, err
@@ -38,16 +63,61 @@ func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
 	if err := SaveState(cfg.StatePath, state); err != nil {
 		return nil, err
 	}
-	return &Agent{
+	result := &Agent{
 		config:    cfg,
 		logger:    logger,
 		client:    &http.Client{Timeout: 20 * time.Second},
 		collector: NewCollector(),
 		state:     state,
-	}, nil
+	}
+	if cfg.AdapterType == "native_hysteria2" {
+		local, err := openLocalStore(context.Background(), cfg.TrafficDatabasePath)
+		if err != nil {
+			return nil, err
+		}
+		result.localStore = local
+		cache, err := LoadAuthCache(cfg.AuthCachePath)
+		if err != nil {
+			_ = local.Close()
+			return nil, err
+		}
+		cacheNodeID, _, _ := cache.Metadata()
+		if state.NodeID != "" && cacheNodeID != "" && state.NodeID != cacheNodeID {
+			_ = local.Close()
+			return nil, errors.New("native auth cache belongs to another node")
+		}
+		result.authCache = cache
+		result.usage.Enabled = cfg.TrafficStatsSecret != ""
+		if cfg.TrafficStatsSecret == "" {
+			result.usage.LastErrorCode = "stats_not_configured"
+		} else {
+			result.statsClient = newHysteriaStatsClient(cfg.TrafficStatsURL, cfg.TrafficStatsSecret)
+		}
+	}
+	return result, nil
+}
+
+func (agent *Agent) Close() error {
+	if agent.localStore == nil {
+		return nil
+	}
+	store := agent.localStore
+	agent.localStore = nil
+	return store.Close()
 }
 
 func (agent *Agent) Run(ctx context.Context) error {
+	defer agent.Close()
+	var authServerErrors <-chan error
+	stopAuthServer := func() {}
+	if agent.config.AdapterType == "native_hysteria2" {
+		var err error
+		authServerErrors, stopAuthServer, err = agent.startNativeAuthServer(ctx)
+		if err != nil {
+			return err
+		}
+		defer stopAuthServer()
+	}
 	if agent.state.NodeCredential == "" {
 		if agent.config.EnrollmentToken == "" {
 			return errors.New("Agent is not enrolled and HYFLEET_ENROLLMENT_TOKEN is empty")
@@ -64,6 +134,9 @@ func (agent *Agent) Run(ctx context.Context) error {
 	if err := agent.sendPendingAck(ctx); err != nil {
 		agent.logger.Warn("pending desired acknowledgement failed", "error", err)
 	}
+	if err := agent.runUsageCycle(ctx); err != nil {
+		agent.logger.Warn("initial usage cycle failed", "error", err)
+	}
 	if _, err := agent.heartbeat(ctx); err != nil {
 		agent.logger.Warn("initial heartbeat failed", "error", err)
 	}
@@ -72,12 +145,19 @@ func (agent *Agent) Run(ctx context.Context) error {
 	}
 	heartbeatTimer := time.NewTimer(jitter(agent.config.HeartbeatEvery))
 	desiredTimer := time.NewTimer(jitter(agent.config.DesiredEvery))
+	trafficTimer := time.NewTimer(jitter(agent.config.TrafficEvery))
 	defer heartbeatTimer.Stop()
 	defer desiredTimer.Stop()
+	defer trafficTimer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case err, open := <-authServerErrors:
+			if open && err != nil {
+				return fmt.Errorf("native Hysteria2 auth server stopped: %w", err)
+			}
+			authServerErrors = nil
 		case <-heartbeatTimer.C:
 			if _, err := agent.heartbeat(ctx); err != nil {
 				agent.logger.Warn("heartbeat failed", "error", err)
@@ -90,6 +170,11 @@ func (agent *Agent) Run(ctx context.Context) error {
 				agent.logger.Warn("desired-state poll failed", "error", err)
 			}
 			desiredTimer.Reset(jitter(agent.config.DesiredEvery))
+		case <-trafficTimer.C:
+			if err := agent.runUsageCycle(ctx); err != nil {
+				agent.logger.Warn("usage cycle failed", "error", err)
+			}
+			trafficTimer.Reset(jitter(agent.config.TrafficEvery))
 		}
 	}
 }
@@ -134,7 +219,7 @@ func (agent *Agent) enroll(ctx context.Context) error {
 		OS:              facts.OS,
 		OSVersion:       facts.OSVersion,
 		Architecture:    facts.Architecture,
-		Capabilities:    []string{"host_metrics", "desired_state_v1", "read_only_foundation"},
+		Capabilities:    agent.capabilities(),
 		Adapter: protocol.EnrollmentAdapter{
 			Type:     agent.config.AdapterType,
 			CoreName: agent.config.CoreName,
@@ -161,6 +246,14 @@ func (agent *Agent) heartbeat(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	usage := agent.usage
+	if agent.localStore != nil {
+		count, countErr := agent.localStore.trafficOutboxCount(ctx)
+		if countErr != nil {
+			return 0, countErr
+		}
+		usage.OutboxBatches = count
+	}
 	request := protocol.HeartbeatRequest{
 		InstallationID: agent.state.InstallationID,
 		AppliedVersion: agent.state.AppliedVersion,
@@ -173,6 +266,7 @@ func (agent *Agent) heartbeat(ctx context.Context) (int64, error) {
 			Running: agent.collector.ServiceRunning(ctx, agent.config.ServiceUnit),
 		},
 		Host:      metrics,
+		Usage:     usage,
 		SampledAt: time.Now().UTC(),
 	}
 	var result protocol.HeartbeatResponse
@@ -213,8 +307,28 @@ func (agent *Agent) pollDesired(ctx context.Context) error {
 	if encodedHash != result.SHA256 {
 		return errors.New("desired snapshot hash mismatch")
 	}
-	if len(result.Snapshot.Users) != 0 {
-		return agent.ackFailed(ctx, result, "foundation_read_only", "Phase 1 Agent refuses user configuration")
+	if agent.config.AdapterType == "native_hysteria2" {
+		if err := agent.localStore.queueKicks(ctx, result.Snapshot.Kicks, time.Now().UTC()); err != nil {
+			return agent.ackFailed(
+				ctx, result, "kick_queue_failed", "native kick queue rejected desired state",
+			)
+		}
+		if err := agent.authCache.Apply(result.Snapshot, result.SHA256, time.Now().UTC()); err != nil {
+			agent.logger.Error("apply native auth cache failed", "version", result.Snapshot.Version, "error", err)
+			return agent.ackFailed(
+				ctx, result, "auth_cache_apply_failed", "native auth cache rejected desired state",
+			)
+		}
+		if err := agent.executePendingKicks(ctx); err != nil {
+			agent.logger.Error("apply native kick requests failed", "version", result.Snapshot.Version, "error", err)
+			return agent.ackFailed(
+				ctx, result, "kick_apply_failed", "native kick requests could not be applied",
+			)
+		}
+	} else if len(result.Snapshot.Users) != 0 {
+		return agent.ackFailed(
+			ctx, result, "adapter_users_unsupported", "this adapter cannot apply users in Phase 2",
+		)
 	}
 	agent.state.AppliedVersion = result.Snapshot.Version
 	agent.state.AppliedSnapshotHash = result.SHA256
@@ -224,6 +338,132 @@ func (agent *Agent) pollDesired(ctx context.Context) error {
 		return err
 	}
 	return agent.sendPendingAck(ctx)
+}
+
+func (agent *Agent) capabilities() []string {
+	capabilities := []string{"host_metrics", "desired_state_v1"}
+	if agent.config.AdapterType == "native_hysteria2" {
+		return append(capabilities, "native_http_auth", "persistent_auth_cache",
+			"traffic_stats_v1", "traffic_outbox_v1", "online_snapshot_v1", "kick_generation_v1")
+	}
+	return append(capabilities, "read_only_adapter")
+}
+
+func (agent *Agent) runUsageCycle(ctx context.Context) error {
+	if agent.localStore == nil {
+		return nil
+	}
+	var cycleErrors []error
+	if agent.statsClient != nil {
+		counters, err := agent.statsClient.traffic(ctx)
+		if err != nil {
+			agent.usage.Available = false
+			agent.usage.LastErrorCode = "traffic_api_unavailable"
+			cycleErrors = append(cycleErrors, err)
+		} else {
+			sampledAt := time.Now().UTC()
+			if _, err := agent.localStore.recordTrafficSample(
+				ctx, agent.state.InstallationID, counters, sampledAt,
+			); err != nil {
+				agent.usage.Available = false
+				agent.usage.LastErrorCode = "traffic_store_failed"
+				cycleErrors = append(cycleErrors, err)
+			} else {
+				agent.usage.Available = true
+				agent.usage.LastErrorCode = ""
+				agent.usage.LastSampledAt = &sampledAt
+			}
+		}
+		if err := agent.reportOnline(ctx); err != nil {
+			cycleErrors = append(cycleErrors, err)
+		}
+	}
+	if err := agent.flushTrafficOutbox(ctx); err != nil {
+		cycleErrors = append(cycleErrors, err)
+	}
+	if err := agent.executePendingKicks(ctx); err != nil {
+		cycleErrors = append(cycleErrors, err)
+	}
+	return errors.Join(cycleErrors...)
+}
+
+func (agent *Agent) flushTrafficOutbox(ctx context.Context) error {
+	batches, err := agent.localStore.listTrafficOutbox(ctx, 20)
+	if err != nil {
+		return err
+	}
+	for _, batch := range batches {
+		var result protocol.TrafficBatchesResponse
+		status, err := agent.doJSON(ctx, http.MethodPost, "/agent/v1/traffic-batches",
+			protocol.TrafficBatchesRequest{Batches: []protocol.TrafficBatch{batch}},
+			cryptoutil.NewID(), true, &result)
+		if err != nil {
+			_ = agent.localStore.recordTrafficFailure(ctx, batch.ID, "transport_error", time.Now().UTC())
+			return err
+		}
+		if status != http.StatusOK || len(result.Results) != 1 || result.Results[0].ID != batch.ID {
+			_ = agent.localStore.recordTrafficFailure(ctx, batch.ID, "invalid_response", time.Now().UTC())
+			return errors.New("traffic batch endpoint returned an invalid response")
+		}
+		batchResult := result.Results[0]
+		switch batchResult.Status {
+		case "accepted", "duplicate":
+			if err := agent.localStore.deleteTrafficOutbox(ctx, batch.ID); err != nil {
+				return err
+			}
+		case "rejected":
+			code := batchResult.ErrorCode
+			if code == "" {
+				code = "rejected"
+			}
+			_ = agent.localStore.recordTrafficFailure(ctx, batch.ID, code, time.Now().UTC())
+			return fmt.Errorf("traffic batch rejected: %s", code)
+		default:
+			_ = agent.localStore.recordTrafficFailure(ctx, batch.ID, "invalid_status", time.Now().UTC())
+			return errors.New("traffic batch endpoint returned an unknown status")
+		}
+	}
+	return nil
+}
+
+func (agent *Agent) reportOnline(ctx context.Context) error {
+	users, err := agent.statsClient.online(ctx)
+	if err != nil {
+		return err
+	}
+	request := protocol.OnlineSnapshotRequest{
+		SnapshotID: cryptoutil.NewID(), InstallationID: agent.state.InstallationID,
+		SampledAt: time.Now().UTC(), Users: users,
+	}
+	var result protocol.OnlineSnapshotResponse
+	status, err := agent.doJSON(ctx, http.MethodPost, "/agent/v1/online-snapshot",
+		request, cryptoutil.NewID(), true, &result)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("online snapshot returned status %d", status)
+	}
+	return nil
+}
+
+func (agent *Agent) executePendingKicks(ctx context.Context) error {
+	kicks, err := agent.localStore.listPendingKicks(ctx, 256)
+	if err != nil || len(kicks) == 0 {
+		return err
+	}
+	if agent.statsClient == nil {
+		return errors.New("Hysteria Traffic Stats secret is not configured")
+	}
+	userIDs := make([]string, 0, len(kicks))
+	for _, kick := range kicks {
+		userIDs = append(userIDs, kick.UserID)
+	}
+	if err := agent.statsClient.kick(ctx, userIDs); err != nil {
+		_ = agent.localStore.recordKickFailure(ctx, kicks, "kick_api_unavailable", time.Now().UTC())
+		return err
+	}
+	return agent.localStore.markKicksApplied(ctx, kicks, time.Now().UTC())
 }
 
 func (agent *Agent) ackFailed(ctx context.Context, desired protocol.DesiredEnvelope, code, message string) error {

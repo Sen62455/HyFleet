@@ -163,8 +163,15 @@ adapter_type: ${adapter_type}
 core_name: ${core_name}
 service_unit: ${service_unit}
 state_path: /var/lib/hyfleet-agent/agent-state.json
+auth_listen: 127.0.0.1:18081
+auth_path: /hysteria/auth
+auth_cache_path: /var/lib/hyfleet-agent/auth-cache.json
+traffic_stats_url: http://127.0.0.1:18082
+traffic_stats_secret_env: HYFLEET_HY2_STATS_SECRET
+traffic_database_path: /var/lib/hyfleet-agent/agent.db
 heartbeat_every: 15s
 desired_every: 10s
+traffic_every: 30s
 EOF
   install -o root -g hyfleet-agent -m 0640 "${temporary_dir}/agent.yaml" "${config_path}"
 fi

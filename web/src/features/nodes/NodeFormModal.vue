@@ -1,6 +1,17 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
-import { NButton, NForm, NFormItem, NInput, NModal, NSelect, NSwitch, type FormInst, type FormRules } from "naive-ui";
+import {
+  NButton,
+  NForm,
+  NFormItem,
+  NInput,
+  NInputNumber,
+  NModal,
+  NSelect,
+  NSwitch,
+  type FormInst,
+  type FormRules,
+} from "naive-ui";
 import type { AdapterType, NodeInput, NodeRecord } from "../../types";
 
 const props = defineProps<{
@@ -20,6 +31,10 @@ const form = reactive<Required<NodeInput>>({
   provider: "",
   region: "",
   adapter_type: "native_hysteria2",
+  public_host: "",
+  public_port: 443,
+  sni: "",
+  tls_insecure: false,
   enabled: true,
 });
 
@@ -46,6 +61,10 @@ watch(
     form.provider = node?.provider ?? "";
     form.region = node?.region ?? "";
     form.adapter_type = (node?.adapter_type ?? "native_hysteria2") as AdapterType;
+    form.public_host = node?.public_host ?? "";
+    form.public_port = node?.public_port ?? 443;
+    form.sni = node?.sni ?? "";
+    form.tls_insecure = node?.tls_insecure ?? false;
     form.enabled = node?.enabled ?? true;
     formRef.value?.restoreValidation();
   },
@@ -63,6 +82,10 @@ async function submit() {
     provider: form.provider.trim(),
     region: form.region.trim(),
     adapter_type: form.adapter_type,
+    public_host: form.public_host.trim(),
+    public_port: form.public_port,
+    sni: form.sni.trim(),
+    tls_insecure: form.tls_insecure,
     enabled: form.enabled,
   });
 }
@@ -99,6 +122,22 @@ async function submit() {
         />
         <template v-if="adapterLocked" #feedback>Agent 注册后不可更换适配器。</template>
       </n-form-item>
+      <div class="form-section-label">订阅端点</div>
+      <div class="form-grid form-grid--endpoint">
+        <n-form-item label="公网域名或 IP" path="public_host">
+          <n-input v-model:value="form.public_host" maxlength="253" placeholder="hy2.example.com" />
+        </n-form-item>
+        <n-form-item label="UDP 端口" path="public_port">
+          <n-input-number v-model:value="form.public_port" :min="1" :max="65535" :precision="0" />
+        </n-form-item>
+      </div>
+      <n-form-item label="TLS SNI" path="sni">
+        <n-input v-model:value="form.sni" maxlength="253" placeholder="留空时使用公网域名" />
+      </n-form-item>
+      <div class="switch-row switch-row--compact">
+        <div><strong>跳过证书验证</strong></div>
+        <n-switch v-model:value="form.tls_insecure" aria-label="跳过证书验证" />
+      </div>
       <div class="switch-row">
         <div>
           <strong>启用节点</strong>

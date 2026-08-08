@@ -51,20 +51,20 @@ Exit gate: injected duplicate/restart scenarios preserve exact totals and a
 limited user is denied on every online assigned test node within the documented
 consistency window.
 
-## Phase 4: Unified subscriptions and standalone sing-box (`v0.4`)
+## Phase 4: Unified subscriptions (`v0.4`)
 
 Deliver subscription token lifecycle, endpoint eligibility, URI/Base64/Clash
-Meta/sing-box renderers, caching headers without secret leakage, BandwagonHost
-standalone sing-box compatibility probe and safe onboarding, endpoint-specific
-credentials, and selected/all-assignment credential rotation workflow.
+Meta/sing-box renderers, caching headers without secret leakage,
+endpoint-specific credentials, and selected/all-assignment credential rotation
+workflow for applied native Hysteria2 assignments.
 
 Tests: format fixtures, escaping, revoked token, disabled/pending node exclusion,
 desired-versus-applied credential cutover, per-endpoint password/endpoint
 rotation, subscription log redaction.
 
-Exit gate: one user subscription contains working LisaHost and BandwagonHost
-nodes, standalone sing-box changes pass validate/rollback tests without touching
-unmanaged configuration, and rotating/revoking a token behaves predictably.
+Exit gate: a working native Hysteria2 assignment renders in all four formats,
+desired credentials remain withheld until applied, and rotating/revoking a Token
+behaves predictably. Standalone sing-box membership remains gated on its Adapter.
 
 ## Phase 5: S-UI adapter and DMIT onboarding (`v0.5`)
 

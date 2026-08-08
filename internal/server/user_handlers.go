@@ -329,6 +329,8 @@ func (a *App) writeUserStoreError(
 		a.writeError(response, request, http.StatusNotFound, "user_resource_not_found", "user or assignment not found")
 	case errors.Is(err, store.ErrUnsupported):
 		a.writeError(response, request, http.StatusUnprocessableEntity, "native_nodes_only", "Phase 2 assignments support native Hysteria2 nodes only")
+	case errors.Is(err, store.ErrPending):
+		a.writeError(response, request, http.StatusConflict, "credential_rotation_pending", "wait for all pending node changes to apply before rotating credentials")
 	case errors.Is(err, store.ErrConflict):
 		a.writeError(response, request, http.StatusConflict, "user_conflict", "username or assignment already exists")
 	default:

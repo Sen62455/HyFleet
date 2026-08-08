@@ -19,6 +19,10 @@ type Node struct {
 	Provider                 string
 	Region                   string
 	AdapterType              string
+	PublicHost               string
+	PublicPort               int
+	SNI                      string
+	TLSInsecure              bool
 	Enabled                  bool
 	Status                   string
 	StatusReason             string
@@ -70,6 +74,10 @@ type NewNode struct {
 	Provider    string
 	Region      string
 	AdapterType string
+	PublicHost  string
+	PublicPort  int
+	SNI         string
+	TLSInsecure bool
 	Enabled     bool
 	Now         time.Time
 }
@@ -79,12 +87,17 @@ type UpdateNode struct {
 	Provider    string
 	Region      string
 	AdapterType string
+	PublicHost  string
+	PublicPort  int
+	SNI         string
+	TLSInsecure bool
 	Enabled     bool
 	Now         time.Time
 }
 
 const nodeColumns = `
-	id, name, provider, region, adapter_type, enabled, status, status_reason,
+	id, name, provider, region, adapter_type, public_host, public_port, sni,
+	tls_insecure, enabled, status, status_reason,
 	desired_version, applied_version, COALESCE(agent_installation_id, ''),
 	agent_version, protocol_version, os_name, os_version, architecture,
 	core_name, core_version, core_running, uptime_seconds, cpu_percent,
@@ -103,12 +116,13 @@ type rowScanner interface {
 
 func scanNode(row rowScanner) (Node, error) {
 	var node Node
-	var enabled, coreRunning, usageEnabled, usageAvailable int
+	var enabled, tlsInsecure, coreRunning, usageEnabled, usageAvailable int
 	var lastSeen, lastApplied, usageSampled, trafficLastReport sql.NullInt64
 	var onlineSampled, onlineLastReport sql.NullInt64
 	var created, updated int64
 	err := row.Scan(
 		&node.ID, &node.Name, &node.Provider, &node.Region, &node.AdapterType,
+		&node.PublicHost, &node.PublicPort, &node.SNI, &tlsInsecure,
 		&enabled, &node.Status, &node.StatusReason, &node.DesiredVersion,
 		&node.AppliedVersion, &node.AgentInstallationID, &node.AgentVersion,
 		&node.ProtocolVersion, &node.OSName, &node.OSVersion, &node.Architecture,
@@ -127,6 +141,7 @@ func scanNode(row rowScanner) (Node, error) {
 		return Node{}, err
 	}
 	node.Enabled = enabled == 1
+	node.TLSInsecure = tlsInsecure == 1
 	node.CoreRunning = coreRunning == 1
 	node.UsageEnabled = usageEnabled == 1
 	node.UsageAvailable = usageAvailable == 1
@@ -142,6 +157,9 @@ func scanNode(row rowScanner) (Node, error) {
 }
 
 func (s *Store) CreateNode(ctx context.Context, input NewNode) (Node, error) {
+	if input.PublicPort == 0 {
+		input.PublicPort = 443
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Node{}, fmt.Errorf("begin create node: %w", err)
@@ -152,10 +170,12 @@ func (s *Store) CreateNode(ctx context.Context, input NewNode) (Node, error) {
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO nodes(
-			id, name, provider, region, adapter_type, enabled, status,
+			id, name, provider, region, adapter_type, public_host, public_port,
+			sni, tls_insecure, enabled, status,
 			desired_version, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 	`, input.ID, input.Name, input.Provider, input.Region, input.AdapterType,
+		input.PublicHost, input.PublicPort, input.SNI, boolInt(input.TLSInsecure),
 		boolInt(input.Enabled), status, input.Now.UnixMilli(), input.Now.UnixMilli())
 	if err != nil {
 		_ = tx.Rollback()
@@ -205,6 +225,9 @@ func (s *Store) GetNode(ctx context.Context, id string) (Node, error) {
 }
 
 func (s *Store) UpdateNode(ctx context.Context, id string, input UpdateNode) (Node, error) {
+	if input.PublicPort == 0 {
+		input.PublicPort = 443
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Node{}, fmt.Errorf("begin update node: %w", err)
@@ -234,9 +257,11 @@ func (s *Store) UpdateNode(ctx context.Context, id string, input UpdateNode) (No
 	}
 	_, err = tx.ExecContext(ctx, `
 		UPDATE nodes SET name = ?, provider = ?, region = ?, adapter_type = ?,
+			public_host = ?, public_port = ?, sni = ?, tls_insecure = ?,
 			enabled = ?, status = ?, status_reason = '', desired_version = ?, updated_at = ?
 		WHERE id = ? AND archived_at IS NULL
 	`, input.Name, input.Provider, input.Region, input.AdapterType,
+		input.PublicHost, input.PublicPort, input.SNI, boolInt(input.TLSInsecure),
 		boolInt(input.Enabled), status, version, input.Now.UnixMilli(), id)
 	if err != nil {
 		_ = tx.Rollback()

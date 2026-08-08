@@ -24,6 +24,10 @@ export interface NodeRecord {
   provider: string;
   region: string;
   adapter_type: AdapterType;
+  public_host: string;
+  public_port: number;
+  sni: string;
+  tls_insecure: boolean;
   enabled: boolean;
   status: NodeStatus;
   status_reason: string;
@@ -74,6 +78,10 @@ export interface NodeInput {
   provider: string;
   region: string;
   adapter_type: AdapterType;
+  public_host: string;
+  public_port: number;
+  sni: string;
+  tls_insecure: boolean;
   enabled?: boolean;
 }
 
@@ -173,4 +181,40 @@ export interface CreateUserResponse {
 export interface AssignUserResponse {
   user: UserRecord;
   credential: UserCredential;
+}
+
+export type SubscriptionFormat = "uri" | "base64" | "clash" | "sing-box";
+export type SubscriptionTokenStatus = "active" | "expired" | "revoked";
+
+export interface SubscriptionTokenRecord {
+  id: string;
+  user_id: string;
+  name: string;
+  token_prefix: string;
+  allowed_formats: SubscriptionFormat[];
+  status: SubscriptionTokenStatus;
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SubscriptionTokenInput {
+  name: string;
+  allowed_formats: SubscriptionFormat[];
+  expires_at: string | null;
+}
+
+export interface SubscriptionURLs {
+  uri?: string;
+  base64?: string;
+  clash?: string;
+  sing_box?: string;
+}
+
+export interface IssuedSubscriptionToken {
+  subscription: SubscriptionTokenRecord;
+  token: string;
+  urls: SubscriptionURLs;
 }

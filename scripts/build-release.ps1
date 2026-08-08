@@ -4,7 +4,7 @@ param(
     [string]$Architecture = "amd64",
 
     [ValidatePattern("^[0-9A-Za-z][0-9A-Za-z._-]*$")]
-    [string]$Version = "v0.3.0-dev"
+    [string]$Version = "v0.4.0-dev"
 )
 
 $ErrorActionPreference = "Stop"
@@ -142,7 +142,7 @@ Copy-Item $unitSource (Join-Path (Join-Path $bundlePath "deploy") "systemd")
 foreach ($scriptName in @("install-server.sh", "install-agent.sh", "diagnose.sh", "configure-hysteria.sh", "update-component.sh")) {
     Copy-Item (Join-Path (Join-Path $repositoryRoot "deploy") $scriptName) (Join-Path $bundlePath "deploy")
 }
-foreach ($documentName in @("10-systemd-deployment.md", "11-phase-2-native-users.md", "12-phase-3-traffic-and-updates.md")) {
+foreach ($documentName in @("10-systemd-deployment.md", "11-phase-2-native-users.md", "12-phase-3-traffic-and-updates.md", "13-phase-4-unified-subscriptions.md")) {
     Copy-Item (Join-Path (Join-Path $repositoryRoot "docs") $documentName) (Join-Path $bundlePath "docs")
 }
 

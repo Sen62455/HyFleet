@@ -10,6 +10,7 @@ var (
 	ErrNotFound        = errors.New("not found")
 	ErrConflict        = errors.New("conflict")
 	ErrExpired         = errors.New("expired")
+	ErrPending         = errors.New("pending changes")
 	ErrUnauthorized    = errors.New("unauthorized")
 	ErrVersionConflict = errors.New("version conflict")
 	ErrUnsupported     = errors.New("unsupported")

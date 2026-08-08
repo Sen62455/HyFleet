@@ -20,6 +20,12 @@ const emit = defineEmits<{
   edit: [node: NodeRecord];
   enroll: [node: NodeRecord];
 }>();
+
+function endpointLabel(node: NodeRecord) {
+  if (!node.public_host) return "未配置";
+  const host = node.public_host.includes(":") ? `[${node.public_host}]` : node.public_host;
+  return `${host}:${node.public_port}`;
+}
 </script>
 
 <template>
@@ -96,6 +102,9 @@ const emit = defineEmits<{
           <div><dt>代理核心</dt><dd>{{ [node.core_name, node.core_version].filter(Boolean).join(" ") || "尚未上报" }}</dd></div>
           <div><dt>核心服务</dt><dd>{{ node.agent_installation_id ? (node.core_running ? "运行中" : "未运行") : "尚未上报" }}</dd></div>
           <div><dt>Agent</dt><dd>{{ node.agent_version || "尚未注册" }}</dd></div>
+          <div><dt>订阅端点</dt><dd>{{ endpointLabel(node) }}</dd></div>
+          <div><dt>TLS SNI</dt><dd>{{ node.sni || node.public_host || "-" }}</dd></div>
+          <div><dt>证书验证</dt><dd>{{ node.tls_insecure ? "跳过" : "验证" }}</dd></div>
         </dl>
       </section>
 

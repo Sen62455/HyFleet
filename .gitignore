@@ -24,6 +24,8 @@ scripts/fleet.local.psd1
 node_modules/
 .playwright-cli/
 output/
+hyfleet-v*-linux-*.tar.gz
+hyfleet-v*-linux-*.tar.gz.sha256
 .idea/
 .vscode/
 .DS_Store

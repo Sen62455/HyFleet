@@ -23,6 +23,7 @@ type App struct {
 	dummyHash     string
 	loginLimiter  *rateLimiter
 	enrollLimiter *rateLimiter
+	subLimiter    *rateLimiter
 }
 
 func New(cfg config.Server, database *store.Store, masterKey []byte, logger *slog.Logger) (*App, error) {
@@ -43,6 +44,7 @@ func New(cfg config.Server, database *store.Store, masterKey []byte, logger *slo
 		dummyHash:     dummyHash,
 		loginLimiter:  newRateLimiter(8, 5*time.Minute),
 		enrollLimiter: newRateLimiter(20, 5*time.Minute),
+		subLimiter:    newRateLimiter(120, time.Minute),
 	}, nil
 }
 
@@ -86,6 +88,25 @@ func (a *App) Handler() (http.Handler, error) {
 				a.handleRevealAssignmentCredential,
 			)
 			authenticated.Post("/users/{userID}/kick", a.handleKickUser)
+			authenticated.Post("/users/{userID}/rotate-credentials", a.handleRotateUserCredentials)
+			authenticated.Post(
+				"/users/{userID}/assignments/{nodeID}/rotate-credential",
+				a.handleRotateAssignmentCredential,
+			)
+			authenticated.Get(
+				"/users/{userID}/subscription-tokens", a.handleListSubscriptionTokens,
+			)
+			authenticated.Post(
+				"/users/{userID}/subscription-tokens", a.handleCreateSubscriptionToken,
+			)
+			authenticated.Post(
+				"/users/{userID}/subscription-tokens/{tokenID}/rotate",
+				a.handleRotateSubscriptionToken,
+			)
+			authenticated.Delete(
+				"/users/{userID}/subscription-tokens/{tokenID}",
+				a.handleRevokeSubscriptionToken,
+			)
 		})
 	})
 	router.Route("/agent/v1", func(agent chi.Router) {
@@ -99,8 +120,18 @@ func (a *App) Handler() (http.Handler, error) {
 			secured.Post("/online-snapshot", a.handleAgentOnlineSnapshot)
 		})
 	})
+	router.Group(func(subscription chi.Router) {
+		subscription.Use(a.subscriptionRateLimitMiddleware)
+		subscription.Get("/sub/{token}", a.handleSubscriptionDefault)
+		subscription.Get("/sub/{token}/uri", a.handleSubscriptionURI)
+		subscription.Get("/sub/{token}/base64", a.handleSubscriptionBase64)
+		subscription.Get("/sub/{token}/clash", a.handleSubscriptionClash)
+		subscription.Get("/sub/{token}/sing-box", a.handleSubscriptionSingBox)
+	})
 	router.NotFound(func(response http.ResponseWriter, request *http.Request) {
-		if strings.HasPrefix(request.URL.Path, "/api/") || strings.HasPrefix(request.URL.Path, "/agent/") {
+		if strings.HasPrefix(request.URL.Path, "/api/") ||
+			strings.HasPrefix(request.URL.Path, "/agent/") ||
+			strings.HasPrefix(request.URL.Path, "/sub/") {
 			a.writeError(response, request, http.StatusNotFound, "not_found", "resource not found")
 			return
 		}

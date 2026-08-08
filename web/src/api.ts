@@ -7,6 +7,9 @@ import type {
   NodeRecord,
   Session,
   SetupStatus,
+  IssuedSubscriptionToken,
+  SubscriptionTokenInput,
+  SubscriptionTokenRecord,
   UserCredential,
   UserInput,
   UserRecord,
@@ -176,4 +179,41 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ node_id: nodeId }),
     }),
+
+  async listSubscriptionTokens(userId: string) {
+    const result = await request<{ tokens: SubscriptionTokenRecord[] }>(
+      `/api/v1/users/${encodeURIComponent(userId)}/subscription-tokens`,
+    );
+    return result.tokens;
+  },
+
+  createSubscriptionToken: (userId: string, input: SubscriptionTokenInput) =>
+    request<IssuedSubscriptionToken>(
+      `/api/v1/users/${encodeURIComponent(userId)}/subscription-tokens`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+
+  rotateSubscriptionToken: (userId: string, tokenId: string) =>
+    request<IssuedSubscriptionToken>(
+      `/api/v1/users/${encodeURIComponent(userId)}/subscription-tokens/${encodeURIComponent(tokenId)}/rotate`,
+      { method: "POST", body: "{}" },
+    ),
+
+  revokeSubscriptionToken: (userId: string, tokenId: string) =>
+    request<void>(
+      `/api/v1/users/${encodeURIComponent(userId)}/subscription-tokens/${encodeURIComponent(tokenId)}`,
+      { method: "DELETE", body: "{}" },
+    ),
+
+  rotateAssignmentCredential: (userId: string, nodeId: string) =>
+    request<AssignUserResponse>(
+      `/api/v1/users/${encodeURIComponent(userId)}/assignments/${encodeURIComponent(nodeId)}/rotate-credential`,
+      { method: "POST", body: "{}" },
+    ),
+
+  rotateUserCredentials: (userId: string) =>
+    request<CreateUserResponse>(
+      `/api/v1/users/${encodeURIComponent(userId)}/rotate-credentials`,
+      { method: "POST", body: "{}" },
+    ),
 };

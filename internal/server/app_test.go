@@ -27,6 +27,7 @@ type testApp struct {
 	store   *store.Store
 	cookie  *http.Cookie
 	csrf    string
+	logs    *bytes.Buffer
 }
 
 func newTestApp(t *testing.T) *testApp {
@@ -44,7 +45,8 @@ func newTestApp(t *testing.T) *testApp {
 		StaleAfter:         45 * time.Second,
 		OfflineAfter:       90 * time.Second,
 	}
-	application, err := New(cfg, database, bytes.Repeat([]byte{0x42}, 32), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	logs := &bytes.Buffer{}
+	application, err := New(cfg, database, bytes.Repeat([]byte{0x42}, 32), slog.New(slog.NewTextHandler(logs, nil)))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -52,7 +54,7 @@ func newTestApp(t *testing.T) *testApp {
 	if err != nil {
 		t.Fatalf("Handler() error = %v", err)
 	}
-	return &testApp{handler: handler, store: database}
+	return &testApp{handler: handler, store: database, logs: logs}
 }
 
 func (app *testApp) request(t *testing.T, method, path string, body any, csrf, origin string) *httptest.ResponseRecorder {

@@ -1,16 +1,21 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Plus, RefreshCw, UsersRound } from "@lucide/vue";
 import { NAlert, NButton, NIcon, NSpin, NTooltip, useDialog, useMessage } from "naive-ui";
 import { api, APIError } from "../../api";
 import type {
   NodeRecord,
+  IssuedSubscriptionToken,
+  SubscriptionTokenInput,
+  SubscriptionTokenRecord,
   UserAssignment,
   UserCredential,
   UserInput,
   UserRecord,
 } from "../../types";
 import CredentialDialog from "./CredentialDialog.vue";
+import SubscriptionTokenDialog from "./SubscriptionTokenDialog.vue";
+import SubscriptionTokenFormModal from "./SubscriptionTokenFormModal.vue";
 import UserDetailDrawer from "./UserDetailDrawer.vue";
 import UserFormModal from "./UserFormModal.vue";
 import UserTable from "./UserTable.vue";
@@ -33,6 +38,14 @@ const credentialOpen = ref(false);
 const credentialTitle = ref("用户凭据");
 const credentials = ref<UserCredential[]>([]);
 const credentialReturnUserID = ref<string | null>(null);
+const subscriptionTokens = ref<SubscriptionTokenRecord[]>([]);
+const subscriptionLoading = ref(false);
+const subscriptionFormOpen = ref(false);
+const subscriptionSaving = ref(false);
+const subscriptionUserID = ref<string | null>(null);
+const issuedSubscription = ref<IssuedSubscriptionToken | null>(null);
+const issuedSubscriptionOpen = ref(false);
+const issuedReturnUserID = ref<string | null>(null);
 
 const nativeNodes = computed(() => props.nodes.filter((node) => node.adapter_type === "native_hysteria2"));
 const onlineConnections = computed(() => users.value.reduce((total, user) => total + user.online_connections, 0));
@@ -49,8 +62,23 @@ function handleAPIError(error: unknown, fallback: string) {
     user_conflict: "用户名或节点分配已经存在。",
     native_nodes_only: "当前阶段只支持分配原生 Hysteria2 节点。",
     user_resource_not_found: "用户或节点分配已不存在。",
+    credential_rotation_pending: "节点仍有待同步配置，请等待同步完成后再轮换凭据。",
+    subscription_token_expired: "该 Token 已到期，请创建新的 Token。",
+    subscription_token_revoked: "该 Token 已撤销，请创建新的 Token。",
   };
   message.error(error instanceof APIError ? (messages[error.code] ?? error.message) : fallback);
+}
+
+async function loadSubscriptionTokens(userId: string) {
+  subscriptionLoading.value = true;
+  try {
+    subscriptionTokens.value = await api.listSubscriptionTokens(userId);
+  } catch (error) {
+    handleAPIError(error, "订阅 Token 加载失败。");
+    subscriptionTokens.value = [];
+  } finally {
+    subscriptionLoading.value = false;
+  }
 }
 
 async function loadUsers(silent = false) {
@@ -98,6 +126,94 @@ function setCredentialOpen(show: boolean) {
     detailUserID.value = credentialReturnUserID.value;
     credentialReturnUserID.value = null;
   }
+}
+
+function openSubscriptionForm(user: UserRecord) {
+  subscriptionUserID.value = user.id;
+  subscriptionFormOpen.value = true;
+}
+
+async function createSubscriptionToken(input: SubscriptionTokenInput) {
+  if (!subscriptionUserID.value) return;
+  subscriptionSaving.value = true;
+  const userID = subscriptionUserID.value;
+  try {
+    const issued = await api.createSubscriptionToken(userID, input);
+    subscriptionFormOpen.value = false;
+    await loadSubscriptionTokens(userID);
+    showIssuedSubscription(issued, userID);
+    message.success("订阅 Token 已创建");
+  } catch (error) {
+    handleAPIError(error, "订阅 Token 创建失败。");
+  } finally {
+    subscriptionSaving.value = false;
+  }
+}
+
+function showIssuedSubscription(issued: IssuedSubscriptionToken, returnUserID: string) {
+  issuedSubscription.value = issued;
+  issuedReturnUserID.value = returnUserID;
+  detailUserID.value = null;
+  issuedSubscriptionOpen.value = true;
+}
+
+function setIssuedSubscriptionOpen(show: boolean) {
+  issuedSubscriptionOpen.value = show;
+  if (!show) {
+    issuedSubscription.value = null;
+    if (issuedReturnUserID.value) {
+      detailUserID.value = issuedReturnUserID.value;
+      issuedReturnUserID.value = null;
+    }
+  }
+}
+
+function rotateSubscriptionToken(user: UserRecord, token: SubscriptionTokenRecord) {
+  dialog.warning({
+    title: "轮换订阅 Token",
+    content: `确认轮换“${token.name}”？当前订阅地址会立即失效。`,
+    positiveText: "轮换",
+    negativeText: "取消",
+    async onPositiveClick() {
+      working.value = `subscription-rotate:${token.id}`;
+      try {
+        const issued = await api.rotateSubscriptionToken(user.id, token.id);
+        await loadSubscriptionTokens(user.id);
+        showIssuedSubscription(issued, user.id);
+        message.success("订阅 Token 已轮换");
+      } catch (error) {
+        handleAPIError(error, "订阅 Token 轮换失败。");
+        return false;
+      } finally {
+        working.value = "";
+      }
+      return true;
+    },
+  });
+}
+
+function revokeSubscriptionToken(user: UserRecord, token: SubscriptionTokenRecord) {
+  dialog.warning({
+    title: "撤销订阅 Token",
+    content: `确认撤销“${token.name}”？对应订阅地址会立即失效。`,
+    positiveText: "撤销",
+    negativeText: "取消",
+    positiveButtonProps: { type: "error" },
+    async onPositiveClick() {
+      working.value = `subscription-revoke:${token.id}`;
+      try {
+        await api.revokeSubscriptionToken(user.id, token.id);
+        await loadSubscriptionTokens(user.id);
+        message.success("订阅 Token 已撤销");
+      } catch (error) {
+        handleAPIError(error, "订阅 Token 撤销失败。");
+        return false;
+      } finally {
+        working.value = "";
+      }
+      return true;
+    },
+  });
 }
 
 async function saveUser(input: UserInput) {
@@ -285,6 +401,66 @@ async function revealCredential(user: UserRecord, assignment: UserAssignment) {
   }
 }
 
+function rotateAssignmentCredential(user: UserRecord, assignment: UserAssignment) {
+  dialog.warning({
+    title: "轮换节点凭据",
+    content: `确认轮换“${assignment.node_name}”的 Hysteria2 凭据？节点同步完成前不会出现在新拉取的订阅中。`,
+    positiveText: "轮换",
+    negativeText: "取消",
+    async onPositiveClick() {
+      working.value = `credential-rotate:${assignment.id}`;
+      try {
+        const result = await api.rotateAssignmentCredential(user.id, assignment.node_id);
+        showCredentials(`${assignment.node_name} 新凭据`, [result.credential], user.id);
+        await loadUsers(true);
+        emit("nodes-changed");
+        message.success("新凭据已等待节点应用");
+      } catch (error) {
+        handleAPIError(error, "凭据轮换失败。");
+        return false;
+      } finally {
+        working.value = "";
+      }
+      return true;
+    },
+  });
+}
+
+function rotateUserCredentials(user: UserRecord) {
+  dialog.warning({
+    title: "轮换全部凭据",
+    content: `确认轮换“${user.display_name || user.username}”在全部节点上的 Hysteria2 凭据？`,
+    positiveText: "全部轮换",
+    negativeText: "取消",
+    async onPositiveClick() {
+      working.value = `credential-rotate:${user.id}`;
+      try {
+        const result = await api.rotateUserCredentials(user.id);
+        if (!showCredentials("新节点凭据", result.credentials, user.id)) {
+          detailUserID.value = user.id;
+        }
+        await loadUsers(true);
+        emit("nodes-changed");
+        message.success("全部新凭据已等待节点应用");
+      } catch (error) {
+        handleAPIError(error, "全部凭据轮换失败。");
+        return false;
+      } finally {
+        working.value = "";
+      }
+      return true;
+    },
+  });
+}
+
+watch(detailUserID, (userID) => {
+  if (userID) {
+    loadSubscriptionTokens(userID);
+  } else if (!issuedSubscriptionOpen.value && !credentialOpen.value) {
+    subscriptionTokens.value = [];
+  }
+});
+
 let refreshTimer: number | undefined;
 onMounted(() => {
   loadUsers();
@@ -374,6 +550,8 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
     :show="detailUser !== null"
     :user="detailUser"
     :native-nodes="nativeNodes"
+    :subscription-tokens="subscriptionTokens"
+    :subscription-loading="subscriptionLoading"
     :working="working"
     @update:show="!$event && (detailUserID = null)"
     @edit="openEdit"
@@ -385,11 +563,26 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
     @kick-assignment="kickUser"
     @unassign="unassignUser"
     @reveal="revealCredential"
+    @create-subscription="openSubscriptionForm"
+    @rotate-subscription="rotateSubscriptionToken"
+    @revoke-subscription="revokeSubscriptionToken"
+    @rotate-assignment-credential="rotateAssignmentCredential"
+    @rotate-user-credentials="rotateUserCredentials"
   />
   <credential-dialog
     :show="credentialOpen"
     :title="credentialTitle"
     :credentials="credentials"
     @update:show="setCredentialOpen"
+  />
+  <subscription-token-form-modal
+    v-model:show="subscriptionFormOpen"
+    :saving="subscriptionSaving"
+    @submit="createSubscriptionToken"
+  />
+  <subscription-token-dialog
+    :show="issuedSubscriptionOpen"
+    :issued="issuedSubscription"
+    @update:show="setIssuedSubscriptionOpen"
   />
 </template>

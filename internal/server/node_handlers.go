@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -12,11 +13,15 @@ import (
 )
 
 type nodeRequest struct {
-	Name        string `json:"name"`
-	Provider    string `json:"provider"`
-	Region      string `json:"region"`
-	AdapterType string `json:"adapter_type"`
-	Enabled     *bool  `json:"enabled"`
+	Name        string  `json:"name"`
+	Provider    string  `json:"provider"`
+	Region      string  `json:"region"`
+	AdapterType string  `json:"adapter_type"`
+	PublicHost  *string `json:"public_host"`
+	PublicPort  *int    `json:"public_port"`
+	SNI         *string `json:"sni"`
+	TLSInsecure *bool   `json:"tls_insecure"`
+	Enabled     *bool   `json:"enabled"`
 }
 
 type nodeResponse struct {
@@ -25,6 +30,10 @@ type nodeResponse struct {
 	Provider                 string     `json:"provider"`
 	Region                   string     `json:"region"`
 	AdapterType              string     `json:"adapter_type"`
+	PublicHost               string     `json:"public_host"`
+	PublicPort               int        `json:"public_port"`
+	SNI                      string     `json:"sni"`
+	TLSInsecure              bool       `json:"tls_insecure"`
 	Enabled                  bool       `json:"enabled"`
 	Status                   string     `json:"status"`
 	StatusReason             string     `json:"status_reason"`
@@ -112,6 +121,7 @@ func (a *App) handleCreateNode(response http.ResponseWriter, request *http.Reque
 	if input.Enabled != nil {
 		enabled = *input.Enabled
 	}
+	publicHost, publicPort, sni, tlsInsecure := nodeEndpointValues(input, nil)
 	now := time.Now().UTC()
 	node, err := a.store.CreateNode(request.Context(), store.NewNode{
 		ID:          cryptoutil.NewID(),
@@ -119,6 +129,10 @@ func (a *App) handleCreateNode(response http.ResponseWriter, request *http.Reque
 		Provider:    input.Provider,
 		Region:      input.Region,
 		AdapterType: input.AdapterType,
+		PublicHost:  publicHost,
+		PublicPort:  publicPort,
+		SNI:         sni,
+		TLSInsecure: tlsInsecure,
 		Enabled:     enabled,
 		Now:         now,
 	})
@@ -143,12 +157,26 @@ func (a *App) handleUpdateNode(response http.ResponseWriter, request *http.Reque
 		a.writeError(response, request, http.StatusUnprocessableEntity, "validation_failed", validationMessage)
 		return
 	}
+	current, err := a.store.GetNode(request.Context(), chi.URLParam(request, "nodeID"))
+	if errors.Is(err, store.ErrNotFound) {
+		a.writeError(response, request, http.StatusNotFound, "node_not_found", "node not found")
+		return
+	}
+	if err != nil {
+		a.writeError(response, request, http.StatusInternalServerError, "node_read_failed", "could not read node")
+		return
+	}
+	publicHost, publicPort, sni, tlsInsecure := nodeEndpointValues(input, &current)
 	now := time.Now().UTC()
-	node, err := a.store.UpdateNode(request.Context(), chi.URLParam(request, "nodeID"), store.UpdateNode{
+	node, err := a.store.UpdateNode(request.Context(), current.ID, store.UpdateNode{
 		Name:        input.Name,
 		Provider:    input.Provider,
 		Region:      input.Region,
 		AdapterType: input.AdapterType,
+		PublicHost:  publicHost,
+		PublicPort:  publicPort,
+		SNI:         sni,
+		TLSInsecure: tlsInsecure,
 		Enabled:     *input.Enabled,
 		Now:         now,
 	})
@@ -206,6 +234,14 @@ func normalizeNodeRequest(input nodeRequest) nodeRequest {
 	input.Provider = strings.TrimSpace(input.Provider)
 	input.Region = strings.TrimSpace(input.Region)
 	input.AdapterType = strings.TrimSpace(input.AdapterType)
+	if input.PublicHost != nil {
+		value := normalizeEndpointHost(*input.PublicHost)
+		input.PublicHost = &value
+	}
+	if input.SNI != nil {
+		value := normalizeEndpointHost(*input.SNI)
+		input.SNI = &value
+	}
 	return input
 }
 
@@ -215,6 +251,15 @@ func validateNodeRequest(input nodeRequest) string {
 	}
 	if len(input.Provider) > 64 || len(input.Region) > 64 {
 		return "provider and region must be at most 64 characters"
+	}
+	if input.PublicHost != nil && *input.PublicHost != "" && !validEndpointHost(*input.PublicHost) {
+		return "public_host must be a domain name or IP address without a scheme or port"
+	}
+	if input.PublicPort != nil && (*input.PublicPort < 1 || *input.PublicPort > 65535) {
+		return "public_port must be between 1 and 65535"
+	}
+	if input.SNI != nil && *input.SNI != "" && !validEndpointHost(*input.SNI) {
+		return "sni must be a domain name or IP address"
 	}
 	switch input.AdapterType {
 	case "native_hysteria2", "standalone_sing_box", "s_ui":
@@ -238,7 +283,9 @@ func (a *App) presentNode(node store.Node, now time.Time) nodeResponse {
 	}
 	return nodeResponse{
 		ID: node.ID, Name: node.Name, Provider: node.Provider, Region: node.Region,
-		AdapterType: node.AdapterType, Enabled: node.Enabled, Status: status,
+		AdapterType: node.AdapterType, PublicHost: node.PublicHost, PublicPort: node.PublicPort,
+		SNI: node.SNI, TLSInsecure: node.TLSInsecure,
+		Enabled: node.Enabled, Status: status,
 		StatusReason: node.StatusReason, DesiredVersion: node.DesiredVersion,
 		AppliedVersion: node.AppliedVersion, AgentInstallationID: node.AgentInstallationID,
 		AgentVersion: node.AgentVersion, ProtocolVersion: node.ProtocolVersion,
@@ -260,4 +307,66 @@ func (a *App) presentNode(node store.Node, now time.Time) nodeResponse {
 		LastSeenAt: node.LastSeenAt, LastAppliedAt: node.LastAppliedAt,
 		CreatedAt: node.CreatedAt, UpdatedAt: node.UpdatedAt,
 	}
+}
+
+func nodeEndpointValues(input nodeRequest, current *store.Node) (string, int, string, bool) {
+	publicHost := ""
+	publicPort := 443
+	sni := ""
+	tlsInsecure := false
+	if current != nil {
+		publicHost = current.PublicHost
+		publicPort = current.PublicPort
+		sni = current.SNI
+		tlsInsecure = current.TLSInsecure
+	}
+	if input.PublicHost != nil {
+		publicHost = *input.PublicHost
+	}
+	if input.PublicPort != nil {
+		publicPort = *input.PublicPort
+	}
+	if input.SNI != nil {
+		sni = *input.SNI
+	}
+	if input.TLSInsecure != nil {
+		tlsInsecure = *input.TLSInsecure
+	}
+	return publicHost, publicPort, sni, tlsInsecure
+}
+
+func normalizeEndpointHost(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		candidate := strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")
+		if net.ParseIP(candidate) != nil {
+			return candidate
+		}
+	}
+	return value
+}
+
+func validEndpointHost(value string) bool {
+	if len(value) > 253 || strings.ContainsAny(value, "/?#@[] ") {
+		return false
+	}
+	if net.ParseIP(value) != nil {
+		return true
+	}
+	value = strings.TrimSuffix(value, ".")
+	if value == "" || strings.Contains(value, ":") {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
+				(character < '0' || character > '9') && character != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }

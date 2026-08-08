@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { KeyRound, LogOut, Pencil, Plus, Save, Trash2, Wifi } from "@lucide/vue";
+import { KeyRound, Link2, LogOut, Pencil, Plus, RotateCw, Save, Trash2, Wifi } from "@lucide/vue";
 import {
   NButton,
   NDrawer,
@@ -9,17 +9,20 @@ import {
   NInputNumber,
   NProgress,
   NSelect,
+  NSpin,
   NSwitch,
   NTag,
   NTooltip,
 } from "naive-ui";
 import { formatBytes, formatDateTime, quotaPercent, relativeTime } from "../../lib/format";
-import type { NodeRecord, UserAssignment, UserRecord } from "../../types";
+import type { NodeRecord, SubscriptionTokenRecord, UserAssignment, UserRecord } from "../../types";
 
 const props = defineProps<{
   show: boolean;
   user: UserRecord | null;
   nativeNodes: NodeRecord[];
+  subscriptionTokens: SubscriptionTokenRecord[];
+  subscriptionLoading: boolean;
   working: string;
 }>();
 const emit = defineEmits<{
@@ -33,6 +36,11 @@ const emit = defineEmits<{
   "update-assignment-limit": [user: UserRecord, assignment: UserAssignment, trafficLimitBytes: number];
   "kick-user": [user: UserRecord];
   "kick-assignment": [user: UserRecord, assignment: UserAssignment];
+  "create-subscription": [user: UserRecord];
+  "rotate-subscription": [user: UserRecord, token: SubscriptionTokenRecord];
+  "revoke-subscription": [user: UserRecord, token: SubscriptionTokenRecord];
+  "rotate-assignment-credential": [user: UserRecord, assignment: UserAssignment];
+  "rotate-user-credentials": [user: UserRecord];
 }>();
 
 const selectedNodeID = ref<string | null>(null);
@@ -43,6 +51,9 @@ const availableOptions = computed(() =>
   props.nativeNodes
     .filter((node) => !assignedNodeIDs.value.has(node.id))
     .map((node) => ({ label: node.name, value: node.id, disabled: !node.enabled })),
+);
+const activeSubscriptionCount = computed(
+  () => props.subscriptionTokens.filter((token) => token.status === "active").length,
 );
 
 watch(
@@ -79,6 +90,16 @@ function assignmentState(assignment: UserAssignment) {
   }
   return { label: "等待同步", type: "warning" as const };
 }
+
+function subscriptionState(token: SubscriptionTokenRecord) {
+  if (token.status === "revoked") return { label: "已撤销", type: "default" as const };
+  if (token.status === "expired") return { label: "已到期", type: "error" as const };
+  return { label: "有效", type: "success" as const };
+}
+
+function formatLabel(format: string) {
+  return { uri: "URI", base64: "Base64", clash: "Clash", "sing-box": "sing-box" }[format] ?? format;
+}
 </script>
 
 <template>
@@ -112,6 +133,74 @@ function assignmentState(assignment: UserAssignment) {
           <div><dt>最后更新</dt><dd>{{ relativeTime(user.updated_at) }}</dd></div>
         </dl>
         <p v-if="user.notes" class="user-notes">{{ user.notes }}</p>
+      </section>
+
+      <section class="detail-section">
+        <div class="detail-section__heading">
+          <h2>统一订阅</h2>
+          <n-button size="small" secondary @click="emit('create-subscription', user)">
+            <template #icon><n-icon><plus /></n-icon></template>
+            创建 Token
+          </n-button>
+        </div>
+        <div v-if="subscriptionLoading" class="subscription-loading"><n-spin :size="20" /></div>
+        <div v-else-if="subscriptionTokens.length" class="subscription-token-list">
+          <article v-for="token in subscriptionTokens" :key="token.id" class="subscription-token-item">
+            <header>
+              <div>
+                <strong>{{ token.name }}</strong>
+                <span>{{ token.token_prefix }}••••</span>
+              </div>
+              <n-tag :type="subscriptionState(token).type" size="small" :bordered="false">
+                {{ subscriptionState(token).label }}
+              </n-tag>
+            </header>
+            <div class="subscription-token-meta">
+              <span>{{ token.allowed_formats.map(formatLabel).join(" · ") }}</span>
+              <span>使用 {{ relativeTime(token.last_used_at) }}</span>
+              <span>到期 {{ formatDateTime(token.expires_at) }}</span>
+            </div>
+            <footer>
+              <span>{{ formatDateTime(token.created_at, false) }}</span>
+              <div class="assignment-actions">
+                <n-tooltip v-if="token.status === 'active'" trigger="hover">
+                  <template #trigger>
+                    <n-button
+                      circle
+                      quaternary
+                      :loading="working === `subscription-rotate:${token.id}`"
+                      :aria-label="`轮换 ${token.name} Token`"
+                      @click="emit('rotate-subscription', user, token)"
+                    >
+                      <template #icon><n-icon><rotate-cw /></n-icon></template>
+                    </n-button>
+                  </template>
+                  轮换 Token
+                </n-tooltip>
+                <n-tooltip v-if="token.status === 'active'" trigger="hover">
+                  <template #trigger>
+                    <n-button
+                      circle
+                      quaternary
+                      type="error"
+                      :loading="working === `subscription-revoke:${token.id}`"
+                      :aria-label="`撤销 ${token.name} Token`"
+                      @click="emit('revoke-subscription', user, token)"
+                    >
+                      <template #icon><n-icon><trash2 /></n-icon></template>
+                    </n-button>
+                  </template>
+                  撤销 Token
+                </n-tooltip>
+              </div>
+            </footer>
+          </article>
+        </div>
+        <div v-else class="subscription-empty">
+          <link2 :size="18" aria-hidden="true" />
+          <span>尚无订阅 Token</span>
+        </div>
+        <div class="subscription-count">{{ activeSubscriptionCount }} 个有效 Token</div>
       </section>
 
       <section class="detail-section">
@@ -271,6 +360,21 @@ function assignmentState(assignment: UserAssignment) {
                     <n-button
                       circle
                       quaternary
+                      :disabled="assignment.state !== 'applied' || assignment.applied_version < assignment.desired_version"
+                      :loading="working === `credential-rotate:${assignment.id}`"
+                      :aria-label="`轮换 ${assignment.node_name} 凭据`"
+                      @click="emit('rotate-assignment-credential', user, assignment)"
+                    >
+                      <template #icon><n-icon><rotate-cw /></n-icon></template>
+                    </n-button>
+                  </template>
+                  轮换凭据
+                </n-tooltip>
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-button
+                      circle
+                      quaternary
                       type="error"
                       :aria-label="`取消 ${assignment.node_name} 分配`"
                       @click="emit('unassign', user, assignment)"
@@ -300,6 +404,15 @@ function assignmentState(assignment: UserAssignment) {
           >
             <template #icon><n-icon><log-out /></n-icon></template>
             全部踢下线
+          </n-button>
+          <n-button
+            secondary
+            :disabled="user.assignments.length === 0"
+            :loading="working === `credential-rotate:${user.id}`"
+            @click="emit('rotate-user-credentials', user)"
+          >
+            <template #icon><n-icon><rotate-cw /></n-icon></template>
+            全部轮换
           </n-button>
         </div>
       </template>

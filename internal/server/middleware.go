@@ -94,7 +94,7 @@ func (a *App) loggingMiddleware(next http.Handler) http.Handler {
 		a.logger.LogAttrs(request.Context(), slog.LevelInfo, "http request",
 			slog.String("request_id", requestIDFromContext(request.Context())),
 			slog.String("method", request.Method),
-			slog.String("path", request.URL.Path),
+			slog.String("path", redactedRequestPath(request.URL.Path)),
 			slog.Int("status", status),
 			slog.Int("bytes", recorder.bytes),
 			slog.Int64("duration_ms", time.Since(started).Milliseconds()),
@@ -114,8 +114,34 @@ func (a *App) securityHeadersMiddleware(next http.Handler) http.Handler {
 		if a.config.CookieSecure {
 			response.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
-		if strings.HasPrefix(request.URL.Path, "/api/") || strings.HasPrefix(request.URL.Path, "/agent/") {
+		if strings.HasPrefix(request.URL.Path, "/api/") ||
+			strings.HasPrefix(request.URL.Path, "/agent/") ||
+			strings.HasPrefix(request.URL.Path, "/sub/") {
 			response.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(response, request)
+	})
+}
+
+func redactedRequestPath(path string) string {
+	if !strings.HasPrefix(path, "/sub/") {
+		return path
+	}
+	remainder := strings.TrimPrefix(path, "/sub/")
+	_, suffix, found := strings.Cut(remainder, "/")
+	if !found || suffix == "" {
+		return "/sub/[redacted]"
+	}
+	return "/sub/[redacted]/" + suffix
+}
+
+func (a *App) subscriptionRateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !a.subLimiter.Allow(remoteIP(request), time.Now().UTC()) {
+			response.Header().Set("Retry-After", "60")
+			a.writeError(response, request, http.StatusTooManyRequests,
+				"subscription_rate_limited", "too many subscription requests")
+			return
 		}
 		next.ServeHTTP(response, request)
 	})

@@ -490,6 +490,113 @@ func (s *Store) SetAssignmentEnabled(
 	})
 }
 
+func (s *Store) RotateAssignmentCredential(
+	ctx context.Context,
+	userID, nodeID string,
+	now time.Time,
+	masterKey []byte,
+) (User, CreatedCredential, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, CreatedCredential{}, fmt.Errorf("begin rotate assignment credential: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	credential, err := rotateAssignmentCredentialTx(ctx, tx, userID, nodeID, now, masterKey)
+	if err != nil {
+		return User{}, CreatedCredential{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, CreatedCredential{}, fmt.Errorf("commit rotated assignment credential: %w", err)
+	}
+	user, err := s.GetUser(ctx, userID)
+	if err != nil {
+		return User{}, CreatedCredential{}, err
+	}
+	for _, assignment := range user.Assignments {
+		if assignment.NodeID == nodeID {
+			credential.Assignment = assignment
+			break
+		}
+	}
+	return user, credential, nil
+}
+
+func (s *Store) RotateUserCredentials(
+	ctx context.Context,
+	userID string,
+	now time.Time,
+	masterKey []byte,
+) (User, []CreatedCredential, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, nil, fmt.Errorf("begin rotate user credentials: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `
+		SELECT a.node_id
+		FROM node_user_assignments a
+		JOIN users u ON u.id = a.user_id AND u.archived_at IS NULL
+		JOIN nodes n ON n.id = a.node_id AND n.archived_at IS NULL
+		WHERE a.user_id = ?
+		ORDER BY n.name COLLATE NOCASE, n.id
+	`, userID)
+	if err != nil {
+		return User{}, nil, fmt.Errorf("list credential rotation targets: %w", err)
+	}
+	nodeIDs := make([]string, 0)
+	for rows.Next() {
+		var nodeID string
+		if err := rows.Scan(&nodeID); err != nil {
+			_ = rows.Close()
+			return User{}, nil, fmt.Errorf("scan credential rotation target: %w", err)
+		}
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return User{}, nil, fmt.Errorf("iterate credential rotation targets: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return User{}, nil, fmt.Errorf("close credential rotation targets: %w", err)
+	}
+	if len(nodeIDs) == 0 {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT 1 FROM users WHERE id = ? AND archived_at IS NULL
+		`, userID).Scan(&exists); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return User{}, nil, ErrNotFound
+			}
+			return User{}, nil, fmt.Errorf("find credential rotation user: %w", err)
+		}
+	}
+	credentials := make([]CreatedCredential, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		credential, err := rotateAssignmentCredentialTx(
+			ctx, tx, userID, nodeID, now, masterKey,
+		)
+		if err != nil {
+			return User{}, nil, err
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, nil, fmt.Errorf("commit rotated user credentials: %w", err)
+	}
+	user, err := s.GetUser(ctx, userID)
+	if err != nil {
+		return User{}, nil, err
+	}
+	assignments := make(map[string]UserAssignment, len(user.Assignments))
+	for _, assignment := range user.Assignments {
+		assignments[assignment.NodeID] = assignment
+	}
+	for index := range credentials {
+		credentials[index].Assignment = assignments[credentials[index].Assignment.NodeID]
+	}
+	return user, credentials, nil
+}
+
 func (s *Store) UnassignUser(ctx context.Context, userID, nodeID string, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -610,20 +717,13 @@ func assignUserTx(
 	if adapter != "native_hysteria2" {
 		return CreatedCredential{}, ErrUnsupported
 	}
-	secret, err := cryptoutil.RandomToken(32)
+	credentialID, secret, fingerprint, err := createUserCredentialTx(
+		ctx, tx, userID, nodeID, now, masterKey,
+	)
 	if err != nil {
 		return CreatedCredential{}, err
 	}
-	verifier := sha256.Sum256([]byte(secret))
-	credentialID := cryptoutil.NewID()
 	assignmentID := cryptoutil.NewID()
-	ciphertext, err := cryptoutil.Seal(masterKey, []byte(secret), credentialAAD(
-		credentialID, userID, nodeID, "hysteria2", credentialKeyVersion,
-	))
-	if err != nil {
-		return CreatedCredential{}, err
-	}
-	fingerprint := "fp_" + base64.RawURLEncoding.EncodeToString(verifier[:6])
 	var priorUpload, priorDownload int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE((
@@ -637,15 +737,6 @@ func assignUserTx(
 	priorUsed, ok := checkedAdd(priorUpload, priorDownload)
 	if !ok {
 		return CreatedCredential{}, errors.New("prior assignment traffic exceeds integer range")
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO user_credentials(
-			id, user_id, node_id, protocol, secret_ciphertext, verifier_sha256,
-			secret_fingerprint, key_version, state, created_at
-		) VALUES (?, ?, ?, 'hysteria2', ?, ?, ?, ?, 'staged', ?)
-	`, credentialID, userID, nodeID, ciphertext, verifier[:], fingerprint,
-		credentialKeyVersion, now.UnixMilli()); err != nil {
-		return CreatedCredential{}, fmt.Errorf("insert user credential: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO node_user_assignments(
@@ -678,6 +769,102 @@ func assignUserTx(
 		},
 		Secret: secret,
 	}, nil
+}
+
+func rotateAssignmentCredentialTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	userID, nodeID string,
+	now time.Time,
+	masterKey []byte,
+) (CreatedCredential, error) {
+	var assignmentID, nodeName, adapter, desiredCredentialID, appliedCredentialID, state string
+	var desiredVersion, appliedVersion int64
+	err := tx.QueryRowContext(ctx, `
+		SELECT a.id, n.name, n.adapter_type, a.desired_credential_id,
+		       COALESCE(a.applied_credential_id, ''), a.state,
+		       a.desired_version, a.applied_version
+		FROM node_user_assignments a
+		JOIN users u ON u.id = a.user_id AND u.archived_at IS NULL
+		JOIN nodes n ON n.id = a.node_id AND n.archived_at IS NULL
+		WHERE a.user_id = ? AND a.node_id = ?
+	`, userID, nodeID).Scan(
+		&assignmentID, &nodeName, &adapter, &desiredCredentialID,
+		&appliedCredentialID, &state, &desiredVersion, &appliedVersion,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return CreatedCredential{}, ErrNotFound
+	}
+	if err != nil {
+		return CreatedCredential{}, fmt.Errorf("read credential rotation assignment: %w", err)
+	}
+	if adapter != "native_hysteria2" {
+		return CreatedCredential{}, ErrUnsupported
+	}
+	if state != "applied" || desiredVersion != appliedVersion ||
+		desiredCredentialID == "" || desiredCredentialID != appliedCredentialID {
+		return CreatedCredential{}, ErrPending
+	}
+	credentialID, secret, fingerprint, err := createUserCredentialTx(
+		ctx, tx, userID, nodeID, now, masterKey,
+	)
+	if err != nil {
+		return CreatedCredential{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE node_user_assignments
+		SET desired_credential_id = ?, state = 'pending', last_error_code = '',
+		    last_error_message = '', updated_at = ?
+		WHERE id = ?
+	`, credentialID, now.UnixMilli(), assignmentID); err != nil {
+		return CreatedCredential{}, fmt.Errorf("stage rotated assignment credential: %w", err)
+	}
+	version, err := bumpNodeSnapshot(ctx, tx, nodeID, now)
+	if err != nil {
+		return CreatedCredential{}, err
+	}
+	if err := markAssignmentPending(ctx, tx, userID, nodeID, version, now); err != nil {
+		return CreatedCredential{}, err
+	}
+	return CreatedCredential{Assignment: UserAssignment{
+		ID: assignmentID, UserID: userID, NodeID: nodeID, NodeName: nodeName,
+		NodeAdapter: adapter, DesiredCredentialID: credentialID,
+		AppliedCredentialID: appliedCredentialID, CredentialFingerprint: fingerprint,
+		DesiredVersion: version, AppliedVersion: appliedVersion, State: "pending",
+		UpdatedAt: now,
+	}, Secret: secret}, nil
+}
+
+func createUserCredentialTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	userID, nodeID string,
+	now time.Time,
+	masterKey []byte,
+) (string, string, string, error) {
+	secret, err := cryptoutil.RandomToken(32)
+	if err != nil {
+		return "", "", "", err
+	}
+	verifier := sha256.Sum256([]byte(secret))
+	credentialID := cryptoutil.NewID()
+	ciphertext, err := cryptoutil.Seal(masterKey, []byte(secret), credentialAAD(
+		credentialID, userID, nodeID, "hysteria2", credentialKeyVersion,
+	))
+	if err != nil {
+		return "", "", "", err
+	}
+	fingerprint := "fp_" + base64.RawURLEncoding.EncodeToString(verifier[:6])
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO user_credentials(
+			id, user_id, node_id, protocol, secret_ciphertext, verifier_sha256,
+			secret_fingerprint, key_version, state, created_at
+		) VALUES (?, ?, ?, 'hysteria2', ?, ?, ?, ?, 'staged', ?)
+	`, credentialID, userID, nodeID, ciphertext, verifier[:], fingerprint,
+		credentialKeyVersion, now.UnixMilli()); err != nil {
+		return "", "", "", fmt.Errorf("insert user credential: %w", err)
+	}
+	return credentialID, secret, fingerprint, nil
 }
 
 func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssignment, error) {

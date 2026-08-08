@@ -1,11 +1,11 @@
 # HyFleet
 
 HyFleet is a lightweight control plane for a small fleet of Hysteria2 VPS nodes.
-It provides centralized node, user, traffic, and health management without
-replacing Hysteria2 or sing-box. Subscription delivery remains a later phase.
+It provides centralized node, user, traffic, subscription, and health management
+without replacing Hysteria2 or sing-box.
 
 The working name is provisional. The repository now contains the local
-**Phase 3: traffic and online state** implementation. Native Hysteria2 nodes can
+**Phase 4: unified subscriptions** implementation. Native Hysteria2 nodes can
 serve local HTTP authentication from a persistent Agent cache. Standalone
 sing-box and S-UI remain read-only until their later adapter phases.
 
@@ -26,6 +26,10 @@ sing-box and S-UI remain read-only until their later adapter phases.
   automatic failure recovery, and an explicit rollback command.
 - Persistent Agent traffic Outbox, idempotent control-plane accounting, online
   snapshots, kick generations, and global/per-node quotas.
+- Hashed per-user subscription Tokens with Hysteria2 URI, Base64, Clash Meta,
+  and sing-box outputs.
+- Applied-only subscription eligibility and staged single/all-assignment
+  credential rotation.
 - Private GitHub Release builds and a local parallel updater for the three-node
   fleet with per-component health checks and rollback.
 
@@ -74,6 +78,10 @@ sing-box and S-UI remain read-only until their later adapter phases.
 
 - [Traffic, online state, quotas, and fleet updates](docs/12-phase-3-traffic-and-updates.md)
 
+## Phase 4 documents
+
+- [Unified subscriptions and credential rotation](docs/13-phase-4-unified-subscriptions.md)
+
 ## Local development
 
 Required tools are Go 1.26, Node.js 22, and pnpm 11.16.
@@ -95,7 +103,7 @@ Set `HYFLEET_BOOTSTRAP_TOKEN` before the first server start. Example files are i
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
-  -Architecture amd64 -Version v0.3.0-dev
+  -Architecture amd64 -Version v0.4.0-dev
 ```
 
 The archive, external checksum, Linux ELF binaries, idempotent installers, and
@@ -105,7 +113,8 @@ a Windows preview executable to a VPS.
 
 ## Status
 
-Phase 3 is implemented and locally testable. Its final exit gate requires the
-documented LisaHost traffic-stats migration and controller-outage test before a `v0.3.0` tag.
+Phase 4 unified subscriptions are implemented for applied native Hysteria2
+assignments. Standalone sing-box and S-UI subscription membership remain gated
+on their Adapter phases.
 Secrets, IP addresses, API tokens, private keys, full subscription URLs, and
 unredacted configurations must not be committed.

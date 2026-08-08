@@ -5,9 +5,10 @@ It provides centralized node, user, traffic, subscription, and health management
 without replacing Hysteria2 or sing-box.
 
 The working name is provisional. The repository now contains the local
-**Phase 5: S-UI adapter** implementation. Native Hysteria2 and compatible S-UI
-nodes share one user, traffic, status, credential, and subscription control
-plane. Standalone sing-box remains observation-only until its adapter phase.
+**Phase 6: operations and recovery** implementation. Native Hysteria2 and
+compatible S-UI nodes share one user, traffic, status, credential, and
+subscription control plane. Standalone sing-box supports bounded operations and
+health monitoring, while its user and subscription adapter remains out of scope.
 
 ## Current capabilities
 
@@ -39,6 +40,10 @@ plane. Standalone sing-box remains observation-only until its adapter phase.
   mode routes through the generated proxy group.
 - Private GitHub Release builds and a local parallel updater for the three-node
   fleet with per-component health checks and rollback.
+- Durable bounded-operation delivery with Agent-side result Outbox, manual
+  retries, restricted core restart/log/backup actions, and restart rollback.
+- Active alert reconciliation for offline, core, traffic, synchronization, and
+  operation failures, with acknowledgement and automatic recovery.
 
 ## Initial scope
 
@@ -93,6 +98,10 @@ plane. Standalone sing-box remains observation-only until its adapter phase.
 
 - [S-UI adapter and DMIT onboarding](docs/14-phase-5-sui-adapter.md)
 
+## Phase 6 documents
+
+- [Operations, recovery, backups, and alerts](docs/15-phase-6-operations.md)
+
 ## Local development
 
 Required tools are Go 1.26, Node.js 22, and pnpm 11.16.
@@ -114,7 +123,7 @@ Set `HYFLEET_BOOTSTRAP_TOKEN` before the first server start. Example files are i
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
-  -Architecture amd64 -Version v0.5.0-dev
+  -Architecture amd64 -Version v0.6.0-dev
 ```
 
 The archive, external checksum, Linux ELF binaries, idempotent installers, and
@@ -124,10 +133,11 @@ a Windows preview executable to a VPS.
 
 ## Status
 
-Phase 5 adds supported S-UI assignments to the same applied-only subscription
-pipeline used by native Hysteria2. S-UI read-only imports never expose remote
-passwords and are excluded from subscriptions until explicitly adopted and
-successfully applied. Standalone sing-box membership remains gated on its
-Adapter phase.
+Phase 6 adds durable, bounded node operations and alerting without introducing
+remote shell access. S-UI read-only imports remain excluded from quotas and
+subscriptions until explicitly adopted and successfully applied. Standalone
+sing-box can now be enrolled for health, restart, limited logs, configuration
+backup, and alerts; its user and subscription membership remains gated on a
+future adapter phase.
 Secrets, IP addresses, API tokens, private keys, full subscription URLs, and
 unredacted configurations must not be committed.

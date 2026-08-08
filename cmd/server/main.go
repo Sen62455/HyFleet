@@ -73,7 +73,7 @@ func main() {
 	}
 	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go enforceExpiredUsers(shutdownContext, database, logger)
+	go runMaintenance(shutdownContext, database, logger, cfg.OfflineAfter)
 	go func() {
 		<-shutdownContext.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -89,16 +89,25 @@ func main() {
 	}
 }
 
-func enforceExpiredUsers(ctx context.Context, database *store.Store, logger *slog.Logger) {
+func runMaintenance(
+	ctx context.Context,
+	database *store.Store,
+	logger *slog.Logger,
+	offlineAfter time.Duration,
+) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
-		if count, err := database.EnforceExpiredUsers(ctx, time.Now().UTC(), 100); err != nil {
+		now := time.Now().UTC()
+		if count, err := database.EnforceExpiredUsers(ctx, now, 100); err != nil {
 			if ctx.Err() == nil {
 				logger.Error("enforce expired users failed", "error", err)
 			}
 		} else if count > 0 {
 			logger.Info("expired users enforced", "count", count)
+		}
+		if err := database.ReconcileAlerts(ctx, now, offlineAfter, 5*time.Minute); err != nil && ctx.Err() == nil {
+			logger.Error("reconcile alerts failed", "error", err)
 		}
 		select {
 		case <-ctx.Done():

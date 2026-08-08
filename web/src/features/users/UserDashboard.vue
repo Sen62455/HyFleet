@@ -21,7 +21,11 @@ import UserFormModal from "./UserFormModal.vue";
 import UserTable from "./UserTable.vue";
 
 const props = defineProps<{ nodes: NodeRecord[] }>();
-const emit = defineEmits<{ "session-expired": []; "nodes-changed": [] }>();
+const emit = defineEmits<{
+  "session-expired": [];
+  "nodes-changed": [];
+  "open-node": [nodeId: string];
+}>();
 const message = useMessage();
 const dialog = useDialog();
 
@@ -575,6 +579,7 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
     @revoke-subscription="revokeSubscriptionToken"
     @rotate-assignment-credential="rotateAssignmentCredential"
     @rotate-user-credentials="rotateUserCredentials"
+    @open-node="emit('open-node', $event)"
   />
   <credential-dialog
     :show="credentialOpen"

@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-本指南覆盖当前 `v0.5.0-dev` 的控制面、原生 Hysteria2 Agent、独立
+本指南覆盖当前 `v0.6.0-dev` 的控制面、原生 Hysteria2 Agent、独立
 sing-box Agent 和 S-UI Agent。首次部署仍应先确认 Server 与三台 Agent
 稳定在线，再进行原生认证迁移或 S-UI 接管，便于区分部署故障和适配器故障。
 
@@ -40,14 +40,14 @@ Hysteria2 使用 UDP。即使 Hysteria2 正在使用 UDP 443，Nginx 仍可使�
 cd D:\zuoye\AI\Codex\Desktop\VPS\hyfleet
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
   -Architecture amd64 `
-  -Version v0.5.0-dev
+  -Version v0.6.0-dev
 ```
 
 输出文件位于：
 
 ```text
-output/releases/hyfleet-v0.5.0-dev-linux-amd64.tar.gz
-output/releases/hyfleet-v0.5.0-dev-linux-amd64.tar.gz.sha256
+output/releases/hyfleet-v0.6.0-dev-linux-amd64.tar.gz
+output/releases/hyfleet-v0.6.0-dev-linux-amd64.tar.gz.sha256
 ```
 
 打包脚本会构建前端、交叉编译 Linux ELF、检查 ELF 架构，并为包内文件生成
@@ -58,9 +58,9 @@ output/releases/hyfleet-v0.5.0-dev-linux-amd64.tar.gz.sha256
 在 Windows PowerShell 中，把 `DMIT_IP` 替换为 DMIT 的 SSH 地址：
 
 ```powershell
-scp .\output\releases\hyfleet-v0.5.0-dev-linux-amd64.tar.gz `
+scp .\output\releases\hyfleet-v0.6.0-dev-linux-amd64.tar.gz `
   root@DMIT_IP:/root/
-scp .\output\releases\hyfleet-v0.5.0-dev-linux-amd64.tar.gz.sha256 `
+scp .\output\releases\hyfleet-v0.6.0-dev-linux-amd64.tar.gz.sha256 `
   root@DMIT_IP:/root/
 ```
 
@@ -68,15 +68,15 @@ scp .\output\releases\hyfleet-v0.5.0-dev-linux-amd64.tar.gz.sha256 `
 
 ```bash
 cd /root
-sha256sum -c hyfleet-v0.5.0-dev-linux-amd64.tar.gz.sha256
-tar -xzf hyfleet-v0.5.0-dev-linux-amd64.tar.gz
-cd hyfleet-v0.5.0-dev-linux-amd64
+sha256sum -c hyfleet-v0.6.0-dev-linux-amd64.tar.gz.sha256
+tar -xzf hyfleet-v0.6.0-dev-linux-amd64.tar.gz
+cd hyfleet-v0.6.0-dev-linux-amd64
 sha256sum -c SHA256SUMS
-file bin/hyfleet-server bin/hyfleet-agent
+file bin/hyfleet-server bin/hyfleet-agent bin/hyfleet-agent-ops
 bash -n deploy/*.sh
 ```
 
-两份二进制都应显示 `ELF 64-bit` 和 `x86-64`。如果显示 `PE32`、`Windows`、
+三份二进制都应显示 `ELF 64-bit` 和 `x86-64`。如果显示 `PE32`、`Windows`、
 `ARM aarch64`，不要继续安装。
 
 ## 3. 在 DMIT 安装控制面
@@ -231,13 +231,24 @@ sudo bash deploy/install-agent.sh \
 
 上传、解压和校验发布包后运行：
 
+先确认 sing-box 服务端实际使用的配置路径；下面的默认值只适用于常见安装：
+
+```bash
+sudo systemctl cat sing-box.service
+sudo test -f /etc/sing-box/config.json
+```
+
+若 `ExecStart` 中的配置文件名不同，把实际路径传给 `--core-config-path`。该路径必须是
+`/etc/sing-box` 下的普通文件；客户端 Clash 配置不能替代服务端 sing-box 配置。
+
 ```bash
 sudo apt update
 sudo apt install -y ca-certificates curl file
 sudo bash deploy/install-agent.sh \
   --server-url https://panel.example.com \
   --node-name BandwagonHost \
-  --adapter standalone-sing-box
+  --adapter standalone-sing-box \
+  --core-config-path /etc/sing-box/config.json
 ```
 
 提示时粘贴 BandwagonHost 节点的新注册 token。
@@ -272,6 +283,7 @@ Server 和 Agent 共存时，`/etc/hyfleet` 保持 `root:root 0755`；`server.ya
 
 ```bash
 sudo systemctl status hyfleet-agent --no-pager -l
+sudo systemctl status hyfleet-agent-ops.socket --no-pager -l
 sudo journalctl -u hyfleet-agent -b -n 50 --no-pager
 sudo stat -c '%a %U:%G %n' /var/lib/hyfleet-agent/agent-state.json
 ```
@@ -342,7 +354,7 @@ sudo bash deploy/diagnose.sh agent > /tmp/hyfleet-agent-diagnostic.txt 2>&1
 阶段 1 Agent 与代理核心解耦。遇到问题可直接停止 Agent，不影响现有节点流量：
 
 ```bash
-sudo systemctl disable --now hyfleet-agent
+sudo systemctl disable --now hyfleet-agent hyfleet-agent-ops.socket
 ```
 
 保留 `/var/lib/hyfleet-agent/agent-state.json`，重新安装时可继续使用现有注册身份。只有明确要

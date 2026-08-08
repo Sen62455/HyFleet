@@ -34,6 +34,12 @@ type suiClientMapping struct {
 	CredentialFingerprint string
 }
 
+type pendingOperationResult struct {
+	OperationID string
+	Sequence    int64
+	Result      protocol.OperationResultRequest
+}
+
 type localStore struct {
 	db *sql.DB
 }
@@ -138,6 +144,23 @@ func (store *localStore) migrate(ctx context.Context) error {
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		);
+		CREATE TABLE IF NOT EXISTS operation_results (
+			sequence INTEGER PRIMARY KEY CHECK (sequence >= 1),
+			operation_id TEXT NOT NULL UNIQUE,
+			payload_json BLOB NOT NULL,
+			reported_at INTEGER,
+			attempt_count INTEGER NOT NULL DEFAULT 0,
+			last_attempt_at INTEGER,
+			last_error_code TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS operation_results_pending_idx
+			ON operation_results(sequence) WHERE reported_at IS NULL;
+		CREATE TABLE IF NOT EXISTS operation_runtime (
+			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+			last_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_sequence >= 0)
+		);
+		INSERT OR IGNORE INTO operation_runtime(singleton, last_sequence) VALUES (1, 0);
 	`); err != nil {
 		return fmt.Errorf("migrate Agent database: %w", err)
 	}
@@ -150,6 +173,140 @@ func (store *localStore) migrate(ctx context.Context) error {
 		VALUES (1, ?, 1)
 	`, cryptoutil.NewID()); err != nil {
 		return fmt.Errorf("initialize traffic source epoch: %w", err)
+	}
+	return nil
+}
+
+func (store *localStore) lastOperationSequence(ctx context.Context) (int64, error) {
+	var sequence int64
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT MAX(value) FROM (
+			SELECT last_sequence AS value FROM operation_runtime WHERE singleton = 1
+			UNION ALL
+			SELECT COALESCE(MAX(sequence), 0) AS value FROM operation_results
+		)
+	`).Scan(&sequence); err != nil {
+		return 0, fmt.Errorf("read last operation sequence: %w", err)
+	}
+	return sequence, nil
+}
+
+func (store *localStore) recordOperationResult(
+	ctx context.Context,
+	operation protocol.NodeOperation,
+	result protocol.OperationResultRequest,
+	now time.Time,
+) error {
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("encode operation result: %w", err)
+	}
+	var existingID string
+	var existingPayload []byte
+	err = store.db.QueryRowContext(ctx, `
+		SELECT operation_id, payload_json FROM operation_results
+		WHERE sequence = ? OR operation_id = ?
+	`, operation.Sequence, operation.ID).Scan(&existingID, &existingPayload)
+	if err == nil {
+		if existingID == operation.ID && string(existingPayload) == string(payload) {
+			return nil
+		}
+		return errors.New("operation result conflicts with local sequence")
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check local operation result: %w", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO operation_results(sequence, operation_id, payload_json, created_at)
+		VALUES (?, ?, ?, ?)
+	`, operation.Sequence, operation.ID, payload, now.UnixMilli()); err != nil {
+		return fmt.Errorf("record local operation result: %w", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		UPDATE operation_runtime SET last_sequence = MAX(last_sequence, ?)
+		WHERE singleton = 1
+	`, operation.Sequence); err != nil {
+		return fmt.Errorf("advance local operation sequence: %w", err)
+	}
+	return nil
+}
+
+func (store *localStore) listPendingOperationResults(
+	ctx context.Context,
+	limit int,
+) ([]pendingOperationResult, error) {
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT operation_id, sequence, payload_json
+		FROM operation_results WHERE reported_at IS NULL
+		ORDER BY sequence LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending operation results: %w", err)
+	}
+	defer rows.Close()
+	results := make([]pendingOperationResult, 0)
+	for rows.Next() {
+		var result pendingOperationResult
+		var payload []byte
+		if err := rows.Scan(&result.OperationID, &result.Sequence, &payload); err != nil {
+			return nil, fmt.Errorf("scan pending operation result: %w", err)
+		}
+		if err := json.Unmarshal(payload, &result.Result); err != nil {
+			return nil, fmt.Errorf("decode pending operation result: %w", err)
+		}
+		results = append(results, result)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending operation results: %w", err)
+	}
+	return results, nil
+}
+
+func (store *localStore) markOperationResultReported(
+	ctx context.Context,
+	operationID string,
+	now time.Time,
+) error {
+	result, err := store.db.ExecContext(ctx, `
+		UPDATE operation_results SET reported_at = ?, attempt_count = attempt_count + 1,
+			last_attempt_at = ?, last_error_code = ''
+		WHERE operation_id = ? AND reported_at IS NULL
+	`, now.UnixMilli(), now.UnixMilli(), operationID)
+	if err != nil {
+		return fmt.Errorf("mark operation result reported: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read operation result update: %w", err)
+	}
+	if count == 0 {
+		return errors.New("pending operation result not found")
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		DELETE FROM operation_results
+		WHERE reported_at IS NOT NULL AND sequence NOT IN (
+			SELECT sequence FROM operation_results ORDER BY sequence DESC LIMIT 500
+		)
+	`); err != nil {
+		return fmt.Errorf("prune reported operation results: %w", err)
+	}
+	return nil
+}
+
+func (store *localStore) recordOperationResultFailure(
+	ctx context.Context,
+	operationID, errorCode string,
+	now time.Time,
+) error {
+	if _, err := store.db.ExecContext(ctx, `
+		UPDATE operation_results SET attempt_count = attempt_count + 1,
+			last_attempt_at = ?, last_error_code = ?
+		WHERE operation_id = ? AND reported_at IS NULL
+	`, now.UnixMilli(), errorCode, operationID); err != nil {
+		return fmt.Errorf("record operation result failure: %w", err)
 	}
 	return nil
 }

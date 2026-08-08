@@ -24,21 +24,25 @@ import (
 )
 
 type Agent struct {
-	config      config.Agent
-	logger      *slog.Logger
-	client      *http.Client
-	collector   Collector
-	state       State
-	authCache   *AuthCache
-	localStore  *localStore
-	statsClient *hysteriaStatsClient
-	suiClient   *suiClient
-	usage       protocol.UsageInfo
-	adapterInfo protocol.AdapterInfo
-	adapterCore protocol.CoreInfo
+	config            config.Agent
+	logger            *slog.Logger
+	client            *http.Client
+	collector         Collector
+	state             State
+	authCache         *AuthCache
+	localStore        *localStore
+	statsClient       *hysteriaStatsClient
+	suiClient         *suiClient
+	usage             protocol.UsageInfo
+	adapterInfo       protocol.AdapterInfo
+	adapterCore       protocol.CoreInfo
+	operationExecutor func(context.Context, protocol.NodeOperation) protocol.OperationResultRequest
 }
 
 func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
+	if cfg.LocalDatabasePath == "" {
+		cfg.LocalDatabasePath = filepath.Join(filepath.Dir(cfg.StatePath), "agent.db")
+	}
 	if cfg.AdapterType == "native_hysteria2" {
 		if cfg.AuthListen == "" {
 			cfg.AuthListen = "127.0.0.1:18081"
@@ -58,14 +62,8 @@ func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
 		if cfg.TrafficEvery <= 0 {
 			cfg.TrafficEvery = 30 * time.Second
 		}
-		if cfg.LocalDatabasePath == "" {
-			cfg.LocalDatabasePath = cfg.TrafficDatabasePath
-		}
 	}
 	if cfg.AdapterType == "s_ui" {
-		if cfg.LocalDatabasePath == "" {
-			cfg.LocalDatabasePath = filepath.Join(filepath.Dir(cfg.StatePath), "agent.db")
-		}
 		if cfg.SUIAPIURL == "" {
 			cfg.SUIAPIURL = "http://127.0.0.1:2095/app/apiv2"
 		}
@@ -91,12 +89,12 @@ func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
 		},
 		adapterCore: protocol.CoreInfo{Name: cfg.CoreName},
 	}
+	local, err := openLocalStore(context.Background(), cfg.LocalDatabasePath)
+	if err != nil {
+		return nil, err
+	}
+	result.localStore = local
 	if cfg.AdapterType == "native_hysteria2" {
-		local, err := openLocalStore(context.Background(), cfg.LocalDatabasePath)
-		if err != nil {
-			return nil, err
-		}
-		result.localStore = local
 		cache, err := LoadAuthCache(cfg.AuthCachePath)
 		if err != nil {
 			_ = local.Close()
@@ -116,11 +114,6 @@ func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
 		}
 	}
 	if cfg.AdapterType == "s_ui" {
-		local, err := openLocalStore(context.Background(), cfg.LocalDatabasePath)
-		if err != nil {
-			return nil, err
-		}
-		result.localStore = local
 		if state.NodeID != "" {
 			if err := local.bindSUIStore(context.Background(), state.NodeID); err != nil {
 				_ = local.Close()
@@ -182,6 +175,9 @@ func (agent *Agent) Run(ctx context.Context) error {
 	if err := agent.pollDesired(ctx); err != nil {
 		agent.logger.Warn("initial desired-state poll failed", "error", err)
 	}
+	if err := agent.runOperationCycle(ctx); err != nil {
+		agent.logger.Warn("initial operation cycle failed", "error", err)
+	}
 	heartbeatTimer := time.NewTimer(jitter(agent.config.HeartbeatEvery))
 	desiredTimer := time.NewTimer(jitter(agent.config.DesiredEvery))
 	trafficTimer := time.NewTimer(jitter(agent.config.TrafficEvery))
@@ -207,6 +203,9 @@ func (agent *Agent) Run(ctx context.Context) error {
 				agent.logger.Warn("desired acknowledgement retry failed", "error", err)
 			} else if err := agent.pollDesired(ctx); err != nil {
 				agent.logger.Warn("desired-state poll failed", "error", err)
+			}
+			if err := agent.runOperationCycle(ctx); err != nil {
+				agent.logger.Warn("operation cycle failed", "error", err)
 			}
 			desiredTimer.Reset(jitter(agent.config.DesiredEvery))
 		case <-trafficTimer.C:
@@ -400,7 +399,10 @@ func (agent *Agent) pollDesired(ctx context.Context) error {
 }
 
 func (agent *Agent) capabilities() []string {
-	capabilities := []string{"host_metrics", "desired_state_v1"}
+	capabilities := []string{
+		"host_metrics", "desired_state_v1", "node_operations_v1",
+		"operation_result_outbox_v1",
+	}
 	if agent.config.AdapterType == "native_hysteria2" {
 		return append(capabilities, "native_http_auth", "persistent_auth_cache",
 			"traffic_stats_v1", "traffic_outbox_v1", "online_snapshot_v1", "kick_generation_v1")

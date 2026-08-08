@@ -1,9 +1,13 @@
 import type {
   AssignUserResponse,
+  AlertRecord,
   AssignmentInput,
+  ConfigBackupRecord,
   CreateUserResponse,
   EnrollmentToken,
   NodeInput,
+  NodeOperationRecord,
+  NodeOperationType,
   NodeRecord,
   Session,
   SetupStatus,
@@ -124,6 +128,51 @@ export const api = {
 
   createEnrollmentToken: (id: string) =>
     request<EnrollmentToken>(`/api/v1/nodes/${encodeURIComponent(id)}/enrollment-token`, {
+      method: "POST",
+      body: "{}",
+    }),
+
+  async listNodeOperations(nodeId: string) {
+    const result = await request<{ operations: NodeOperationRecord[] }>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/operations`,
+    );
+    return result.operations;
+  },
+
+  createNodeOperation: (nodeId: string, type: NodeOperationType, maxLines = 0) =>
+    request<NodeOperationRecord>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/operations`, {
+      method: "POST",
+      body: JSON.stringify({ type, max_lines: maxLines }),
+    }),
+
+  retryNodeOperation: (nodeId: string, operationId: string) =>
+    request<NodeOperationRecord>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/operations/${encodeURIComponent(operationId)}/retry`,
+      { method: "POST", body: "{}" },
+    ),
+
+  retryNodeSync: (nodeId: string) =>
+    request<NodeRecord>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/retry-sync`, {
+      method: "POST",
+      body: "{}",
+    }),
+
+  async listConfigBackups(nodeId: string) {
+    const result = await request<{ backups: ConfigBackupRecord[] }>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/backups`,
+    );
+    return result.backups;
+  },
+
+  async listAlerts(status: "active" | "resolved" | "all" = "active") {
+    const result = await request<{ alerts: AlertRecord[] }>(
+      `/api/v1/alerts?status=${encodeURIComponent(status)}`,
+    );
+    return result.alerts;
+  },
+
+  acknowledgeAlert: (alertId: string) =>
+    request<AlertRecord>(`/api/v1/alerts/${encodeURIComponent(alertId)}/acknowledge`, {
       method: "POST",
       body: "{}",
     }),

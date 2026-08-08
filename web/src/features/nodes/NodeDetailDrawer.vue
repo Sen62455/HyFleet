@@ -14,6 +14,7 @@ import {
 } from "../../lib/format";
 import type { NodeRecord } from "../../types";
 import SUIAdapterPanel from "./SUIAdapterPanel.vue";
+import NodeOperationsPanel from "./NodeOperationsPanel.vue";
 
 defineProps<{ show: boolean; node: NodeRecord | null }>();
 const emit = defineEmits<{
@@ -67,6 +68,13 @@ function endpointLabel(node: NodeRecord) {
           <div><dt>运行时间</dt><dd>{{ formatUptime(node.uptime_seconds) }}</dd></div>
         </dl>
       </section>
+
+      <node-operations-panel
+        v-if="node.agent_installation_id"
+        :node="node"
+        @changed="emit('changed')"
+        @session-expired="emit('session-expired')"
+      />
 
       <s-u-i-adapter-panel
         v-if="node.adapter_type === 's_ui'"

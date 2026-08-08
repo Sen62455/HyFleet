@@ -68,13 +68,33 @@ if [[ "${component}" == agent ]]; then
     fi
     stat -c 'Environment file: %A %U:%G %n' /etc/hyfleet/agent.env 2>/dev/null || true
   fi
+
+  printf '\n=== Operations helper ===\n'
+  if [[ -x /usr/local/libexec/hyfleet-agent-ops ]]; then
+    stat -c '%A %U:%G %s bytes %n' /usr/local/libexec/hyfleet-agent-ops 2>/dev/null || true
+    /usr/local/libexec/hyfleet-agent-ops -version 2>&1 || true
+    /usr/local/libexec/hyfleet-agent-ops -config "${config_path}" -check-config 2>&1 || true
+  else
+    printf 'Missing: /usr/local/libexec/hyfleet-agent-ops\n'
+  fi
+  namei -l /var/lib/hyfleet-backups 2>&1 || true
+  namei -l /var/lib/hyfleet-agent-ops 2>&1 || true
 fi
 
 printf '\n=== Unit verification ===\n'
-systemd-analyze verify "${unit_path}" 2>&1 || true
+if [[ "${component}" == agent ]]; then
+  systemd-analyze verify "${unit_path}" \
+    /etc/systemd/system/hyfleet-agent-ops.socket \
+    /etc/systemd/system/hyfleet-agent-ops@.service 2>&1 || true
+else
+  systemd-analyze verify "${unit_path}" 2>&1 || true
+fi
 
 printf '\n=== Service status ===\n'
 systemctl status "${service_name}" --no-pager --full 2>&1 || true
+if [[ "${component}" == agent ]]; then
+  systemctl status hyfleet-agent-ops.socket --no-pager --full 2>&1 || true
+fi
 
 printf '\n=== Current-boot journal (last 100 lines) ===\n'
 journalctl -u "${service_name}" -b -n 100 --no-pager 2>&1 || true

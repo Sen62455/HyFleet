@@ -22,13 +22,16 @@ build: web
 	mkdir -p bin
 	CGO_ENABLED=0 go build -tags webui -ldflags "$(LDFLAGS)" -o bin/hyfleet-server ./cmd/server
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/hyfleet-agent ./cmd/agent
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/hyfleet-agent-ops ./cmd/agentops
 
 release: web
 	mkdir -p bin
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags webui -ldflags "$(LDFLAGS)" -o bin/hyfleet-server-linux-amd64 ./cmd/server
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/hyfleet-agent-linux-amd64 ./cmd/agent
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/hyfleet-agent-ops-linux-amd64 ./cmd/agentops
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags webui -ldflags "$(LDFLAGS)" -o bin/hyfleet-server-linux-arm64 ./cmd/server
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/hyfleet-agent-linux-arm64 ./cmd/agent
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/hyfleet-agent-ops-linux-arm64 ./cmd/agentops
 	cd bin && sha256sum hyfleet-*-linux-* > SHA256SUMS
 
 clean:

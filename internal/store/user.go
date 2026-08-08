@@ -56,6 +56,8 @@ type UserAssignment struct {
 	CredentialFingerprint string
 	ManagementMode        string
 	RemoteClientID        int64
+	SubscriptionEligible  bool
+	SubscriptionReason    string
 	DesiredVersion        int64
 	AppliedVersion        int64
 	State                 string
@@ -928,10 +930,12 @@ func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssig
 		       a.traffic_limit_bytes, a.traffic_upload_bytes, a.traffic_download_bytes,
 		       a.traffic_used_bytes, a.quota_state, a.last_traffic_at,
 		       COALESCE(o.connections, 0), o.sampled_at, COALESCE(k.generation, 0),
+		       n.enabled, n.status, n.public_host, COALESCE(ac.state, ''),
 		       a.created_at, a.updated_at
 		FROM node_user_assignments a
 		JOIN nodes n ON n.id = a.node_id
 		JOIN user_credentials c ON c.id = a.desired_credential_id
+		LEFT JOIN user_credentials ac ON ac.id = a.applied_credential_id
 		LEFT JOIN node_online_users o ON o.node_id = a.node_id AND o.user_id = a.user_id
 		LEFT JOIN node_kick_targets k ON k.node_id = a.node_id AND k.user_id = a.user_id
 	`
@@ -950,6 +954,8 @@ func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssig
 	for rows.Next() {
 		var assignment UserAssignment
 		var enabled int
+		var nodeEnabled int
+		var nodeStatus, publicHost, appliedCredentialState string
 		var createdAt, updatedAt int64
 		var lastAttemptAt, appliedAt, lastTrafficAt, onlineSampledAt sql.NullInt64
 		if err := rows.Scan(
@@ -963,6 +969,7 @@ func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssig
 			&assignment.TrafficUploadBytes, &assignment.TrafficDownloadBytes,
 			&assignment.TrafficUsedBytes, &assignment.QuotaState, &lastTrafficAt,
 			&assignment.OnlineConnections, &onlineSampledAt, &assignment.KickGeneration,
+			&nodeEnabled, &nodeStatus, &publicHost, &appliedCredentialState,
 			&createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan user assignment: %w", err)
@@ -972,6 +979,10 @@ func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssig
 		assignment.AppliedAt = nullableTime(appliedAt)
 		assignment.LastTrafficAt = nullableTime(lastTrafficAt)
 		assignment.OnlineSampledAt = nullableTime(onlineSampledAt)
+		assignment.SubscriptionReason = subscriptionEligibilityReason(
+			assignment, nodeEnabled == 1, nodeStatus, publicHost, appliedCredentialState,
+		)
+		assignment.SubscriptionEligible = assignment.SubscriptionReason == ""
 		assignment.CreatedAt = unixTime(createdAt)
 		assignment.UpdatedAt = unixTime(updatedAt)
 		assignments = append(assignments, assignment)
@@ -980,6 +991,35 @@ func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssig
 		return nil, fmt.Errorf("iterate user assignments: %w", err)
 	}
 	return assignments, nil
+}
+
+func subscriptionEligibilityReason(
+	assignment UserAssignment,
+	nodeEnabled bool,
+	nodeStatus, publicHost, appliedCredentialState string,
+) string {
+	switch {
+	case assignment.ManagementMode != "managed":
+		return "read_only_requires_adoption"
+	case assignment.NodeAdapter != "native_hysteria2" && assignment.NodeAdapter != "s_ui":
+		return "adapter_not_supported"
+	case !nodeEnabled:
+		return "node_disabled"
+	case nodeStatus == "pending" || nodeStatus == "degraded" || nodeStatus == "disabled":
+		return "node_not_ready"
+	case publicHost == "":
+		return "endpoint_missing"
+	case !assignment.Enabled:
+		return "assignment_disabled"
+	case assignment.QuotaState == "limited":
+		return "assignment_quota_limited"
+	case assignment.State != "applied" || assignment.AppliedVersion != assignment.DesiredVersion:
+		return "assignment_not_applied"
+	case assignment.AppliedCredentialID == "" || appliedCredentialState != "applied":
+		return "credential_not_applied"
+	default:
+		return ""
+	}
 }
 
 func assignmentNodeIDs(ctx context.Context, tx *sql.Tx, userID string) ([]string, error) {

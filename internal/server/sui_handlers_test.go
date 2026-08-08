@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ func TestSUIAdapterAPIAndCredentialMaterialContract(t *testing.T) {
 	app.bootstrap(t)
 	created := app.request(t, http.MethodPost, "/api/v1/nodes", map[string]any{
 		"name": "sui-node", "provider": "local", "region": "test", "adapter_type": "s_ui",
+		"public_host": "sui.example.test", "public_port": 443,
 	}, app.csrf, "")
 	requireStatus(t, created, http.StatusCreated)
 	var node nodeResponse
@@ -78,9 +80,15 @@ func TestSUIAdapterAPIAndCredentialMaterialContract(t *testing.T) {
 	decodeResponse(t, imported, &importedUser)
 	if len(importedUser.Assignments) != 1 ||
 		importedUser.Assignments[0].ManagementMode != "read_only" ||
-		importedUser.Assignments[0].RemoteClientID != 41 {
+		importedUser.Assignments[0].RemoteClientID != 41 ||
+		importedUser.Assignments[0].SubscriptionEligible ||
+		importedUser.Assignments[0].SubscriptionReason != "read_only_requires_adoption" {
 		t.Fatalf("imported user = %#v", importedUser)
 	}
+	readOnlyLimit := app.request(t, http.MethodPut,
+		"/api/v1/users/"+userPayload.User.ID+"/assignments/"+node.ID,
+		map[string]any{"traffic_limit_bytes": int64(5 << 30)}, app.csrf, "")
+	requireStatus(t, readOnlyLimit, http.StatusConflict)
 
 	desired := agentRequest(t, app.handler, http.MethodGet, "/agent/v1/desired?after=0",
 		nil, agentCredential, cryptoutil.NewID())
@@ -141,6 +149,55 @@ func TestSUIAdapterAPIAndCredentialMaterialContract(t *testing.T) {
 	requireCredentialNoStore(t, stale)
 	if strings.Contains(stale.Body.String(), materialPayload.Secret) {
 		t.Fatal("denied credential response leaked plaintext")
+	}
+
+	managedAck := agentRequest(t, app.handler, http.MethodPost,
+		"/agent/v1/desired/"+jsonNumber(managedEnvelope.Snapshot.Version)+"/ack",
+		protocol.DesiredAckRequest{
+			Status: "applied", SnapshotHash: managedEnvelope.SHA256, Adapter: "s_ui",
+		}, agentCredential, cryptoutil.NewID())
+	requireStatus(t, managedAck, http.StatusNoContent)
+	managedUserResponse := app.request(t, http.MethodGet,
+		"/api/v1/users/"+userPayload.User.ID, nil, "", "")
+	requireStatus(t, managedUserResponse, http.StatusOK)
+	var managedUser userResponse
+	decodeResponse(t, managedUserResponse, &managedUser)
+	if len(managedUser.Assignments) != 1 || !managedUser.Assignments[0].SubscriptionEligible ||
+		managedUser.Assignments[0].SubscriptionReason != "" {
+		t.Fatalf("managed assignment did not enter subscription: %#v", managedUser.Assignments)
+	}
+
+	updatedLimit := app.request(t, http.MethodPut,
+		"/api/v1/users/"+userPayload.User.ID+"/assignments/"+node.ID,
+		map[string]any{"traffic_limit_bytes": int64(5 << 30)}, app.csrf, "")
+	requireStatus(t, updatedLimit, http.StatusOK)
+	quotaDesired := agentRequest(t, app.handler, http.MethodGet,
+		"/agent/v1/desired?after="+jsonNumber(managedEnvelope.Snapshot.Version),
+		nil, agentCredential, cryptoutil.NewID())
+	requireStatus(t, quotaDesired, http.StatusOK)
+	var quotaEnvelope protocol.DesiredEnvelope
+	decodeResponse(t, quotaDesired, &quotaEnvelope)
+	quotaAck := agentRequest(t, app.handler, http.MethodPost,
+		"/agent/v1/desired/"+jsonNumber(quotaEnvelope.Snapshot.Version)+"/ack",
+		protocol.DesiredAckRequest{
+			Status: "applied", SnapshotHash: quotaEnvelope.SHA256, Adapter: "s_ui",
+		}, agentCredential, cryptoutil.NewID())
+	requireStatus(t, quotaAck, http.StatusNoContent)
+
+	tokenResponse := app.request(t, http.MethodPost,
+		"/api/v1/users/"+userPayload.User.ID+"/subscription-tokens",
+		map[string]any{"name": "clash", "allowed_formats": []string{"clash"}}, app.csrf, "")
+	requireStatus(t, tokenResponse, http.StatusCreated)
+	var issued issuedSubscriptionTokenResponse
+	decodeResponse(t, tokenResponse, &issued)
+	clashURL, err := url.Parse(issued.URLs.Clash)
+	if err != nil {
+		t.Fatalf("parse Clash subscription URL: %v", err)
+	}
+	clash := app.request(t, http.MethodGet, clashURL.RequestURI(), nil, "", "")
+	requireStatus(t, clash, http.StatusOK)
+	if !strings.Contains(clash.Body.String(), "name: sui-node") {
+		t.Fatalf("managed S-UI node missing from Clash subscription: %s", clash.Body.String())
 	}
 }
 

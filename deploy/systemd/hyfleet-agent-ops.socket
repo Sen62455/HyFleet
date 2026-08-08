@@ -1,0 +1,13 @@
+[Unit]
+Description=HyFleet restricted node operations socket
+
+[Socket]
+ListenStream=/run/hyfleet-agent-ops.sock
+SocketUser=root
+SocketGroup=hyfleet-agent
+SocketMode=0660
+RemoveOnStop=true
+Accept=yes
+
+[Install]
+WantedBy=sockets.target

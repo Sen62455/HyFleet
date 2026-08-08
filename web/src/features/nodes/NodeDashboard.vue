@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { LogOut, Plus, RefreshCw, Server, UsersRound } from "@lucide/vue";
-import { NAlert, NButton, NIcon, NSpin, NTooltip, useDialog, useMessage } from "naive-ui";
+import { Bell, LogOut, Plus, RefreshCw, Server, UsersRound } from "@lucide/vue";
+import { NAlert, NBadge, NButton, NIcon, NSpin, NTooltip, useDialog, useMessage } from "naive-ui";
 import { api, APIError } from "../../api";
 import BrandMark from "../../components/BrandMark.vue";
 import { issueCount } from "../../lib/format";
-import type { NodeInput, NodeRecord, Session } from "../../types";
+import type { AlertRecord, NodeInput, NodeRecord, Session } from "../../types";
+import AlertDrawer from "../alerts/AlertDrawer.vue";
 import EnrollmentDialog from "./EnrollmentDialog.vue";
 import NodeDetailDrawer from "./NodeDetailDrawer.vue";
 import NodeFormModal from "./NodeFormModal.vue";
@@ -27,6 +28,10 @@ const editingNode = ref<NodeRecord | null>(null);
 const detailNodeID = ref<string | null>(null);
 const enrollmentNode = ref<NodeRecord | null>(null);
 const activeView = ref<"nodes" | "users">("nodes");
+const alerts = ref<AlertRecord[]>([]);
+const alertsOpen = ref(false);
+const alertsLoading = ref(false);
+const alertWorking = ref("");
 
 const onlineCount = computed(() => nodes.value.filter((node) => node.status === "online").length);
 const pendingCount = computed(() => nodes.value.filter((node) => node.status === "pending").length);
@@ -58,6 +63,44 @@ async function loadNodes(silent = false) {
     loading.value = false;
     refreshing.value = false;
   }
+}
+
+async function loadAlerts(silent = false) {
+  if (!silent) alertsLoading.value = true;
+  try {
+    alerts.value = await api.listAlerts("active");
+  } catch (error) {
+    if (error instanceof APIError && error.status === 401) {
+      emit("session-expired");
+    } else if (!silent) {
+      handleAPIError(error, "告警加载失败。");
+    }
+  } finally {
+    alertsLoading.value = false;
+  }
+}
+
+async function acknowledgeAlert(alert: AlertRecord) {
+  alertWorking.value = alert.id;
+  try {
+    await api.acknowledgeAlert(alert.id);
+    await loadAlerts(true);
+  } catch (error) {
+    handleAPIError(error, "告警确认失败。");
+  } finally {
+    alertWorking.value = "";
+  }
+}
+
+function selectAlertNode(nodeId: string) {
+  activeView.value = "nodes";
+  detailNodeID.value = nodeId;
+  alertsOpen.value = false;
+}
+
+function openNodeFromUsers(nodeId: string) {
+  activeView.value = "nodes";
+  detailNodeID.value = nodeId;
 }
 
 function openCreate() {
@@ -119,8 +162,12 @@ function handleAction(action: "edit" | "enroll" | "archive", node: NodeRecord) {
 let refreshTimer: number | undefined;
 onMounted(() => {
   loadNodes();
+  loadAlerts(true);
   refreshTimer = window.setInterval(() => {
-    if (document.visibilityState === "visible") loadNodes(true);
+    if (document.visibilityState === "visible") {
+      loadNodes(true);
+      loadAlerts(true);
+    }
   }, 15_000);
 });
 onBeforeUnmount(() => window.clearInterval(refreshTimer));
@@ -153,6 +200,21 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
         </nav>
         <div class="topbar__account">
           <span class="topbar__username">{{ props.session.admin.username }}</span>
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-badge :value="alerts.length" :max="99" :show="alerts.length > 0">
+                <n-button
+                  quaternary
+                  circle
+                  aria-label="查看告警"
+                  @click="alertsOpen = true; loadAlerts()"
+                >
+                  <template #icon><n-icon><bell /></n-icon></template>
+                </n-button>
+              </n-badge>
+            </template>
+            告警
+          </n-tooltip>
           <n-tooltip trigger="hover">
             <template #trigger>
               <n-button quaternary circle aria-label="退出登录" @click="emit('logout')">
@@ -236,6 +298,7 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
       v-else
       :nodes="nodes"
       @nodes-changed="loadNodes(true)"
+      @open-node="openNodeFromUsers"
       @session-expired="emit('session-expired')"
     />
 
@@ -259,6 +322,15 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
       :node="enrollmentNode"
       @update:show="!$event && (enrollmentNode = null)"
       @session-expired="emit('session-expired')"
+    />
+    <alert-drawer
+      v-model:show="alertsOpen"
+      :alerts="alerts"
+      :loading="alertsLoading"
+      :working="alertWorking"
+      @refresh="loadAlerts()"
+      @acknowledge="acknowledgeAlert"
+      @select-node="selectAlertNode"
     />
   </div>
 </template>

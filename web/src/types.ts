@@ -134,6 +134,8 @@ export interface UserAssignment {
   credential_fingerprint: string;
   management_mode: ManagementMode;
   remote_client_id: number;
+  subscription_eligible: boolean;
+  subscription_reason: string;
   desired_version: number;
   applied_version: number;
   state: AssignmentState;
@@ -268,4 +270,71 @@ export interface SUIState {
   target_inbound_ids: number[];
   inbounds: SUIInbound[];
   clients: SUIClient[];
+}
+
+export type NodeOperationType =
+  | "probe_core"
+  | "restart_core"
+  | "tail_core_log"
+  | "backup_config";
+export type NodeOperationStatus = "queued" | "running" | "succeeded" | "failed" | "expired";
+
+export interface NodeOperationRecord {
+  id: string;
+  node_id: string;
+  node_name: string;
+  sequence: number;
+  type: NodeOperationType;
+  status: NodeOperationStatus;
+  retry_of?: string;
+  attempt: number;
+  max_lines: number;
+  output: string;
+  error_code: string;
+  error_message: string;
+  rolled_back: boolean;
+  expires_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConfigBackupRecord {
+  id: string;
+  node_id: string;
+  node_name: string;
+  operation_id: string;
+  local_path: string;
+  sha256: string;
+  size_bytes: number;
+  created_at: string;
+}
+
+export type AlertType =
+  | "offline"
+  | "degraded"
+  | "core_down"
+  | "usage_error"
+  | "sync_failed"
+  | "sync_stuck"
+  | "operation_failed";
+export type AlertStatus = "open" | "acknowledged" | "resolved";
+
+export interface AlertRecord {
+  id: string;
+  node_id: string;
+  node_name: string;
+  type: AlertType;
+  severity: "warning" | "critical";
+  status: AlertStatus;
+  message: string;
+  occurrence_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  acknowledged_by?: string;
+  acknowledged_at: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
 }

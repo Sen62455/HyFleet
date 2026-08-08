@@ -68,8 +68,25 @@ jobs:
           mkdir -p bin
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags webui -o bin/hyfleet-server-linux-amd64 ./cmd/server
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/hyfleet-agent-linux-amd64 ./cmd/agent
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/hyfleet-agent-ops-linux-amd64 ./cmd/agentops
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags webui -o bin/hyfleet-server-linux-arm64 ./cmd/server
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/hyfleet-agent-linux-arm64 ./cmd/agent
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/hyfleet-agent-ops-linux-arm64 ./cmd/agentops
+
+      - name: Verify Agent systemd units
+        shell: bash
+        run: |
+          sudo groupadd --system hyfleet-agent
+          sudo useradd --system --gid hyfleet-agent --home-dir /var/lib/hyfleet-agent \
+            --shell /usr/sbin/nologin hyfleet-agent
+          sudo install -d -m 0755 /etc/hyfleet /usr/local/libexec
+          sudo install -d -m 0700 /var/lib/hyfleet-agent /var/lib/hyfleet-backups /var/lib/hyfleet-agent-ops
+          sudo install -m 0755 bin/hyfleet-agent-linux-amd64 /usr/local/bin/hyfleet-agent
+          sudo install -m 0755 bin/hyfleet-agent-ops-linux-amd64 /usr/local/libexec/hyfleet-agent-ops
+          systemd-analyze verify \
+            deploy/systemd/hyfleet-agent.service \
+            deploy/systemd/hyfleet-agent-ops.socket \
+            deploy/systemd/hyfleet-agent-ops@.service
 
   secrets:
     runs-on: ubuntu-24.04

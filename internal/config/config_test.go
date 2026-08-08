@@ -110,10 +110,12 @@ state_path: state.json
 	}
 
 	for name, replacement := range map[string]string{
-		"http":     strings.Replace(validBody, "https://", "http://", 1),
-		"url path": strings.Replace(validBody, "panel.example.com", "panel.example.com/base", 1),
-		"unit":     strings.Replace(validBody, "hysteria-server.service", "../bad service", 1),
-		"unknown":  validBody + "heartbeat_typo: 10s\n",
+		"http":        strings.Replace(validBody, "https://", "http://", 1),
+		"url path":    strings.Replace(validBody, "panel.example.com", "panel.example.com/base", 1),
+		"unit":        strings.Replace(validBody, "hysteria-server.service", "../bad service", 1),
+		"unit option": strings.Replace(validBody, "hysteria-server.service", "--help", 1),
+		"config path": strings.Replace(validBody, "state_path: state.json", "state_path: state.json\ncore_config_path: /etc/other/config.yaml", 1),
+		"unknown":     validBody + "heartbeat_typo: 10s\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := writeConfig(t, "invalid.yaml", replacement)

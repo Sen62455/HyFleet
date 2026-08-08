@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -14,29 +15,31 @@ import (
 )
 
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-var systemdUnitPattern = regexp.MustCompile(`^[A-Za-z0-9_.@:-]+$`)
+var systemdUnitPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@:-]*$`)
 
 type Agent struct {
-	ServerURL           string
-	EnrollmentToken     string
-	StatePath           string
-	NodeName            string
-	AdapterType         string
-	CoreName            string
-	ServiceUnit         string
-	HeartbeatEvery      time.Duration
-	DesiredEvery        time.Duration
-	AllowHTTP           bool
-	AuthListen          string
-	AuthPath            string
-	AuthCachePath       string
-	TrafficStatsURL     string
-	TrafficStatsSecret  string
-	TrafficDatabasePath string
-	LocalDatabasePath   string
-	TrafficEvery        time.Duration
-	SUIAPIURL           string
-	SUIToken            string
+	ServerURL            string
+	EnrollmentToken      string
+	StatePath            string
+	NodeName             string
+	AdapterType          string
+	CoreName             string
+	ServiceUnit          string
+	CoreConfigPath       string
+	OperationsSocketPath string
+	HeartbeatEvery       time.Duration
+	DesiredEvery         time.Duration
+	AllowHTTP            bool
+	AuthListen           string
+	AuthPath             string
+	AuthCachePath        string
+	TrafficStatsURL      string
+	TrafficStatsSecret   string
+	TrafficDatabasePath  string
+	LocalDatabasePath    string
+	TrafficEvery         time.Duration
+	SUIAPIURL            string
+	SUIToken             string
 }
 
 type agentFile struct {
@@ -47,6 +50,8 @@ type agentFile struct {
 	AdapterType           string `yaml:"adapter_type"`
 	CoreName              string `yaml:"core_name"`
 	ServiceUnit           string `yaml:"service_unit"`
+	CoreConfigPath        string `yaml:"core_config_path"`
+	OperationsSocketPath  string `yaml:"operations_socket_path"`
 	HeartbeatEvery        string `yaml:"heartbeat_every"`
 	DesiredEvery          string `yaml:"desired_every"`
 	AllowHTTP             bool   `yaml:"allow_insecure_http"`
@@ -78,6 +83,7 @@ func LoadAgent(path string) (Agent, error) {
 		TrafficStatsSecretEnv: "HYFLEET_HY2_STATS_SECRET",
 		TrafficEvery:          "30s",
 		SUITokenEnv:           "HYFLEET_SUI_TOKEN",
+		OperationsSocketPath:  "/run/hyfleet-agent-ops.sock",
 	}
 	if err := decodeYAML(data, &file); err != nil {
 		return Agent{}, fmt.Errorf("parse agent config: %w", err)
@@ -114,6 +120,43 @@ func LoadAgent(path string) (Agent, error) {
 		return Agent{}, errors.New("unsupported adapter_type")
 	}
 	statePath := resolvePath(filepath.Dir(path), file.StatePath)
+	localDatabaseConfigured := file.LocalDatabasePath != ""
+	if file.LocalDatabasePath == "" {
+		file.LocalDatabasePath = filepath.Join(filepath.Dir(statePath), "agent.db")
+	}
+	if file.OperationsSocketPath == "" ||
+		!strings.HasPrefix(file.OperationsSocketPath, "/run/") ||
+		pathpkg.Clean(file.OperationsSocketPath) != file.OperationsSocketPath ||
+		len(file.OperationsSocketPath) > 100 {
+		return Agent{}, errors.New("operations_socket_path must be a normalized socket path below /run")
+	}
+	if file.CoreConfigPath == "" {
+		switch file.AdapterType {
+		case "native_hysteria2":
+			file.CoreConfigPath = "/etc/hysteria/config.yaml"
+		case "standalone_sing_box":
+			file.CoreConfigPath = "/etc/sing-box/config.json"
+		}
+	}
+	if file.CoreConfigPath != "" &&
+		(pathpkg.Clean(file.CoreConfigPath) != file.CoreConfigPath ||
+			len(file.CoreConfigPath) > 256) {
+		return Agent{}, errors.New("core_config_path must be a normalized supported path")
+	}
+	switch file.AdapterType {
+	case "native_hysteria2":
+		if !strings.HasPrefix(file.CoreConfigPath, "/etc/hysteria/") {
+			return Agent{}, errors.New("native Hysteria2 core_config_path must be below /etc/hysteria")
+		}
+	case "standalone_sing_box":
+		if !strings.HasPrefix(file.CoreConfigPath, "/etc/sing-box/") {
+			return Agent{}, errors.New("standalone sing-box core_config_path must be below /etc/sing-box")
+		}
+	case "s_ui":
+		if file.CoreConfigPath != "" {
+			return Agent{}, errors.New("S-UI does not support core_config_path")
+		}
+	}
 	if file.AdapterType == "native_hysteria2" {
 		if file.AuthListen == "" {
 			file.AuthListen = "127.0.0.1:18081"
@@ -130,7 +173,7 @@ func LoadAgent(path string) (Agent, error) {
 		if file.TrafficDatabasePath == "" {
 			file.TrafficDatabasePath = filepath.Join(filepath.Dir(statePath), "agent.db")
 		}
-		if file.LocalDatabasePath == "" {
+		if !localDatabaseConfigured {
 			file.LocalDatabasePath = file.TrafficDatabasePath
 		}
 		if err := validateLoopbackListener(file.AuthListen); err != nil {
@@ -150,9 +193,6 @@ func LoadAgent(path string) (Agent, error) {
 	if file.AdapterType == "s_ui" {
 		if file.SUIAPIURL == "" {
 			file.SUIAPIURL = "http://127.0.0.1:2095/app/apiv2"
-		}
-		if file.LocalDatabasePath == "" {
-			file.LocalDatabasePath = filepath.Join(filepath.Dir(statePath), "agent.db")
 		}
 		if err := validateLoopbackSUIAPIURL(file.SUIAPIURL); err != nil {
 			return Agent{}, err
@@ -174,26 +214,28 @@ func LoadAgent(path string) (Agent, error) {
 		return Agent{}, err
 	}
 	return Agent{
-		ServerURL:           serverURL.String(),
-		EnrollmentToken:     os.Getenv(file.EnrollmentTokenEnv),
-		StatePath:           statePath,
-		NodeName:            file.NodeName,
-		AdapterType:         file.AdapterType,
-		CoreName:            file.CoreName,
-		ServiceUnit:         file.ServiceUnit,
-		HeartbeatEvery:      heartbeat,
-		DesiredEvery:        desired,
-		AllowHTTP:           file.AllowHTTP,
-		AuthListen:          file.AuthListen,
-		AuthPath:            file.AuthPath,
-		AuthCachePath:       resolveOptionalPath(filepath.Dir(path), file.AuthCachePath),
-		TrafficStatsURL:     file.TrafficStatsURL,
-		TrafficStatsSecret:  os.Getenv(file.TrafficStatsSecretEnv),
-		TrafficDatabasePath: resolveOptionalPath(filepath.Dir(path), file.TrafficDatabasePath),
-		LocalDatabasePath:   resolveOptionalPath(filepath.Dir(path), file.LocalDatabasePath),
-		TrafficEvery:        traffic,
-		SUIAPIURL:           strings.TrimRight(file.SUIAPIURL, "/"),
-		SUIToken:            os.Getenv(file.SUITokenEnv),
+		ServerURL:            serverURL.String(),
+		EnrollmentToken:      os.Getenv(file.EnrollmentTokenEnv),
+		StatePath:            statePath,
+		NodeName:             file.NodeName,
+		AdapterType:          file.AdapterType,
+		CoreName:             file.CoreName,
+		ServiceUnit:          file.ServiceUnit,
+		CoreConfigPath:       file.CoreConfigPath,
+		OperationsSocketPath: file.OperationsSocketPath,
+		HeartbeatEvery:       heartbeat,
+		DesiredEvery:         desired,
+		AllowHTTP:            file.AllowHTTP,
+		AuthListen:           file.AuthListen,
+		AuthPath:             file.AuthPath,
+		AuthCachePath:        resolveOptionalPath(filepath.Dir(path), file.AuthCachePath),
+		TrafficStatsURL:      file.TrafficStatsURL,
+		TrafficStatsSecret:   os.Getenv(file.TrafficStatsSecretEnv),
+		TrafficDatabasePath:  resolveOptionalPath(filepath.Dir(path), file.TrafficDatabasePath),
+		LocalDatabasePath:    resolveOptionalPath(filepath.Dir(path), file.LocalDatabasePath),
+		TrafficEvery:         traffic,
+		SUIAPIURL:            strings.TrimRight(file.SUIAPIURL, "/"),
+		SUIToken:             os.Getenv(file.SUITokenEnv),
 	}, nil
 }
 

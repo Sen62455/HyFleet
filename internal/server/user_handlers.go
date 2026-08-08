@@ -70,6 +70,8 @@ type assignmentResponse struct {
 	CredentialFingerprint string     `json:"credential_fingerprint"`
 	ManagementMode        string     `json:"management_mode"`
 	RemoteClientID        int64      `json:"remote_client_id,omitempty"`
+	SubscriptionEligible  bool       `json:"subscription_eligible"`
+	SubscriptionReason    string     `json:"subscription_reason"`
 	DesiredVersion        int64      `json:"desired_version"`
 	AppliedVersion        int64      `json:"applied_version"`
 	State                 string     `json:"state"`
@@ -427,7 +429,9 @@ func presentAssignment(assignment store.UserAssignment) assignmentResponse {
 		OnlineSampledAt: assignment.OnlineSampledAt, KickGeneration: assignment.KickGeneration,
 		CredentialFingerprint: assignment.CredentialFingerprint,
 		ManagementMode:        assignment.ManagementMode, RemoteClientID: assignment.RemoteClientID,
-		DesiredVersion: assignment.DesiredVersion, AppliedVersion: assignment.AppliedVersion,
+		SubscriptionEligible: assignment.SubscriptionEligible,
+		SubscriptionReason:   assignment.SubscriptionReason,
+		DesiredVersion:       assignment.DesiredVersion, AppliedVersion: assignment.AppliedVersion,
 		State: assignment.State, LastErrorCode: assignment.LastErrorCode,
 		LastErrorMessage: assignment.LastErrorMessage, LastAttemptAt: assignment.LastAttemptAt,
 		AppliedAt: assignment.AppliedAt, CreatedAt: assignment.CreatedAt, UpdatedAt: assignment.UpdatedAt,

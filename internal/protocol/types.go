@@ -251,3 +251,35 @@ type SUIReportResponse struct {
 	Accepted   bool      `json:"accepted"`
 	ServerTime time.Time `json:"server_time"`
 }
+
+type NodeOperation struct {
+	ID        string    `json:"id"`
+	Sequence  int64     `json:"sequence"`
+	Type      string    `json:"type"`
+	MaxLines  int       `json:"max_lines,omitempty"`
+	Attempt   int       `json:"attempt"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type NodeOperationsResponse struct {
+	Operations []NodeOperation `json:"operations"`
+	ServerTime time.Time       `json:"server_time"`
+}
+
+type OperationResultRequest struct {
+	Sequence     int64     `json:"sequence"`
+	Status       string    `json:"status"`
+	Output       string    `json:"output,omitempty"`
+	ErrorCode    string    `json:"error_code,omitempty"`
+	ErrorMessage string    `json:"error_message,omitempty"`
+	RolledBack   bool      `json:"rolled_back"`
+	Backup       *Backup   `json:"backup,omitempty"`
+	CompletedAt  time.Time `json:"completed_at"`
+}
+
+type Backup struct {
+	LocalPath string `json:"local_path"`
+	SHA256    string `json:"sha256"`
+	SizeBytes int64  `json:"size_bytes"`
+}

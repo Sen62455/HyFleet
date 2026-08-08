@@ -1,0 +1,35 @@
+[Unit]
+Description=HyFleet restricted node operation
+Documentation=https://github.com/Sen62455/HyFleet
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStart=/usr/local/libexec/hyfleet-agent-ops -config /etc/hyfleet/agent.yaml
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=55s
+TimeoutStopSec=5s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/hyfleet-backups /var/lib/hyfleet-agent-ops
+ReadWritePaths=-/etc/hysteria -/etc/sing-box
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native

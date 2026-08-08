@@ -75,6 +75,13 @@ func (a *App) Handler() (http.Handler, error) {
 			authenticated.Put("/nodes/{nodeID}", a.handleUpdateNode)
 			authenticated.Delete("/nodes/{nodeID}", a.handleArchiveNode)
 			authenticated.Post("/nodes/{nodeID}/enrollment-token", a.handleEnrollmentToken)
+			authenticated.Get("/nodes/{nodeID}/operations", a.handleListNodeOperations)
+			authenticated.Post("/nodes/{nodeID}/operations", a.handleCreateNodeOperation)
+			authenticated.Post(
+				"/nodes/{nodeID}/operations/{operationID}/retry", a.handleRetryNodeOperation,
+			)
+			authenticated.Post("/nodes/{nodeID}/retry-sync", a.handleRetryNodeSync)
+			authenticated.Get("/nodes/{nodeID}/backups", a.handleListConfigBackups)
 			authenticated.Get("/nodes/{nodeID}/s-ui", a.handleGetSUIState)
 			authenticated.Put("/nodes/{nodeID}/s-ui/targets", a.handleSetSUITargets)
 			authenticated.Post("/nodes/{nodeID}/s-ui/clients/{clientID}/import", a.handleImportSUIClient)
@@ -111,6 +118,8 @@ func (a *App) Handler() (http.Handler, error) {
 				"/users/{userID}/subscription-tokens/{tokenID}",
 				a.handleRevokeSubscriptionToken,
 			)
+			authenticated.Get("/alerts", a.handleListAlerts)
+			authenticated.Post("/alerts/{alertID}/acknowledge", a.handleAcknowledgeAlert)
 		})
 	})
 	router.Route("/agent/v1", func(agent chi.Router) {
@@ -124,6 +133,8 @@ func (a *App) Handler() (http.Handler, error) {
 			secured.Post("/online-snapshot", a.handleAgentOnlineSnapshot)
 			secured.Post("/s-ui-report", a.handleAgentSUIReport)
 			secured.Post("/credential-material", a.handleCredentialMaterial)
+			secured.Get("/operations", a.handleAgentOperations)
+			secured.Post("/operations/{operationID}/result", a.handleAgentOperationResult)
 		})
 	})
 	router.Group(func(subscription chi.Router) {

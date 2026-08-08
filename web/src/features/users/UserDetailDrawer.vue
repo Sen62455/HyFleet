@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { KeyRound, Link2, LogOut, Pencil, Plus, RotateCw, Save, Trash2, Wifi } from "@lucide/vue";
+import { KeyRound, Link2, LogOut, Pencil, Plus, RotateCw, Save, Server, Trash2, Wifi } from "@lucide/vue";
 import {
   NButton,
   NDrawer,
@@ -41,6 +41,7 @@ const emit = defineEmits<{
   "revoke-subscription": [user: UserRecord, token: SubscriptionTokenRecord];
   "rotate-assignment-credential": [user: UserRecord, assignment: UserAssignment];
   "rotate-user-credentials": [user: UserRecord];
+  "open-node": [nodeId: string];
 }>();
 
 const selectedNodeID = ref<string | null>(null);
@@ -105,6 +106,22 @@ function subscriptionState(token: SubscriptionTokenRecord) {
   if (token.status === "revoked") return { label: "已撤销", type: "default" as const };
   if (token.status === "expired") return { label: "已到期", type: "error" as const };
   return { label: "有效", type: "success" as const };
+}
+
+function subscriptionEligibility(assignment: UserAssignment) {
+  if (assignment.subscription_eligible) return { label: "已纳入订阅", type: "success" as const };
+  const labels: Record<string, string> = {
+    read_only_requires_adoption: "接管后纳入订阅",
+    adapter_not_supported: "适配器不支持订阅",
+    node_disabled: "节点已停用",
+    node_not_ready: "节点尚未就绪",
+    endpoint_missing: "缺少公网端点",
+    assignment_disabled: "分配已停用",
+    assignment_quota_limited: "节点额度已用尽",
+    assignment_not_applied: "等待配置同步",
+    credential_not_applied: "凭据尚未应用",
+  };
+  return { label: labels[assignment.subscription_reason] ?? "未纳入订阅", type: "warning" as const };
 }
 
 function formatLabel(format: string) {
@@ -289,11 +306,24 @@ function formatLabel(format: string) {
                 <n-tag :type="assignmentState(assignment).type" size="small" :bordered="false">
                   {{ assignmentState(assignment).label }}
                 </n-tag>
+                <n-tag :type="subscriptionEligibility(assignment).type" size="small" :bordered="false">
+                  {{ subscriptionEligibility(assignment).label }}
+                </n-tag>
               </div>
             </header>
             <p v-if="assignment.last_error_message" class="assignment-error">
               {{ assignment.last_error_message }}
             </p>
+            <div
+              v-if="assignment.subscription_reason === 'read_only_requires_adoption'"
+              class="assignment-adoption"
+            >
+              <span>当前远端凭据保持只读，额度和统一订阅尚未接管。</span>
+              <n-button text type="primary" @click="emit('open-node', assignment.node_id)">
+                <template #icon><n-icon><server /></n-icon></template>
+                打开节点
+              </n-button>
+            </div>
             <div class="assignment-usage">
               <div>
                 <span>{{ formatBytes(assignment.traffic_used_bytes) }}</span>

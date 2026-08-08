@@ -4,7 +4,7 @@ param(
     [string]$Architecture = "amd64",
 
     [ValidatePattern("^[0-9A-Za-z][0-9A-Za-z._-]*$")]
-    [string]$Version = "v0.5.0-dev"
+    [string]$Version = "v0.6.0-dev"
 )
 
 $ErrorActionPreference = "Stop"
@@ -96,6 +96,14 @@ try {
             "./cmd/agent"
         )
         Invoke-Checked -Command go -Arguments $agentBuildArguments
+
+        $opsBuildArguments = @(
+            "build",
+            "-ldflags=$ldflags",
+            "-o=$(Join-Path $binaryOutput 'hyfleet-agent-ops')",
+            "./cmd/agentops"
+        )
+        Invoke-Checked -Command go -Arguments $opsBuildArguments
     }
     finally {
         Pop-Location
@@ -108,7 +116,7 @@ finally {
 }
 
 $expectedMachine = if ($Architecture -eq "amd64") { 0x3e } else { 0xb7 }
-foreach ($binaryName in @("hyfleet-server", "hyfleet-agent")) {
+foreach ($binaryName in @("hyfleet-server", "hyfleet-agent", "hyfleet-agent-ops")) {
     $binaryPath = Join-Path $binaryOutput $binaryName
     $stream = [System.IO.File]::OpenRead($binaryPath)
     try {
@@ -135,6 +143,7 @@ foreach ($directory in @("bin", "configs", (Join-Path "deploy" "systemd"), "docs
 }
 Copy-Item (Join-Path $binaryOutput "hyfleet-server") (Join-Path $bundlePath "bin")
 Copy-Item (Join-Path $binaryOutput "hyfleet-agent") (Join-Path $bundlePath "bin")
+Copy-Item (Join-Path $binaryOutput "hyfleet-agent-ops") (Join-Path $bundlePath "bin")
 $configSource = Join-Path (Join-Path $repositoryRoot "configs") "*"
 $unitSource = Join-Path (Join-Path (Join-Path $repositoryRoot "deploy") "systemd") "*"
 Copy-Item $configSource (Join-Path $bundlePath "configs")
@@ -142,7 +151,7 @@ Copy-Item $unitSource (Join-Path (Join-Path $bundlePath "deploy") "systemd")
 foreach ($scriptName in @("install-server.sh", "install-agent.sh", "diagnose.sh", "configure-hysteria.sh", "update-component.sh")) {
     Copy-Item (Join-Path (Join-Path $repositoryRoot "deploy") $scriptName) (Join-Path $bundlePath "deploy")
 }
-foreach ($documentName in @("10-systemd-deployment.md", "11-phase-2-native-users.md", "12-phase-3-traffic-and-updates.md", "13-phase-4-unified-subscriptions.md", "14-phase-5-sui-adapter.md")) {
+foreach ($documentName in @("10-systemd-deployment.md", "11-phase-2-native-users.md", "12-phase-3-traffic-and-updates.md", "13-phase-4-unified-subscriptions.md", "14-phase-5-sui-adapter.md", "15-phase-6-operations.md")) {
     Copy-Item (Join-Path (Join-Path $repositoryRoot "docs") $documentName) (Join-Path $bundlePath "docs")
 }
 

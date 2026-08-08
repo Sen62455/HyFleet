@@ -4,13 +4,17 @@ set -Eeuo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 bundle_dir="$(cd -- "${script_dir}/.." && pwd)"
 source_binary="${bundle_dir}/bin/hyfleet-agent"
+source_ops_binary="${bundle_dir}/bin/hyfleet-agent-ops"
 source_unit="${script_dir}/systemd/hyfleet-agent.service"
+source_ops_socket="${script_dir}/systemd/hyfleet-agent-ops.socket"
+source_ops_service="${script_dir}/systemd/hyfleet-agent-ops@.service"
 
 server_url=""
 node_name=""
 adapter_type=""
 service_unit=""
 core_name=""
+core_config_path=""
 s_ui_api_url=""
 replace_config=false
 temporary_dir=""
@@ -33,6 +37,8 @@ Options:
   --node-name NAME    Local node label using letters, numbers, dot, dash, underscore
   --adapter TYPE      One adapter from the list above
   --service-unit UNIT Override the adapter's default systemd unit
+  --core-config-path PATH
+                       Override the config inside the adapter's /etc directory
   --s-ui-api-url URL  Local S-UI HTTP API ending in /apiv2 (S-UI only)
   --replace-config    Replace /etc/hyfleet/agent.yaml with generated settings
   -h, --help          Show this help
@@ -74,6 +80,11 @@ while (($# > 0)); do
       service_unit="$2"
       shift 2
       ;;
+    --core-config-path)
+      (($# >= 2)) || fail "--core-config-path requires a value"
+      core_config_path="$2"
+      shift 2
+      ;;
     --s-ui-api-url)
       (($# >= 2)) || fail "--s-ui-api-url requires a value"
       s_ui_api_url="$2"
@@ -100,7 +111,10 @@ for command_name in curl getent groupadd install runuser systemctl systemd-analy
 done
 
 [[ -f "${source_binary}" ]] || fail "missing ${source_binary}; extract the complete release archive"
+[[ -f "${source_ops_binary}" ]] || fail "missing ${source_ops_binary}; extract the complete release archive"
 [[ -f "${source_unit}" ]] || fail "missing ${source_unit}; extract the complete release archive"
+[[ -f "${source_ops_socket}" ]] || fail "missing ${source_ops_socket}; extract the complete release archive"
+[[ -f "${source_ops_service}" ]] || fail "missing ${source_ops_service}; extract the complete release archive"
 
 elf_magic="$(od -An -t x1 -N 4 "${source_binary}" | tr -d '[:space:]')"
 [[ "${elf_magic}" == "7f454c46" ]] || fail "hyfleet-agent is not a Linux ELF binary"
@@ -112,6 +126,11 @@ case "$(uname -m)" in
 esac
 [[ "${elf_machine}" == "${expected_machine}" ]] ||
   fail "hyfleet-agent architecture does not match host $(uname -m)"
+ops_elf_magic="$(od -An -t x1 -N 4 "${source_ops_binary}" | tr -d '[:space:]')"
+[[ "${ops_elf_magic}" == "7f454c46" ]] || fail "hyfleet-agent-ops is not a Linux ELF binary"
+ops_elf_machine="$(od -An -t x1 -j 18 -N 2 "${source_ops_binary}" | tr -d '[:space:]')"
+[[ "${ops_elf_machine}" == "${expected_machine}" ]] ||
+  fail "hyfleet-agent-ops architecture does not match host $(uname -m)"
 
 config_path="/etc/hyfleet/agent.yaml"
 state_path="/var/lib/hyfleet-agent/agent-state.json"
@@ -129,16 +148,19 @@ if [[ ! -f "${config_path}" || "${replace_config}" == true ]]; then
     native-hysteria2)
       adapter_type="native_hysteria2"
       core_name="hysteria"
+      : "${core_config_path:=/etc/hysteria/config.yaml}"
       : "${service_unit:=hysteria-server.service}"
       ;;
     standalone-sing-box)
       adapter_type="standalone_sing_box"
       core_name="sing-box"
+      : "${core_config_path:=/etc/sing-box/config.json}"
       : "${service_unit:=sing-box.service}"
       ;;
     s-ui)
       adapter_type="s_ui"
       core_name="sing-box"
+      [[ -z "${core_config_path}" ]] || fail "--core-config-path is not supported for S-UI"
       : "${service_unit:=s-ui.service}"
       : "${s_ui_api_url:=http://127.0.0.1:2095/app/apiv2}"
       [[ "${s_ui_api_url}" =~ ^http://127\.0\.0\.1:[0-9]{1,5}(/[A-Za-z0-9._~-]+)*/apiv2/?$ ]] ||
@@ -148,8 +170,22 @@ if [[ ! -f "${config_path}" || "${replace_config}" == true ]]; then
       fail "unsupported --adapter value: ${adapter_type}"
       ;;
   esac
-  [[ "${service_unit}" =~ ^[A-Za-z0-9_.@:-]+$ ]] || fail "invalid systemd service unit"
-elif [[ -n "${server_url}${node_name}${adapter_type}${service_unit}${s_ui_api_url}" ]]; then
+  [[ "${service_unit}" =~ ^[A-Za-z0-9][A-Za-z0-9_.@:-]*$ ]] || fail "invalid systemd service unit"
+  if [[ -n "${core_config_path}" ]]; then
+    [[ ${#core_config_path} -le 256 && "${core_config_path}" =~ ^/etc/[A-Za-z0-9._/-]+$ &&
+      "${core_config_path}" != *"//"* && "${core_config_path}" != *"/./"* &&
+      "${core_config_path}" != *"/../"* && "${core_config_path}" != */. &&
+      "${core_config_path}" != */.. && "${core_config_path}" != */ ]] ||
+      fail "--core-config-path must be a normalized file path below /etc"
+    if [[ "${adapter_type}" == "native_hysteria2" ]]; then
+      [[ "${core_config_path}" == /etc/hysteria/* ]] ||
+        fail "native Hysteria2 config must be below /etc/hysteria"
+    elif [[ "${adapter_type}" == "standalone_sing_box" ]]; then
+      [[ "${core_config_path}" == /etc/sing-box/* ]] ||
+        fail "standalone sing-box config must be below /etc/sing-box"
+    fi
+  fi
+elif [[ -n "${server_url}${node_name}${adapter_type}${service_unit}${core_config_path}${s_ui_api_url}" ]]; then
   printf 'Keeping existing %s; supplied configuration options were not applied.\n' "${config_path}"
 fi
 
@@ -161,8 +197,12 @@ fi
 
 install -d -o root -g root -m 0755 /etc/hyfleet
 install -d -o hyfleet-agent -g hyfleet-agent -m 0700 /var/lib/hyfleet-agent
+install -d -o root -g root -m 0755 /usr/local/libexec
+install -d -o root -g root -m 0700 /var/lib/hyfleet-backups /var/lib/hyfleet-agent-ops
 install -o root -g root -m 0755 "${source_binary}" /usr/local/bin/hyfleet-agent
+install -o root -g root -m 0755 "${source_ops_binary}" /usr/local/libexec/hyfleet-agent-ops
 /usr/local/bin/hyfleet-agent -version
+/usr/local/libexec/hyfleet-agent-ops -version
 
 temporary_dir="$(mktemp -d)"
 if [[ ! -f "${config_path}" || "${replace_config}" == true ]]; then
@@ -172,6 +212,7 @@ node_name: ${node_name}
 adapter_type: ${adapter_type}
 core_name: ${core_name}
 service_unit: ${service_unit}
+operations_socket_path: /run/hyfleet-agent-ops.sock
 state_path: /var/lib/hyfleet-agent/agent-state.json
 auth_listen: 127.0.0.1:18081
 auth_path: /hysteria/auth
@@ -184,6 +225,9 @@ heartbeat_every: 15s
 desired_every: 10s
 traffic_every: 30s
 EOF
+  if [[ -n "${core_config_path}" ]]; then
+    printf 'core_config_path: %s\n' "${core_config_path}" >> "${temporary_dir}/agent.yaml"
+  fi
   if [[ "${adapter_type}" == "s_ui" ]]; then
     cat >> "${temporary_dir}/agent.yaml" <<EOF
 s_ui_api_url: ${s_ui_api_url}
@@ -199,9 +243,14 @@ fi
 
 install -o root -g root -m 0644 "${source_unit}" \
   /etc/systemd/system/hyfleet-agent.service
+install -o root -g root -m 0644 "${source_ops_socket}" \
+  /etc/systemd/system/hyfleet-agent-ops.socket
+install -o root -g root -m 0644 "${source_ops_service}" \
+  /etc/systemd/system/hyfleet-agent-ops@.service
 
 runuser -u hyfleet-agent -g hyfleet-agent -- /usr/local/bin/hyfleet-agent \
   -config "${config_path}" -check-config
+/usr/local/libexec/hyfleet-agent-ops -config "${config_path}" -check-config
 
 configured_server="$(awk '$1 == "server_url:" { print $2; exit }' "${config_path}")"
 [[ "${configured_server}" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] ||
@@ -263,7 +312,10 @@ else
 fi
 
 systemctl daemon-reload
-systemd-analyze verify /etc/systemd/system/hyfleet-agent.service
+systemd-analyze verify /etc/systemd/system/hyfleet-agent.service \
+  /etc/systemd/system/hyfleet-agent-ops.socket \
+  /etc/systemd/system/hyfleet-agent-ops@.service
+systemctl enable --now hyfleet-agent-ops.socket
 systemctl enable hyfleet-agent
 systemctl restart hyfleet-agent
 

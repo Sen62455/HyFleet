@@ -87,15 +87,20 @@ unchanged.
 
 ## Phase 6: Bounded operations and recovery (`v0.6`)
 
-Deliver offline catch-up, retry controls, typed restart/probe/kick/log operations,
-configuration backup metadata, notifications, database backup/restore, and
-documented node recovery.
+Implementation status: complete in `v0.6.0-dev`; real three-node acceptance
+remains an operator deployment step.
+
+Deliver offline desired-state and operation-result catch-up, retry controls,
+typed restart/probe/log/backup operations, configuration backup metadata,
+restricted helper execution, active alerts, and documented node recovery.
 
 Tests: partitions, stale operations, repeated restart request, bounded log output,
-backup consistency, restore drill, Agent credential rotation.
+backup consistency, helper idempotency, restart rollback, alert lifecycle, and
+Agent result Outbox recovery.
 
 Exit gate: an offline node catches up safely, a failed apply preserves prior
-state, and a clean controller can be restored from the documented artifacts.
+state, a failed restart can restore the most recent node-local configuration,
+and active faults raise alerts that resolve after recovery.
 
 ## Phase 7: Public release (`v1.0`)
 

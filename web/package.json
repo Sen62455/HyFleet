@@ -1,0 +1,30 @@
+{
+  "name": "hyfleet-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@11.16.0",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run",
+    "lint:docs": "markdownlint-cli2 --config ../.markdownlint-cli2.yaml \"../README.md\" \"../docs/**/*.md\"",
+    "build": "vue-tsc --noEmit && vite build"
+  },
+  "dependencies": {
+    "@lucide/vue": "1.28.0",
+    "naive-ui": "^2.42.0",
+    "vue": "^3.5.18"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.1",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "@vue/test-utils": "^2.4.6",
+    "happy-dom": "^18.0.1",
+    "markdownlint-cli2": "0.23.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.1",
+    "vitest": "^3.2.4",
+    "vue-tsc": "^3.0.5"
+  }
+}

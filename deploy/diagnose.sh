@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -u
+
+usage() {
+  printf 'Usage: sudo bash deploy/diagnose.sh server|agent\n'
+}
+
+[[ "${EUID}" -eq 0 ]] || {
+  printf 'Run this diagnostic with sudo.\n' >&2
+  exit 1
+}
+
+component="${1:-}"
+case "${component}" in
+  server)
+    service_name="hyfleet-server"
+    binary_path="/usr/local/bin/hyfleet-server"
+    config_path="/etc/hyfleet/server.yaml"
+    unit_path="/etc/systemd/system/hyfleet-server.service"
+    ;;
+  agent)
+    service_name="hyfleet-agent"
+    binary_path="/usr/local/bin/hyfleet-agent"
+    config_path="/etc/hyfleet/agent.yaml"
+    unit_path="/etc/systemd/system/hyfleet-agent.service"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
+
+printf '=== Platform ===\n'
+uname -a
+printf 'Architecture: %s\n' "$(uname -m)"
+timedatectl status 2>/dev/null || true
+
+printf '\n=== Binary ===\n'
+if [[ -e "${binary_path}" ]]; then
+  if command -v file >/dev/null 2>&1; then
+    file "${binary_path}"
+  fi
+  stat -c '%A %U:%G %s bytes %n' "${binary_path}" 2>/dev/null || true
+  "${binary_path}" -version 2>&1 || true
+else
+  printf 'Missing: %s\n' "${binary_path}"
+fi
+
+printf '\n=== Paths ===\n'
+namei -l "${config_path}" 2>&1 || true
+[[ "${component}" == server ]] && namei -l /var/lib/hyfleet 2>&1 || true
+[[ "${component}" == agent ]] && namei -l /var/lib/hyfleet-agent 2>&1 || true
+
+printf '\n=== Unit verification ===\n'
+systemd-analyze verify "${unit_path}" 2>&1 || true
+
+printf '\n=== Service status ===\n'
+systemctl status "${service_name}" --no-pager --full 2>&1 || true
+
+printf '\n=== Current-boot journal (last 100 lines) ===\n'
+journalctl -u "${service_name}" -b -n 100 --no-pager 2>&1 || true
+
+if [[ "${component}" == server ]]; then
+  printf '\n=== Loopback health ===\n'
+  listen_address="$(awk '$1 == "listen:" { print $2; exit }' "${config_path}" 2>/dev/null)"
+  if [[ "${listen_address}" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]]; then
+    curl --fail --silent --show-error "http://${listen_address}/healthz" 2>&1 || true
+  else
+    printf 'Could not determine a loopback listen address from %s.\n' "${config_path}"
+  fi
+  printf '\n'
+fi
+
+printf '\nThis report does not print HyFleet environment files or Agent state credentials.\n'

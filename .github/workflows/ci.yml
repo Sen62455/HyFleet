@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.16.0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Check Go formatting
+        shell: bash
+        run: test -z "$(gofmt -l ./cmd ./internal)"
+
+      - name: Check deployment scripts
+        shell: bash
+        run: bash -n deploy/*.sh
+
+      - name: Verify Go modules
+        run: go mod verify
+
+      - name: Vet and test Go
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      - name: Test frontend and documentation
+        working-directory: web
+        run: |
+          pnpm typecheck
+          pnpm test
+          pnpm lint:docs
+
+      - name: Build embedded frontend
+        working-directory: web
+        run: pnpm build
+
+      - name: Build Linux release binaries
+        shell: bash
+        run: |
+          mkdir -p bin
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags webui -o bin/hyfleet-server-linux-amd64 ./cmd/server
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/hyfleet-agent-linux-amd64 ./cmd/agent
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags webui -o bin/hyfleet-server-linux-arm64 ./cmd/server
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/hyfleet-agent-linux-arm64 ./cmd/agent
+
+  secrets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

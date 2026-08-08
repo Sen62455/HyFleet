@@ -1,0 +1,72 @@
+import type { AdapterType, NodeRecord, NodeStatus } from "../types";
+
+const byteUnits = ["B", "KiB", "MiB", "GiB", "TiB"];
+
+export function formatBytes(value: number, digits = 1): string {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), byteUnits.length - 1);
+  const scaled = value / 1024 ** index;
+  const precision = scaled >= 100 || index === 0 ? 0 : digits;
+  return `${scaled.toFixed(precision)} ${byteUnits[index]}`;
+}
+
+export function formatRate(bitsPerSecond: number): string {
+  if (!Number.isFinite(bitsPerSecond) || bitsPerSecond <= 0) return "0 bps";
+  const units = ["bps", "Kbps", "Mbps", "Gbps"];
+  const index = Math.min(Math.floor(Math.log(bitsPerSecond) / Math.log(1000)), units.length - 1);
+  const scaled = bitsPerSecond / 1000 ** index;
+  return `${scaled.toFixed(scaled >= 100 ? 0 : 1)} ${units[index]}`;
+}
+
+export function percent(used: number, total: number): number {
+  if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return 0;
+  return Math.max(0, Math.min(100, (used / total) * 100));
+}
+
+export function formatPercent(value: number): string {
+  if (!Number.isFinite(value)) return "0%";
+  return `${Math.max(0, Math.min(100, value)).toFixed(value >= 10 ? 0 : 1)}%`;
+}
+
+export function relativeTime(value: string | null, now = Date.now()): string {
+  if (!value) return "尚未连接";
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return "时间未知";
+  const seconds = Math.max(0, Math.round((now - time) / 1000));
+  if (seconds < 10) return "刚刚";
+  if (seconds < 60) return `${seconds} 秒前`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  return `${Math.floor(hours / 24)} 天前`;
+}
+
+export function formatUptime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "-";
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  if (days > 0) return `${days} 天 ${hours} 小时`;
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (hours > 0) return `${hours} 小时 ${minutes} 分钟`;
+  return `${minutes} 分钟`;
+}
+
+export const adapterLabels: Record<AdapterType, string> = {
+  native_hysteria2: "原生 Hysteria2",
+  standalone_sing_box: "独立 sing-box",
+  s_ui: "S-UI",
+};
+
+export const statusLabels: Record<NodeStatus, string> = {
+  pending: "待连接",
+  online: "在线",
+  stale: "数据延迟",
+  offline: "离线",
+  degraded: "异常",
+  disabled: "已停用",
+};
+
+export function issueCount(nodes: NodeRecord[]): number {
+  return nodes.filter((node) => ["stale", "offline", "degraded"].includes(node.status)).length;
+}

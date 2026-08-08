@@ -1,0 +1,89 @@
+# Non-secret example only. Copy to ../inventory.local.yaml for real values;
+# that path is ignored by Git. Never put passwords, tokens, private keys,
+# subscription URLs, SSH credentials, or full unredacted configs here.
+schema_version: 1
+
+controller:
+  placement: dmit-01
+  deployment: native-systemd
+
+nodes:
+  - id: dmit-01
+    provider: DMIT
+    region: unknown
+    os: ubuntu-24.04
+    architecture: amd64
+    vcpu: 1
+    memory_mib: 1945
+    swap_mib: 1024
+    disk_free_mib: 16384
+    adapter: s_ui
+    data_plane: sing-box
+    core_version: unknown
+    service_unit: s-ui.service
+    service_state: running-enabled
+    config_path: unknown
+    public_endpoint:
+      host: REDACTED
+      udp_port: 443
+      port_hopping: false
+      sni_mode: public-trusted-certificate
+      obfs_type: none
+    tls:
+      mode: public-trusted
+      renewal: unknown
+    sui:
+      version: v1.5.3
+      install_type: likely-native-unconfirmed
+      local_base_path: /app/apiv2 # inferred; confirm locally before use
+      inbound_ref: hysteria2-443
+
+  - id: lisa-01
+    provider: LisaHost
+    region: unknown
+    os: ubuntu-24.04
+    architecture: amd64
+    vcpu: 1
+    memory_mib: 961
+    swap_mib: 0
+    disk_free_mib: 16384
+    adapter: native_hysteria2
+    data_plane: hysteria2
+    core_version: v2.12.0
+    service_unit: hysteria-server.service
+    service_state: running-enabled
+    config_path: unknown
+    public_endpoint:
+      host: REDACTED
+      udp_port: null
+      port_hopping: false
+      sni_mode: public-trusted-certificate
+      obfs_type: none
+    tls:
+      mode: public-trusted
+      renewal: unknown
+
+  - id: bwh-01
+    provider: BandwagonHost
+    region: unknown
+    os: ubuntu-24.04
+    architecture: amd64
+    vcpu: 2
+    memory_mib: 1024
+    swap_mib: 2560
+    disk_free_mib: 5734
+    adapter: standalone_sing_box
+    data_plane: sing-box
+    core_version: unknown
+    service_unit: sing-box.service
+    service_state: running-enabled
+    config_path: unknown
+    public_endpoint:
+      host: REDACTED
+      udp_port: null
+      port_hopping: false
+      sni_mode: public-trusted-certificate
+      obfs_type: none
+    tls:
+      mode: public-trusted
+      renewal: unknown

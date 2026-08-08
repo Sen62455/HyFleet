@@ -1,0 +1,8 @@
+server_url: https://hyfleet.example.com
+node_name: example-native-node
+adapter_type: native_hysteria2
+core_name: hysteria
+service_unit: hysteria-server.service
+state_path: /var/lib/hyfleet-agent/agent-state.json
+heartbeat_every: 15s
+desired_every: 10s

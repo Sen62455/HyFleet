@@ -1,0 +1,28 @@
+# Local secrets and runtime state
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.crt
+*.p12
+*.token
+*.db
+*.db-shm
+*.db-wal
+data/
+dist/
+bin/
+
+# Node-specific inventory must never be committed.
+inventory.local.yaml
+docs/inventory.local.md
+
+# Frontend and editor output
+node_modules/
+.playwright-cli/
+output/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,8 @@
+server_url: https://hyfleet.example.com
+node_name: example-s-ui-node
+adapter_type: s_ui
+core_name: sing-box
+service_unit: s-ui.service
+state_path: /var/lib/hyfleet-agent/agent-state.json
+heartbeat_every: 15s
+desired_every: 10s

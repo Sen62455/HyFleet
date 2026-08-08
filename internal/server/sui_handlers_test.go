@@ -185,7 +185,7 @@ func enrollSUIAgentForTest(t *testing.T, app *testApp, nodeID string) (string, s
 		EnrollmentToken: token.EnrollmentToken, InstallationID: installationID,
 		RequestID: requestID, AgentVersion: "v0.5.0-test", OS: "linux",
 		OSVersion: "24.04", Architecture: "amd64",
-		Capabilities: []string{"sui_apiv2_v1", "sui_ownership_v1"},
+		Capabilities: []string{"sui_apiv2_v1", "host_metrics"},
 		Adapter:      protocol.EnrollmentAdapter{Type: "s_ui", CoreName: "sing-box"},
 	}, "", requestID)
 	requireStatus(t, enrolled, http.StatusOK)

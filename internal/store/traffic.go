@@ -334,6 +334,18 @@ func requestKickTx(
 	nodeID, userID, reason string,
 	now time.Time,
 ) error {
+	var adapter string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT adapter_type FROM nodes WHERE id = ? AND archived_at IS NULL
+	`, nodeID).Scan(&adapter); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("read kick node adapter: %w", err)
+	}
+	if adapter != "native_hysteria2" {
+		return nil
+	}
 	if len(reason) > 64 {
 		reason = reason[:64]
 	}
@@ -483,13 +495,18 @@ func (s *Store) RequestUserKick(
 		}
 		return 0, fmt.Errorf("find kick user: %w", err)
 	}
-	query := "SELECT node_id FROM node_user_assignments WHERE user_id = ?"
+	query := `
+		SELECT a.node_id
+		FROM node_user_assignments a
+		JOIN nodes n ON n.id = a.node_id AND n.archived_at IS NULL
+		WHERE a.user_id = ? AND n.adapter_type = 'native_hysteria2'
+	`
 	arguments := []any{userID}
 	if nodeID != "" {
-		query += " AND node_id = ?"
+		query += " AND a.node_id = ?"
 		arguments = append(arguments, nodeID)
 	}
-	query += " ORDER BY node_id"
+	query += " ORDER BY a.node_id"
 	rows, err := tx.QueryContext(ctx, query, arguments...)
 	if err != nil {
 		return 0, fmt.Errorf("list kick assignments: %w", err)

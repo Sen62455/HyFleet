@@ -125,6 +125,18 @@ func validHeartbeat(input protocol.HeartbeatRequest) bool {
 		len(input.Agent.Version) > 64 || len(input.Core.Name) > 64 || len(input.Core.Version) > 64 {
 		return false
 	}
+	if input.Adapter.Name != "" || input.Adapter.Status != "" {
+		switch input.Adapter.Name {
+		case "s_ui", "native_hysteria2", "standalone_sing_box":
+		default:
+			return false
+		}
+		if !validAdapterStatus(input.Adapter.Status) || len(input.Adapter.Version) > 64 ||
+			len(input.Adapter.ErrorCode) > 64 ||
+			(input.Adapter.LastProbedAt != nil && input.Adapter.LastProbedAt.IsZero()) {
+			return false
+		}
+	}
 	if _, err := uuid.Parse(input.InstallationID); err != nil {
 		return false
 	}

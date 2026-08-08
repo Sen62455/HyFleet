@@ -6,3 +6,7 @@ service_unit: s-ui.service
 state_path: /var/lib/hyfleet-agent/agent-state.json
 heartbeat_every: 15s
 desired_every: 10s
+traffic_every: 30s
+local_database_path: /var/lib/hyfleet-agent/agent.db
+s_ui_api_url: http://127.0.0.1:2095/app/apiv2
+s_ui_token_env: HYFLEET_SUI_TOKEN

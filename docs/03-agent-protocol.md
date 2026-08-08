@@ -166,6 +166,23 @@ A single invalid batch does not make valid sibling batches ambiguous.
 Best-effort online user IDs and connection counts. This endpoint is not an
 accounting source and may be sampled less frequently on constrained nodes.
 
+### `POST /agent/v1/s-ui-report`
+
+An authenticated `s_ui` Agent reports its compatibility probe and sanitized
+Hysteria2 discovery snapshot. The report contains:
+
+- S-UI version, compatibility status, stable error code, and probe time;
+- sing-box running state;
+- typed Hysteria2 inbound IDs, tags, listen addresses, and ports;
+- typed client IDs, names, enabled/expiry state, cumulative upload/download,
+  online state, and optional HyFleet mapping metadata.
+
+The Agent obtains discovery clients from the S-UI endpoint that omits `config`
+and links. The protocol rejects unexpected group, description, credential
+fingerprint, duplicate ID, invalid size, and timestamps more than ten minutes in
+the future. Raw S-UI responses, links, configuration objects, API Token, and
+client passwords are never accepted by this endpoint.
+
 ### `GET /agent/v1/operations?after=<sequence>`
 
 Reserved for Phase 6. Returns only typed operations such as `probe_core`,
@@ -205,10 +222,13 @@ Conceptual payload:
 ```
 
 The example is for `native_hysteria2`. For `s_ui`, `credential` omits
-`verifier_sha256`; the Agent uses `ref` only with the credential-material endpoint
-while applying that exact revision. The Agent computes effective denial locally
-from `enabled`, `expires_at`, and `quota_state`. Local time skew is reported; a
-large skew marks the node degraded.
+`verifier_sha256` and each user also has `management_mode` and an optional
+`remote_client_id`. A `read_only` entry establishes only the local ownership
+mapping; it never requests credential material or modifies the remote client. A
+`managed` entry uses `ref` only with the credential-material endpoint while
+applying that exact revision. The Agent computes effective denial for managed
+entries from `enabled`, `expires_at`, and `quota_state`. Local time skew is
+reported; a large skew marks the node degraded.
 
 The snapshot always describes the desired credential. The controller keeps the
 assignment's desired and applied references separate and does not render the new

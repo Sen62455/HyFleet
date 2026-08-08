@@ -19,6 +19,12 @@ type Node struct {
 	Provider                 string
 	Region                   string
 	AdapterType              string
+	AdapterStatus            string
+	AdapterVersion           string
+	AdapterErrorCode         string
+	AdapterLastProbedAt      *time.Time
+	AdapterLastDiscoveredAt  *time.Time
+	SUITargetInboundIDs      []int64
 	PublicHost               string
 	PublicPort               int
 	SNI                      string
@@ -96,7 +102,9 @@ type UpdateNode struct {
 }
 
 const nodeColumns = `
-	id, name, provider, region, adapter_type, public_host, public_port, sni,
+	id, name, provider, region, adapter_type, adapter_status, adapter_version,
+	adapter_error_code, adapter_last_probed_at, adapter_last_discovered_at,
+	sui_target_inbound_ids, public_host, public_port, sni,
 	tls_insecure, enabled, status, status_reason,
 	desired_version, applied_version, COALESCE(agent_installation_id, ''),
 	agent_version, protocol_version, os_name, os_version, architecture,
@@ -119,9 +127,13 @@ func scanNode(row rowScanner) (Node, error) {
 	var enabled, tlsInsecure, coreRunning, usageEnabled, usageAvailable int
 	var lastSeen, lastApplied, usageSampled, trafficLastReport sql.NullInt64
 	var onlineSampled, onlineLastReport sql.NullInt64
+	var adapterLastProbed, adapterLastDiscovered sql.NullInt64
+	var suiTargetInboundJSON string
 	var created, updated int64
 	err := row.Scan(
 		&node.ID, &node.Name, &node.Provider, &node.Region, &node.AdapterType,
+		&node.AdapterStatus, &node.AdapterVersion, &node.AdapterErrorCode,
+		&adapterLastProbed, &adapterLastDiscovered, &suiTargetInboundJSON,
 		&node.PublicHost, &node.PublicPort, &node.SNI, &tlsInsecure,
 		&enabled, &node.Status, &node.StatusReason, &node.DesiredVersion,
 		&node.AppliedVersion, &node.AgentInstallationID, &node.AgentVersion,
@@ -151,6 +163,11 @@ func scanNode(row rowScanner) (Node, error) {
 	node.TrafficLastReportAt = nullableTime(trafficLastReport)
 	node.OnlineSampledAt = nullableTime(onlineSampled)
 	node.OnlineLastReportAt = nullableTime(onlineLastReport)
+	node.AdapterLastProbedAt = nullableTime(adapterLastProbed)
+	node.AdapterLastDiscoveredAt = nullableTime(adapterLastDiscovered)
+	if err := json.Unmarshal([]byte(suiTargetInboundJSON), &node.SUITargetInboundIDs); err != nil {
+		return Node{}, fmt.Errorf("decode S-UI target inbounds: %w", err)
+	}
 	node.CreatedAt = unixTime(created)
 	node.UpdatedAt = unixTime(updated)
 	return node, nil
@@ -351,7 +368,8 @@ func (s *Store) ArchiveNode(ctx context.Context, id string, now time.Time) error
 func insertSnapshot(ctx context.Context, tx *sql.Tx, nodeID, adapter string, version int64, now time.Time) error {
 	users := make([]protocol.DesiredUser, 0)
 	kicks := make([]protocol.DesiredKick, 0)
-	if adapter == "native_hysteria2" {
+	var sui *protocol.DesiredSUI
+	if adapter == "native_hysteria2" || adapter == "s_ui" {
 		rows, err := tx.QueryContext(ctx, `
 			SELECT u.id, u.username, c.id, c.secret_fingerprint, c.verifier_sha256,
 			       (u.enabled AND a.enabled AND n.enabled), u.expires_at,
@@ -359,7 +377,7 @@ func insertSnapshot(ctx context.Context, tx *sql.Tx, nodeID, adapter string, ver
 			         WHEN u.quota_state = 'limited' OR a.quota_state = 'limited' THEN 'limited'
 			         WHEN u.quota_state = 'unlimited' AND a.quota_state = 'unlimited' THEN 'unlimited'
 			         ELSE 'active'
-			       END
+			       END, a.management_mode, COALESCE(a.remote_client_id, 0)
 			FROM node_user_assignments a
 			JOIN users u ON u.id = a.user_id
 			JOIN nodes n ON n.id = a.node_id
@@ -376,17 +394,24 @@ func insertSnapshot(ctx context.Context, tx *sql.Tx, nodeID, adapter string, ver
 			var verifier []byte
 			var enabled int
 			var expiresAt sql.NullInt64
+			var managementMode string
+			var remoteClientID int64
 			if err := rows.Scan(
 				&user.ID, &user.Username, &user.Credential.Ref,
 				&user.Credential.Fingerprint, &verifier, &enabled, &expiresAt,
-				&user.QuotaState,
+				&user.QuotaState, &managementMode, &remoteClientID,
 			); err != nil {
 				return fmt.Errorf("scan desired user: %w", err)
 			}
-			if len(verifier) != sha256.Size {
-				return errors.New("desired credential verifier has invalid length")
+			if adapter == "native_hysteria2" {
+				if len(verifier) != sha256.Size {
+					return errors.New("desired credential verifier has invalid length")
+				}
+				user.Credential.VerifierSHA256 = base64.RawURLEncoding.EncodeToString(verifier)
+			} else {
+				user.ManagementMode = managementMode
+				user.RemoteClientID = remoteClientID
 			}
-			user.Credential.VerifierSHA256 = base64.RawURLEncoding.EncodeToString(verifier)
 			user.Enabled = enabled == 1
 			user.ExpiresAt = nullableTime(expiresAt)
 			users = append(users, user)
@@ -398,27 +423,41 @@ func insertSnapshot(ctx context.Context, tx *sql.Tx, nodeID, adapter string, ver
 		if err := rows.Close(); err != nil {
 			return fmt.Errorf("close desired users: %w", err)
 		}
-		kickRows, err := tx.QueryContext(ctx, `
-			SELECT user_id, generation FROM node_kick_targets
-			WHERE node_id = ? ORDER BY user_id
-		`, nodeID)
-		if err != nil {
-			return fmt.Errorf("read desired kicks: %w", err)
-		}
-		for kickRows.Next() {
-			var kick protocol.DesiredKick
-			if err := kickRows.Scan(&kick.UserID, &kick.Generation); err != nil {
-				_ = kickRows.Close()
-				return fmt.Errorf("scan desired kick: %w", err)
+		if adapter == "native_hysteria2" {
+			kickRows, err := tx.QueryContext(ctx, `
+				SELECT user_id, generation FROM node_kick_targets
+				WHERE node_id = ? ORDER BY user_id
+			`, nodeID)
+			if err != nil {
+				return fmt.Errorf("read desired kicks: %w", err)
 			}
-			kicks = append(kicks, kick)
-		}
-		if err := kickRows.Err(); err != nil {
-			_ = kickRows.Close()
-			return fmt.Errorf("iterate desired kicks: %w", err)
-		}
-		if err := kickRows.Close(); err != nil {
-			return fmt.Errorf("close desired kicks: %w", err)
+			for kickRows.Next() {
+				var kick protocol.DesiredKick
+				if err := kickRows.Scan(&kick.UserID, &kick.Generation); err != nil {
+					_ = kickRows.Close()
+					return fmt.Errorf("scan desired kick: %w", err)
+				}
+				kicks = append(kicks, kick)
+			}
+			if err := kickRows.Err(); err != nil {
+				_ = kickRows.Close()
+				return fmt.Errorf("iterate desired kicks: %w", err)
+			}
+			if err := kickRows.Close(); err != nil {
+				return fmt.Errorf("close desired kicks: %w", err)
+			}
+		} else {
+			var targetInboundJSON string
+			if err := tx.QueryRowContext(ctx, `
+				SELECT sui_target_inbound_ids FROM nodes WHERE id = ?
+			`, nodeID).Scan(&targetInboundJSON); err != nil {
+				return fmt.Errorf("read S-UI target inbounds: %w", err)
+			}
+			targets := make([]int64, 0)
+			if err := json.Unmarshal([]byte(targetInboundJSON), &targets); err != nil {
+				return fmt.Errorf("decode S-UI target inbounds: %w", err)
+			}
+			sui = &protocol.DesiredSUI{TargetInboundIDs: targets}
 		}
 	}
 	snapshot := protocol.DesiredSnapshot{
@@ -428,6 +467,7 @@ func insertSnapshot(ctx context.Context, tx *sql.Tx, nodeID, adapter string, ver
 		Adapter:       adapter,
 		Users:         users,
 		Kicks:         kicks,
+		SUI:           sui,
 		GeneratedAt:   now.UTC(),
 	}
 	canonical, err := json.Marshal(snapshot)

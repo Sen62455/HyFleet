@@ -30,6 +30,12 @@ type nodeResponse struct {
 	Provider                 string     `json:"provider"`
 	Region                   string     `json:"region"`
 	AdapterType              string     `json:"adapter_type"`
+	AdapterStatus            string     `json:"adapter_status"`
+	AdapterVersion           string     `json:"adapter_version"`
+	AdapterErrorCode         string     `json:"adapter_error_code"`
+	AdapterLastProbedAt      *time.Time `json:"adapter_last_probed_at"`
+	AdapterLastDiscoveredAt  *time.Time `json:"adapter_last_discovered_at"`
+	SUITargetInboundIDs      []int64    `json:"s_ui_target_inbound_ids"`
 	PublicHost               string     `json:"public_host"`
 	PublicPort               int        `json:"public_port"`
 	SNI                      string     `json:"sni"`
@@ -283,7 +289,12 @@ func (a *App) presentNode(node store.Node, now time.Time) nodeResponse {
 	}
 	return nodeResponse{
 		ID: node.ID, Name: node.Name, Provider: node.Provider, Region: node.Region,
-		AdapterType: node.AdapterType, PublicHost: node.PublicHost, PublicPort: node.PublicPort,
+		AdapterType: node.AdapterType, AdapterStatus: node.AdapterStatus,
+		AdapterVersion: node.AdapterVersion, AdapterErrorCode: node.AdapterErrorCode,
+		AdapterLastProbedAt:     node.AdapterLastProbedAt,
+		AdapterLastDiscoveredAt: node.AdapterLastDiscoveredAt,
+		SUITargetInboundIDs:     node.SUITargetInboundIDs,
+		PublicHost:              node.PublicHost, PublicPort: node.PublicPort,
 		SNI: node.SNI, TLSInsecure: node.TLSInsecure,
 		Enabled: node.Enabled, Status: status,
 		StatusReason: node.StatusReason, DesiredVersion: node.DesiredVersion,

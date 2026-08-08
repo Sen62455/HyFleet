@@ -52,6 +52,7 @@ type HeartbeatRequest struct {
 	AppliedVersion int64       `json:"applied_version"`
 	Agent          AgentInfo   `json:"agent"`
 	Core           CoreInfo    `json:"core"`
+	Adapter        AdapterInfo `json:"adapter"`
 	Host           HostMetrics `json:"host"`
 	Usage          UsageInfo   `json:"usage"`
 	SampledAt      time.Time   `json:"sampled_at"`
@@ -66,6 +67,14 @@ type CoreInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version,omitempty"`
 	Running bool   `json:"running"`
+}
+
+type AdapterInfo struct {
+	Name         string     `json:"name"`
+	Version      string     `json:"version,omitempty"`
+	Status       string     `json:"status"`
+	ErrorCode    string     `json:"error_code,omitempty"`
+	LastProbedAt *time.Time `json:"last_probed_at,omitempty"`
 }
 
 type UsageInfo struct {
@@ -102,16 +111,23 @@ type DesiredSnapshot struct {
 	Adapter       string        `json:"adapter"`
 	Users         []DesiredUser `json:"users"`
 	Kicks         []DesiredKick `json:"kicks"`
+	SUI           *DesiredSUI   `json:"s_ui,omitempty"`
 	GeneratedAt   time.Time     `json:"generated_at"`
 }
 
+type DesiredSUI struct {
+	TargetInboundIDs []int64 `json:"target_inbound_ids"`
+}
+
 type DesiredUser struct {
-	ID         string            `json:"id"`
-	Username   string            `json:"username"`
-	Credential DesiredCredential `json:"credential"`
-	Enabled    bool              `json:"enabled"`
-	ExpiresAt  *time.Time        `json:"expires_at"`
-	QuotaState string            `json:"quota_state"`
+	ID             string            `json:"id"`
+	Username       string            `json:"username"`
+	Credential     DesiredCredential `json:"credential"`
+	Enabled        bool              `json:"enabled"`
+	ExpiresAt      *time.Time        `json:"expires_at"`
+	QuotaState     string            `json:"quota_state"`
+	ManagementMode string            `json:"management_mode,omitempty"`
+	RemoteClientID int64             `json:"remote_client_id,omitempty"`
 }
 
 type DesiredCredential struct {
@@ -183,6 +199,55 @@ type OnlineUser struct {
 }
 
 type OnlineSnapshotResponse struct {
+	Accepted   bool      `json:"accepted"`
+	ServerTime time.Time `json:"server_time"`
+}
+
+type CredentialMaterialRequest struct {
+	CredentialRef  string `json:"credential_ref"`
+	DesiredVersion int64  `json:"desired_version"`
+	SnapshotSHA256 string `json:"snapshot_sha256"`
+}
+
+type CredentialMaterialResponse struct {
+	CredentialRef string `json:"credential_ref"`
+	Secret        string `json:"secret"`
+}
+
+type SUIReportRequest struct {
+	InstallationID string                 `json:"installation_id"`
+	Adapter        AdapterInfo            `json:"adapter"`
+	Core           CoreInfo               `json:"core"`
+	Inbounds       []SUIDiscoveredInbound `json:"inbounds"`
+	Clients        []SUIDiscoveredClient  `json:"clients"`
+	SampledAt      time.Time              `json:"sampled_at"`
+}
+
+type SUIDiscoveredInbound struct {
+	RemoteID   int64  `json:"remote_id"`
+	Tag        string `json:"tag"`
+	Type       string `json:"type"`
+	Listen     string `json:"listen,omitempty"`
+	ListenPort int    `json:"listen_port"`
+}
+
+type SUIDiscoveredClient struct {
+	RemoteID              int64   `json:"remote_id"`
+	Name                  string  `json:"name"`
+	Enabled               bool    `json:"enabled"`
+	InboundIDs            []int64 `json:"inbound_ids"`
+	UploadBytes           int64   `json:"upload_bytes"`
+	DownloadBytes         int64   `json:"download_bytes"`
+	ExpiresAt             int64   `json:"expires_at"`
+	Online                bool    `json:"online"`
+	Group                 string  `json:"group,omitempty"`
+	Description           string  `json:"description,omitempty"`
+	MappedUserID          string  `json:"mapped_user_id,omitempty"`
+	ManagementMode        string  `json:"management_mode,omitempty"`
+	CredentialFingerprint string  `json:"credential_fingerprint,omitempty"`
+}
+
+type SUIReportResponse struct {
 	Accepted   bool      `json:"accepted"`
 	ServerTime time.Time `json:"server_time"`
 }

@@ -110,6 +110,83 @@ func TestTrafficSampleSplitsOutboxAtProtocolLimit(t *testing.T) {
 	}
 }
 
+func TestTrafficBaselinePrimeExcludesPreImportUsage(t *testing.T) {
+	ctx := context.Background()
+	local, err := openLocalStore(ctx, filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("openLocalStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = local.Close() })
+	installationID := uuid.NewString()
+	userID := uuid.NewString()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if batches, err := local.recordTrafficSample(
+		ctx, installationID, map[string]trafficCounters{}, now,
+	); err != nil || len(batches) != 0 {
+		t.Fatalf("initialize empty traffic source = %#v, error = %v", batches, err)
+	}
+	if err := local.primeTrafficBaseline(
+		ctx, userID, trafficCounters{TX: 500, RX: 700}, now.Add(time.Second),
+	); err != nil {
+		t.Fatalf("primeTrafficBaseline() error = %v", err)
+	}
+	if batches, err := local.recordTrafficSample(ctx, installationID, map[string]trafficCounters{
+		userID: {TX: 500, RX: 700},
+	}, now.Add(2*time.Second)); err != nil || len(batches) != 0 {
+		t.Fatalf("pre-import usage was emitted = %#v, error = %v", batches, err)
+	}
+	batches, err := local.recordTrafficSample(ctx, installationID, map[string]trafficCounters{
+		userID: {TX: 510, RX: 720},
+	}, now.Add(3*time.Second))
+	if err != nil || len(batches) != 1 {
+		t.Fatalf("post-import traffic batches = %#v, error = %v", batches, err)
+	}
+	assertTrafficDelta(t, batches[0], userID, 10, 20)
+}
+
+func TestTrafficResetDoesNotRecountUnaffectedUsers(t *testing.T) {
+	ctx := context.Background()
+	local, err := openLocalStore(ctx, filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("openLocalStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = local.Close() })
+	installationID := uuid.NewString()
+	resetUserID := uuid.NewString()
+	steadyUserID := uuid.NewString()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	baseline := map[string]trafficCounters{
+		resetUserID:  {TX: 100, RX: 200},
+		steadyUserID: {TX: 300, RX: 400},
+	}
+	if batches, err := local.recordTrafficSample(ctx, installationID, baseline, now); err != nil || len(batches) != 0 {
+		t.Fatalf("initial baselines = %#v, error = %v", batches, err)
+	}
+	if _, err := local.recordTrafficSample(ctx, installationID, map[string]trafficCounters{
+		resetUserID:  {TX: 150, RX: 250},
+		steadyUserID: {TX: 350, RX: 450},
+	}, now.Add(time.Second)); err != nil {
+		t.Fatalf("first traffic sample error = %v", err)
+	}
+	batches, err := local.recordTrafficSample(ctx, installationID, map[string]trafficCounters{
+		resetUserID:  {TX: 5, RX: 7},
+		steadyUserID: {TX: 370, RX: 480},
+	}, now.Add(2*time.Second))
+	if err != nil || len(batches) != 1 || len(batches[0].Items) != 2 {
+		t.Fatalf("partial reset batches = %#v, error = %v", batches, err)
+	}
+	deltas := make(map[string]protocol.TrafficDelta, len(batches[0].Items))
+	for _, item := range batches[0].Items {
+		deltas[item.UserID] = item
+	}
+	if delta := deltas[resetUserID]; delta.UploadBytes != 5 || delta.DownloadBytes != 7 {
+		t.Fatalf("reset user delta = %#v", delta)
+	}
+	if delta := deltas[steadyUserID]; delta.UploadBytes != 20 || delta.DownloadBytes != 30 {
+		t.Fatalf("steady user was recounted = %#v", delta)
+	}
+}
+
 func TestKickOutboxPersistsAndAppliesHighestGeneration(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "agent.db")

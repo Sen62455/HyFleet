@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -53,6 +54,8 @@ type UserAssignment struct {
 	DesiredCredentialID   string
 	AppliedCredentialID   string
 	CredentialFingerprint string
+	ManagementMode        string
+	RemoteClientID        int64
 	DesiredVersion        int64
 	AppliedVersion        int64
 	State                 string
@@ -330,14 +333,18 @@ func (s *Store) UpdateAssignment(
 	defer func() { _ = tx.Rollback() }()
 	var currentEnabled int
 	var trafficUsed int64
+	var managementMode string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT enabled, traffic_used_bytes FROM node_user_assignments
+		SELECT enabled, traffic_used_bytes, management_mode FROM node_user_assignments
 		WHERE user_id = ? AND node_id = ?
-	`, userID, nodeID).Scan(&currentEnabled, &trafficUsed); err != nil {
+	`, userID, nodeID).Scan(&currentEnabled, &trafficUsed, &managementMode); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrNotFound
 		}
 		return User{}, fmt.Errorf("read assignment state: %w", err)
+	}
+	if managementMode == "read_only" {
+		return User{}, ErrReadOnly
 	}
 	beforeQuota, err := effectiveQuotaStatesTx(ctx, tx, []string{userID})
 	if err != nil {
@@ -537,7 +544,7 @@ func (s *Store) RotateUserCredentials(
 		FROM node_user_assignments a
 		JOIN users u ON u.id = a.user_id AND u.archived_at IS NULL
 		JOIN nodes n ON n.id = a.node_id AND n.archived_at IS NULL
-		WHERE a.user_id = ?
+		WHERE a.user_id = ? AND a.management_mode = 'managed'
 		ORDER BY n.name COLLATE NOCASE, n.id
 	`, userID)
 	if err != nil {
@@ -649,7 +656,8 @@ func (s *Store) RevealAssignmentCredential(
 	err := s.db.QueryRowContext(ctx, `
 		SELECT a.id, a.user_id, a.node_id, n.name, n.adapter_type, a.enabled,
 		       a.desired_credential_id, COALESCE(a.applied_credential_id, ''),
-		       c.secret_fingerprint, a.desired_version, a.applied_version, a.state,
+		       c.secret_fingerprint, a.management_mode, COALESCE(a.remote_client_id, 0),
+		       a.desired_version, a.applied_version, a.state,
 		       a.last_error_code, a.last_error_message, a.last_attempt_at, a.applied_at,
 		       a.traffic_limit_bytes, a.traffic_upload_bytes, a.traffic_download_bytes,
 		       a.traffic_used_bytes, a.quota_state, a.last_traffic_at,
@@ -666,6 +674,7 @@ func (s *Store) RevealAssignmentCredential(
 		&assignment.ID, &assignment.UserID, &assignment.NodeID, &assignment.NodeName,
 		&assignment.NodeAdapter, &enabled, &assignment.DesiredCredentialID,
 		&assignment.AppliedCredentialID, &assignment.CredentialFingerprint,
+		&assignment.ManagementMode, &assignment.RemoteClientID,
 		&assignment.DesiredVersion, &assignment.AppliedVersion, &assignment.State,
 		&assignment.LastErrorCode, &assignment.LastErrorMessage,
 		newNullableTimeScanner(&assignment.LastAttemptAt), newNullableTimeScanner(&assignment.AppliedAt),
@@ -681,6 +690,9 @@ func (s *Store) RevealAssignmentCredential(
 	}
 	if err != nil {
 		return CreatedCredential{}, fmt.Errorf("read assignment credential: %w", err)
+	}
+	if assignment.ManagementMode == "read_only" {
+		return CreatedCredential{}, ErrReadOnly
 	}
 	if keyVersion != credentialKeyVersion || (state != "staged" && state != "applied") {
 		return CreatedCredential{}, ErrConflict
@@ -705,17 +717,48 @@ func assignUserTx(
 	now time.Time,
 	masterKey []byte,
 ) (CreatedCredential, error) {
-	var nodeName, adapter string
+	return assignUserTxWithMode(
+		ctx, tx, userID, nodeID, trafficLimitBytes, "managed", 0, now, masterKey,
+	)
+}
+
+func assignUserTxWithMode(
+	ctx context.Context,
+	tx *sql.Tx,
+	userID, nodeID string,
+	trafficLimitBytes int64,
+	managementMode string,
+	remoteClientID int64,
+	now time.Time,
+	masterKey []byte,
+) (CreatedCredential, error) {
+	var nodeName, adapter, targetInboundJSON string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT name, adapter_type FROM nodes WHERE id = ? AND archived_at IS NULL
-	`, nodeID).Scan(&nodeName, &adapter); err != nil {
+		SELECT name, adapter_type, sui_target_inbound_ids
+		FROM nodes WHERE id = ? AND archived_at IS NULL
+	`, nodeID).Scan(&nodeName, &adapter, &targetInboundJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return CreatedCredential{}, ErrNotFound
 		}
 		return CreatedCredential{}, fmt.Errorf("find assignment node: %w", err)
 	}
-	if adapter != "native_hysteria2" {
+	if adapter != "native_hysteria2" && adapter != "s_ui" {
 		return CreatedCredential{}, ErrUnsupported
+	}
+	if managementMode != "managed" && managementMode != "read_only" {
+		return CreatedCredential{}, ErrUnsupported
+	}
+	if adapter == "native_hysteria2" && (managementMode != "managed" || remoteClientID != 0) {
+		return CreatedCredential{}, ErrUnsupported
+	}
+	if adapter == "s_ui" && managementMode == "managed" && remoteClientID == 0 {
+		var targetInboundIDs []int64
+		if err := json.Unmarshal([]byte(targetInboundJSON), &targetInboundIDs); err != nil {
+			return CreatedCredential{}, fmt.Errorf("decode S-UI target inbounds: %w", err)
+		}
+		if len(targetInboundIDs) == 0 {
+			return CreatedCredential{}, ErrConflict
+		}
 	}
 	credentialID, secret, fingerprint, err := createUserCredentialTx(
 		ctx, tx, userID, nodeID, now, masterKey,
@@ -741,11 +784,13 @@ func assignUserTx(
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO node_user_assignments(
 			id, node_id, user_id, desired_credential_id, enabled, state,
+			management_mode, remote_client_id,
 			traffic_limit_bytes, quota_state,
 			traffic_upload_bytes, traffic_download_bytes, traffic_used_bytes,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, 1, 'pending', ?, ?, ?, ?, ?, ?, ?)
-	`, assignmentID, nodeID, userID, credentialID, trafficLimitBytes,
+		) VALUES (?, ?, ?, ?, 1, 'pending', ?, NULLIF(?, 0), ?, ?, ?, ?, ?, ?, ?)
+	`, assignmentID, nodeID, userID, credentialID, managementMode, remoteClientID,
+		trafficLimitBytes,
 		quotaState(trafficLimitBytes, priorUsed), priorUpload, priorDownload,
 		priorUsed, now.UnixMilli(), now.UnixMilli()); err != nil {
 		return CreatedCredential{}, fmt.Errorf("%w: user is already assigned to node", ErrConflict)
@@ -765,6 +810,7 @@ func assignUserTx(
 			TrafficUsedBytes: priorUsed, QuotaState: quotaState(trafficLimitBytes, priorUsed),
 			DesiredCredentialID:   credentialID,
 			CredentialFingerprint: fingerprint, DesiredVersion: version, State: "pending",
+			ManagementMode: managementMode, RemoteClientID: remoteClientID,
 			CreatedAt: now, UpdatedAt: now,
 		},
 		Secret: secret,
@@ -779,18 +825,19 @@ func rotateAssignmentCredentialTx(
 	masterKey []byte,
 ) (CreatedCredential, error) {
 	var assignmentID, nodeName, adapter, desiredCredentialID, appliedCredentialID, state string
+	var managementMode string
 	var desiredVersion, appliedVersion int64
 	err := tx.QueryRowContext(ctx, `
 		SELECT a.id, n.name, n.adapter_type, a.desired_credential_id,
 		       COALESCE(a.applied_credential_id, ''), a.state,
-		       a.desired_version, a.applied_version
+		       a.desired_version, a.applied_version, a.management_mode
 		FROM node_user_assignments a
 		JOIN users u ON u.id = a.user_id AND u.archived_at IS NULL
 		JOIN nodes n ON n.id = a.node_id AND n.archived_at IS NULL
 		WHERE a.user_id = ? AND a.node_id = ?
 	`, userID, nodeID).Scan(
 		&assignmentID, &nodeName, &adapter, &desiredCredentialID,
-		&appliedCredentialID, &state, &desiredVersion, &appliedVersion,
+		&appliedCredentialID, &state, &desiredVersion, &appliedVersion, &managementMode,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CreatedCredential{}, ErrNotFound
@@ -798,7 +845,10 @@ func rotateAssignmentCredentialTx(
 	if err != nil {
 		return CreatedCredential{}, fmt.Errorf("read credential rotation assignment: %w", err)
 	}
-	if adapter != "native_hysteria2" {
+	if managementMode == "read_only" {
+		return CreatedCredential{}, ErrReadOnly
+	}
+	if (adapter != "native_hysteria2" && adapter != "s_ui") || managementMode != "managed" {
 		return CreatedCredential{}, ErrUnsupported
 	}
 	if state != "applied" || desiredVersion != appliedVersion ||
@@ -830,6 +880,7 @@ func rotateAssignmentCredentialTx(
 		ID: assignmentID, UserID: userID, NodeID: nodeID, NodeName: nodeName,
 		NodeAdapter: adapter, DesiredCredentialID: credentialID,
 		AppliedCredentialID: appliedCredentialID, CredentialFingerprint: fingerprint,
+		ManagementMode: managementMode,
 		DesiredVersion: version, AppliedVersion: appliedVersion, State: "pending",
 		UpdatedAt: now,
 	}, Secret: secret}, nil
@@ -871,7 +922,8 @@ func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssig
 	query := `
 		SELECT a.id, a.user_id, a.node_id, n.name, n.adapter_type, a.enabled,
 		       a.desired_credential_id, COALESCE(a.applied_credential_id, ''),
-		       c.secret_fingerprint, a.desired_version, a.applied_version, a.state,
+		       c.secret_fingerprint, a.management_mode, COALESCE(a.remote_client_id, 0),
+		       a.desired_version, a.applied_version, a.state,
 		       a.last_error_code, a.last_error_message, a.last_attempt_at, a.applied_at,
 		       a.traffic_limit_bytes, a.traffic_upload_bytes, a.traffic_download_bytes,
 		       a.traffic_used_bytes, a.quota_state, a.last_traffic_at,
@@ -904,6 +956,7 @@ func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssig
 			&assignment.ID, &assignment.UserID, &assignment.NodeID, &assignment.NodeName,
 			&assignment.NodeAdapter, &enabled, &assignment.DesiredCredentialID,
 			&assignment.AppliedCredentialID, &assignment.CredentialFingerprint,
+			&assignment.ManagementMode, &assignment.RemoteClientID,
 			&assignment.DesiredVersion, &assignment.AppliedVersion, &assignment.State,
 			&assignment.LastErrorCode, &assignment.LastErrorMessage,
 			&lastAttemptAt, &appliedAt, &assignment.TrafficLimitBytes,

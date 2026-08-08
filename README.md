@@ -5,9 +5,9 @@ It provides centralized node, user, traffic, subscription, and health management
 without replacing Hysteria2 or sing-box.
 
 The working name is provisional. The repository now contains the local
-**Phase 4: unified subscriptions** implementation. Native Hysteria2 nodes can
-serve local HTTP authentication from a persistent Agent cache. Standalone
-sing-box and S-UI remain read-only until their later adapter phases.
+**Phase 5: S-UI adapter** implementation. Native Hysteria2 and compatible S-UI
+nodes share one user, traffic, status, credential, and subscription control
+plane. Standalone sing-box remains observation-only until its adapter phase.
 
 ## Current capabilities
 
@@ -30,6 +30,13 @@ sing-box and S-UI remain read-only until their later adapter phases.
   and sing-box outputs.
 - Applied-only subscription eligibility and staged single/all-assignment
   credential rotation.
+- S-UI v1.5.x compatibility probing, Hysteria2 inbound discovery, explicit
+  read-only import and guarded adoption.
+- Agent-local S-UI ownership mapping, managed client reconciliation, online
+  state, and durable traffic accounting without sending the S-UI Token to the
+  controller.
+- Clash Meta output with a default `HyFleet` selector and `MATCH` rule, so rule
+  mode routes through the generated proxy group.
 - Private GitHub Release builds and a local parallel updater for the three-node
   fleet with per-component health checks and rollback.
 
@@ -82,6 +89,10 @@ sing-box and S-UI remain read-only until their later adapter phases.
 
 - [Unified subscriptions and credential rotation](docs/13-phase-4-unified-subscriptions.md)
 
+## Phase 5 documents
+
+- [S-UI adapter and DMIT onboarding](docs/14-phase-5-sui-adapter.md)
+
 ## Local development
 
 Required tools are Go 1.26, Node.js 22, and pnpm 11.16.
@@ -103,7 +114,7 @@ Set `HYFLEET_BOOTSTRAP_TOKEN` before the first server start. Example files are i
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
-  -Architecture amd64 -Version v0.4.0-dev
+  -Architecture amd64 -Version v0.5.0-dev
 ```
 
 The archive, external checksum, Linux ELF binaries, idempotent installers, and
@@ -113,8 +124,10 @@ a Windows preview executable to a VPS.
 
 ## Status
 
-Phase 4 unified subscriptions are implemented for applied native Hysteria2
-assignments. Standalone sing-box and S-UI subscription membership remain gated
-on their Adapter phases.
+Phase 5 adds supported S-UI assignments to the same applied-only subscription
+pipeline used by native Hysteria2. S-UI read-only imports never expose remote
+passwords and are excluded from subscriptions until explicitly adopted and
+successfully applied. Standalone sing-box membership remains gated on its
+Adapter phase.
 Secrets, IP addresses, API tokens, private keys, full subscription URLs, and
 unredacted configurations must not be committed.

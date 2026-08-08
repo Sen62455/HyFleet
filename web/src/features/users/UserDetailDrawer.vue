@@ -20,7 +20,7 @@ import type { NodeRecord, SubscriptionTokenRecord, UserAssignment, UserRecord } 
 const props = defineProps<{
   show: boolean;
   user: UserRecord | null;
-  nativeNodes: NodeRecord[];
+  assignableNodes: NodeRecord[];
   subscriptionTokens: SubscriptionTokenRecord[];
   subscriptionLoading: boolean;
   working: string;
@@ -48,12 +48,22 @@ const selectedLimitGiB = ref(0);
 const assignmentLimits = ref<Record<string, number>>({});
 const assignedNodeIDs = computed(() => new Set(props.user?.assignments.map((item) => item.node_id) ?? []));
 const availableOptions = computed(() =>
-  props.nativeNodes
+  props.assignableNodes
     .filter((node) => !assignedNodeIDs.value.has(node.id))
-    .map((node) => ({ label: node.name, value: node.id, disabled: !node.enabled })),
+    .map((node) => ({
+      label: `${node.name}${node.adapter_type === "s_ui" ? " · S-UI" : ""}`,
+      value: node.id,
+      disabled: !node.enabled,
+    })),
 );
 const activeSubscriptionCount = computed(
   () => props.subscriptionTokens.filter((token) => token.status === "active").length,
+);
+const managedAssignments = computed(
+  () => props.user?.assignments.filter((assignment) => assignment.management_mode === "managed") ?? [],
+);
+const kickableAssignments = computed(
+  () => managedAssignments.value.filter((assignment) => assignment.node_adapter === "native_hysteria2"),
 );
 
 watch(
@@ -239,7 +249,7 @@ function formatLabel(format: string) {
             clearable
             :options="availableOptions"
             :disabled="availableOptions.length === 0"
-            placeholder="选择原生 HY2 节点"
+            placeholder="选择 Hysteria2 节点"
           />
           <n-input-number
             v-model:value="selectedLimitGiB"
@@ -267,9 +277,19 @@ function formatLabel(format: string) {
                 <strong>{{ assignment.node_name }}</strong>
                 <span>v{{ assignment.applied_version }} / {{ assignment.desired_version }}</span>
               </div>
-              <n-tag :type="assignmentState(assignment).type" size="small" :bordered="false">
-                {{ assignmentState(assignment).label }}
-              </n-tag>
+              <div class="assignment-tags">
+                <n-tag
+                  v-if="assignment.management_mode === 'read_only'"
+                  type="warning"
+                  size="small"
+                  :bordered="false"
+                >
+                  只读导入
+                </n-tag>
+                <n-tag :type="assignmentState(assignment).type" size="small" :bordered="false">
+                  {{ assignmentState(assignment).label }}
+                </n-tag>
+              </div>
             </header>
             <p v-if="assignment.last_error_message" class="assignment-error">
               {{ assignment.last_error_message }}
@@ -291,7 +311,7 @@ function formatLabel(format: string) {
               :show-indicator="false"
               :status="assignment.quota_state === 'limited' ? 'error' : 'success'"
             />
-            <div class="assignment-limit-row">
+            <div v-if="assignment.management_mode === 'managed'" class="assignment-limit-row">
               <n-input-number
                 v-model:value="assignmentLimits[assignment.id]"
                 :min="0"
@@ -318,16 +338,22 @@ function formatLabel(format: string) {
               </n-tooltip>
             </div>
             <footer>
-              <span>{{ assignment.credential_fingerprint }}</span>
+              <span>
+                {{ assignment.management_mode === "read_only" ? "远端凭据不受管" : assignment.credential_fingerprint }}
+              </span>
               <div class="assignment-actions">
                 <n-switch
+                  v-if="assignment.management_mode === 'managed'"
                   size="small"
                   :value="assignment.enabled"
                   :loading="working === `toggle:${assignment.id}`"
                   :aria-label="`启用 ${assignment.node_name} 分配`"
                   @update:value="emit('toggle-assignment', user, assignment, $event)"
                 />
-                <n-tooltip trigger="hover">
+                <n-tooltip
+                  v-if="assignment.management_mode === 'managed' && assignment.node_adapter === 'native_hysteria2'"
+                  trigger="hover"
+                >
                   <template #trigger>
                     <n-button
                       circle
@@ -341,7 +367,7 @@ function formatLabel(format: string) {
                   </template>
                   踢下线
                 </n-tooltip>
-                <n-tooltip trigger="hover">
+                <n-tooltip v-if="assignment.management_mode === 'managed'" trigger="hover">
                   <template #trigger>
                     <n-button
                       circle
@@ -355,7 +381,7 @@ function formatLabel(format: string) {
                   </template>
                   查看凭据
                 </n-tooltip>
-                <n-tooltip trigger="hover">
+                <n-tooltip v-if="assignment.management_mode === 'managed'" trigger="hover">
                   <template #trigger>
                     <n-button
                       circle
@@ -399,6 +425,7 @@ function formatLabel(format: string) {
           </n-button>
           <n-button
             secondary
+            :disabled="kickableAssignments.length === 0"
             :loading="working === `kick:${user.id}`"
             @click="emit('kick-user', user)"
           >
@@ -407,7 +434,7 @@ function formatLabel(format: string) {
           </n-button>
           <n-button
             secondary
-            :disabled="user.assignments.length === 0"
+            :disabled="managedAssignments.length === 0"
             :loading="working === `credential-rotate:${user.id}`"
             @click="emit('rotate-user-credentials', user)"
           >

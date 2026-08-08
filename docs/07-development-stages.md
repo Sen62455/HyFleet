@@ -68,6 +68,9 @@ behaves predictably. Standalone sing-box membership remains gated on its Adapter
 
 ## Phase 5: S-UI adapter and DMIT onboarding (`v0.5`)
 
+Implementation status: complete in `v0.5.0-dev`; real DMIT acceptance remains an
+operator deployment step.
+
 Deliver S-UI compatibility probe, read-only discovery/import, explicit client
 adoption, local ownership mapping, managed create/update/disable/delete, status,
 online and traffic integration, node/version-bound credential-material retrieval,

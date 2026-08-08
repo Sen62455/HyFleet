@@ -1,4 +1,11 @@
 export type AdapterType = "native_hysteria2" | "standalone_sing_box" | "s_ui";
+export type AdapterProbeStatus =
+  | "unknown"
+  | "compatible"
+  | "incompatible"
+  | "unavailable"
+  | "not_configured";
+export type ManagementMode = "managed" | "read_only";
 
 export type NodeStatus = "pending" | "online" | "stale" | "offline" | "degraded" | "disabled";
 
@@ -24,6 +31,12 @@ export interface NodeRecord {
   provider: string;
   region: string;
   adapter_type: AdapterType;
+  adapter_status: AdapterProbeStatus;
+  adapter_version: string;
+  adapter_error_code: string;
+  adapter_last_probed_at: string | null;
+  adapter_last_discovered_at: string | null;
+  s_ui_target_inbound_ids: number[];
   public_host: string;
   public_port: number;
   sni: string;
@@ -119,6 +132,8 @@ export interface UserAssignment {
   online_sampled_at: string | null;
   kick_generation: number;
   credential_fingerprint: string;
+  management_mode: ManagementMode;
+  remote_client_id: number;
   desired_version: number;
   applied_version: number;
   state: AssignmentState;
@@ -217,4 +232,40 @@ export interface IssuedSubscriptionToken {
   subscription: SubscriptionTokenRecord;
   token: string;
   urls: SubscriptionURLs;
+}
+
+export interface SUIInbound {
+  remote_id: number;
+  tag: string;
+  type: "hysteria2";
+  listen: string;
+  listen_port: number;
+  observed_at: string;
+}
+
+export interface SUIClient {
+  remote_id: number;
+  name: string;
+  enabled: boolean;
+  inbound_ids: number[];
+  upload_bytes: number;
+  download_bytes: number;
+  expires_at: number;
+  online: boolean;
+  observed_at: string;
+  mapped_user_id?: string;
+  mapped_username?: string;
+  management_mode?: ManagementMode;
+}
+
+export interface SUIState {
+  node_id: string;
+  adapter_status: AdapterProbeStatus;
+  adapter_version: string;
+  adapter_error_code: string;
+  last_probed_at: string | null;
+  last_discovered_at: string | null;
+  target_inbound_ids: number[];
+  inbounds: SUIInbound[];
+  clients: SUIClient[];
 }

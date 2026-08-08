@@ -24,7 +24,7 @@ func TestNativeUserCredentialAndSnapshotLifecycle(t *testing.T) {
 	masterKey := bytes.Repeat([]byte{0x31}, 32)
 	nodeOne := createTestNode(t, database, "native-one", "native_hysteria2", now)
 	nodeTwo := createTestNode(t, database, "native-two", "native_hysteria2", now)
-	nonNative := createTestNode(t, database, "s-ui-node", "s_ui", now)
+	nonNative := createTestNode(t, database, "standalone-node", "standalone_sing_box", now)
 	if _, err := database.DB().ExecContext(ctx, `
 		UPDATE nodes SET agent_installation_id = ? WHERE id = ?
 	`, uuid.NewString(), nodeOne.ID); err != nil {

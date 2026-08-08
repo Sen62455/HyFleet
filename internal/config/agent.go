@@ -33,7 +33,10 @@ type Agent struct {
 	TrafficStatsURL     string
 	TrafficStatsSecret  string
 	TrafficDatabasePath string
+	LocalDatabasePath   string
 	TrafficEvery        time.Duration
+	SUIAPIURL           string
+	SUIToken            string
 }
 
 type agentFile struct {
@@ -53,7 +56,10 @@ type agentFile struct {
 	TrafficStatsURL       string `yaml:"traffic_stats_url"`
 	TrafficStatsSecretEnv string `yaml:"traffic_stats_secret_env"`
 	TrafficDatabasePath   string `yaml:"traffic_database_path"`
+	LocalDatabasePath     string `yaml:"local_database_path"`
 	TrafficEvery          string `yaml:"traffic_every"`
+	SUIAPIURL             string `yaml:"s_ui_api_url"`
+	SUITokenEnv           string `yaml:"s_ui_token_env"`
 }
 
 func LoadAgent(path string) (Agent, error) {
@@ -71,6 +77,7 @@ func LoadAgent(path string) (Agent, error) {
 		DesiredEvery:          "10s",
 		TrafficStatsSecretEnv: "HYFLEET_HY2_STATS_SECRET",
 		TrafficEvery:          "30s",
+		SUITokenEnv:           "HYFLEET_SUI_TOKEN",
 	}
 	if err := decodeYAML(data, &file); err != nil {
 		return Agent{}, fmt.Errorf("parse agent config: %w", err)
@@ -123,6 +130,9 @@ func LoadAgent(path string) (Agent, error) {
 		if file.TrafficDatabasePath == "" {
 			file.TrafficDatabasePath = filepath.Join(filepath.Dir(statePath), "agent.db")
 		}
+		if file.LocalDatabasePath == "" {
+			file.LocalDatabasePath = file.TrafficDatabasePath
+		}
 		if err := validateLoopbackListener(file.AuthListen); err != nil {
 			return Agent{}, err
 		}
@@ -135,6 +145,20 @@ func LoadAgent(path string) (Agent, error) {
 		}
 		if !environmentNamePattern.MatchString(file.TrafficStatsSecretEnv) {
 			return Agent{}, errors.New("traffic_stats_secret_env is not a valid environment variable name")
+		}
+	}
+	if file.AdapterType == "s_ui" {
+		if file.SUIAPIURL == "" {
+			file.SUIAPIURL = "http://127.0.0.1:2095/app/apiv2"
+		}
+		if file.LocalDatabasePath == "" {
+			file.LocalDatabasePath = filepath.Join(filepath.Dir(statePath), "agent.db")
+		}
+		if err := validateLoopbackSUIAPIURL(file.SUIAPIURL); err != nil {
+			return Agent{}, err
+		}
+		if !environmentNamePattern.MatchString(file.SUITokenEnv) {
+			return Agent{}, errors.New("s_ui_token_env is not a valid environment variable name")
 		}
 	}
 	heartbeat, err := parseDuration("heartbeat_every", file.HeartbeatEvery, 5*time.Second, 5*time.Minute)
@@ -166,8 +190,35 @@ func LoadAgent(path string) (Agent, error) {
 		TrafficStatsURL:     file.TrafficStatsURL,
 		TrafficStatsSecret:  os.Getenv(file.TrafficStatsSecretEnv),
 		TrafficDatabasePath: resolveOptionalPath(filepath.Dir(path), file.TrafficDatabasePath),
+		LocalDatabasePath:   resolveOptionalPath(filepath.Dir(path), file.LocalDatabasePath),
 		TrafficEvery:        traffic,
+		SUIAPIURL:           strings.TrimRight(file.SUIAPIURL, "/"),
+		SUIToken:            os.Getenv(file.SUITokenEnv),
 	}, nil
+}
+
+func validateLoopbackSUIAPIURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("s_ui_api_url must be a plain HTTP loopback URL")
+	}
+	ip := net.ParseIP(parsed.Hostname())
+	if ip == nil || !ip.IsLoopback() {
+		return errors.New("s_ui_api_url must use a literal loopback IP")
+	}
+	_, port, err := net.SplitHostPort(parsed.Host)
+	if err != nil || port == "" {
+		return errors.New("s_ui_api_url must include a TCP port")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return errors.New("s_ui_api_url port must be between 1 and 65535")
+	}
+	if !strings.HasSuffix(strings.TrimRight(parsed.Path, "/"), "/apiv2") {
+		return errors.New("s_ui_api_url path must end with /apiv2")
+	}
+	return nil
 }
 
 func validateLoopbackHTTPOrigin(value string) error {

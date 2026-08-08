@@ -486,7 +486,7 @@ func TestUserLifecycleAPI(t *testing.T) {
 	}
 	nativeOne := createNode("native-one", "native_hysteria2")
 	nativeTwo := createNode("native-two", "native_hysteria2")
-	sui := createNode("s-ui", "s_ui")
+	unsupportedNode := createNode("standalone", "standalone_sing_box")
 
 	withoutCSRF := app.request(t, http.MethodPost, "/api/v1/users", map[string]any{
 		"username": "alice", "enabled": true,
@@ -574,7 +574,7 @@ func TestUserLifecycleAPI(t *testing.T) {
 
 	unsupported := app.request(t, http.MethodPost,
 		"/api/v1/users/"+createdPayload.User.ID+"/assignments", map[string]any{
-			"node_id": sui.ID,
+			"node_id": unsupportedNode.ID,
 		}, app.csrf, "")
 	requireStatus(t, unsupported, http.StatusUnprocessableEntity)
 

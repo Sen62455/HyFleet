@@ -51,6 +51,25 @@ namei -l "${config_path}" 2>&1 || true
 [[ "${component}" == server ]] && namei -l /var/lib/hyfleet 2>&1 || true
 [[ "${component}" == agent ]] && namei -l /var/lib/hyfleet-agent 2>&1 || true
 
+if [[ "${component}" == agent ]]; then
+  printf '\n=== Adapter configuration ===\n'
+  adapter_type="$(awk '$1 == "adapter_type:" { print $2; exit }' "${config_path}" 2>/dev/null)"
+  printf 'Adapter: %s\n' "${adapter_type:-unknown}"
+  if [[ "${adapter_type}" == "s_ui" ]]; then
+    if grep -Eq '^s_ui_api_url:[[:space:]]+http://(127\.0\.0\.1|\[::1\]):[0-9]{1,5}/.*apiv2/?$' "${config_path}" 2>/dev/null; then
+      printf 'S-UI loopback API configured: yes\n'
+    else
+      printf 'S-UI loopback API configured: no\n'
+    fi
+    if grep -Eq '^HYFLEET_SUI_TOKEN=[^[:space:]]+$' /etc/hyfleet/agent.env 2>/dev/null; then
+      printf 'S-UI API token configured: yes\n'
+    else
+      printf 'S-UI API token configured: no\n'
+    fi
+    stat -c 'Environment file: %A %U:%G %n' /etc/hyfleet/agent.env 2>/dev/null || true
+  fi
+fi
+
 printf '\n=== Unit verification ===\n'
 systemd-analyze verify "${unit_path}" 2>&1 || true
 

@@ -292,10 +292,11 @@ func (s *Store) ResolveSubscription(
 		JOIN nodes n ON n.id = a.node_id
 		JOIN user_credentials c ON c.id = a.applied_credential_id
 		WHERE a.user_id = ? AND n.archived_at IS NULL
-		  AND n.adapter_type = 'native_hysteria2' AND n.enabled = 1
+		  AND n.adapter_type IN ('native_hysteria2', 's_ui') AND n.enabled = 1
 		  AND n.status NOT IN ('pending', 'degraded', 'disabled')
 		  AND n.public_host <> '' AND a.enabled = 1
 		  AND a.quota_state <> 'limited' AND a.state = 'applied'
+		  AND a.management_mode = 'managed'
 		  AND a.applied_version = a.desired_version
 		  AND a.applied_credential_id IS NOT NULL AND c.state = 'applied'
 		ORDER BY n.name COLLATE NOCASE, n.id

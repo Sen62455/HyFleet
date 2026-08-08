@@ -19,7 +19,15 @@ type renderedSubscription struct {
 }
 
 type clashSubscription struct {
-	Proxies []clashHysteria2Proxy `yaml:"proxies"`
+	Proxies     []clashHysteria2Proxy `yaml:"proxies"`
+	ProxyGroups []clashProxyGroup     `yaml:"proxy-groups"`
+	Rules       []string              `yaml:"rules"`
+}
+
+type clashProxyGroup struct {
+	Name    string   `yaml:"name"`
+	Type    string   `yaml:"type"`
+	Proxies []string `yaml:"proxies"`
 }
 
 type clashHysteria2Proxy struct {
@@ -66,14 +74,25 @@ func renderSubscription(format string, subscription store.Subscription) (rendere
 		}, nil
 	case "clash":
 		proxies := make([]clashHysteria2Proxy, 0, len(subscription.Endpoints))
+		proxyNames := make([]string, 0, len(subscription.Endpoints))
 		for _, endpoint := range subscription.Endpoints {
 			proxies = append(proxies, clashHysteria2Proxy{
 				Name: endpoint.NodeName, Type: "hysteria2", Server: endpoint.PublicHost,
 				Port: endpoint.PublicPort, Password: endpoint.Credential, SNI: endpoint.SNI,
 				SkipCertVerify: endpoint.TLSInsecure,
 			})
+			proxyNames = append(proxyNames, endpoint.NodeName)
 		}
-		body, err := yaml.Marshal(clashSubscription{Proxies: proxies})
+		if len(proxyNames) == 0 {
+			proxyNames = append(proxyNames, "DIRECT")
+		}
+		body, err := yaml.Marshal(clashSubscription{
+			Proxies: proxies,
+			ProxyGroups: []clashProxyGroup{{
+				Name: "HyFleet", Type: "select", Proxies: proxyNames,
+			}},
+			Rules: []string{"MATCH,HyFleet"},
+		})
 		if err != nil {
 			return renderedSubscription{}, fmt.Errorf("encode Clash subscription: %w", err)
 		}

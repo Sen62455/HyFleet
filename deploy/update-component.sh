@@ -82,6 +82,13 @@ install -o root -g root -m 0644 "${source_unit}" "${target_unit}"
 "${target_binary}" -version
 runuser -u "${service_user}" -g "${service_group}" -- \
   "${target_binary}" -config "${config_path}" -check-config
+if [[ "${component}" == "agent" ]]; then
+  configured_adapter="$(awk '$1 == "adapter_type:" { print $2; exit }' "${config_path}")"
+  if [[ "${configured_adapter}" == "s_ui" ]]; then
+    grep -Eq '^HYFLEET_SUI_TOKEN=[^[:space:]]+$' /etc/hyfleet/agent.env ||
+      fail "S-UI Agent requires HYFLEET_SUI_TOKEN in /etc/hyfleet/agent.env"
+  fi
+fi
 systemctl daemon-reload
 systemd-analyze verify "${target_unit}"
 systemctl restart "${service_name}"

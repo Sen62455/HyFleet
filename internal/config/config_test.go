@@ -123,3 +123,36 @@ state_path: state.json
 		})
 	}
 }
+
+func TestLoadSUIAgentRequiresLoopbackAPI(t *testing.T) {
+	validBody := `
+server_url: https://panel.example.com
+node_name: sui-node
+adapter_type: s_ui
+core_name: sing-box
+service_unit: s-ui.service
+state_path: state.json
+s_ui_api_url: http://127.0.0.1:2095/app/apiv2
+local_database_path: agent.db
+`
+	t.Setenv("HYFLEET_SUI_TOKEN", "local-only-token")
+	cfg, err := LoadAgent(writeConfig(t, "sui.yaml", validBody))
+	if err != nil {
+		t.Fatalf("LoadAgent() error = %v", err)
+	}
+	if cfg.SUIAPIURL != "http://127.0.0.1:2095/app/apiv2" ||
+		cfg.SUIToken != "local-only-token" || !filepath.IsAbs(cfg.LocalDatabasePath) {
+		t.Fatalf("unexpected S-UI config: %#v", cfg)
+	}
+	for name, replacement := range map[string]string{
+		"public host": strings.Replace(validBody, "127.0.0.1", "panel.example.com", 1),
+		"https":       strings.Replace(validBody, "http://", "https://", 1),
+		"wrong path":  strings.Replace(validBody, "/app/apiv2", "/app/api", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LoadAgent(writeConfig(t, "invalid-sui.yaml", replacement)); err == nil {
+				t.Fatal("LoadAgent() accepted a non-loopback S-UI API")
+			}
+		})
+	}
+}

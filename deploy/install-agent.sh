@@ -11,6 +11,7 @@ node_name=""
 adapter_type=""
 service_unit=""
 core_name=""
+s_ui_api_url=""
 replace_config=false
 temporary_dir=""
 
@@ -32,6 +33,7 @@ Options:
   --node-name NAME    Local node label using letters, numbers, dot, dash, underscore
   --adapter TYPE      One adapter from the list above
   --service-unit UNIT Override the adapter's default systemd unit
+  --s-ui-api-url URL  Local S-UI HTTP API ending in /apiv2 (S-UI only)
   --replace-config    Replace /etc/hyfleet/agent.yaml with generated settings
   -h, --help          Show this help
 EOF
@@ -70,6 +72,11 @@ while (($# > 0)); do
     --service-unit)
       (($# >= 2)) || fail "--service-unit requires a value"
       service_unit="$2"
+      shift 2
+      ;;
+    --s-ui-api-url)
+      (($# >= 2)) || fail "--s-ui-api-url requires a value"
+      s_ui_api_url="$2"
       shift 2
       ;;
     --replace-config)
@@ -133,13 +140,16 @@ if [[ ! -f "${config_path}" || "${replace_config}" == true ]]; then
       adapter_type="s_ui"
       core_name="sing-box"
       : "${service_unit:=s-ui.service}"
+      : "${s_ui_api_url:=http://127.0.0.1:2095/app/apiv2}"
+      [[ "${s_ui_api_url}" =~ ^http://127\.0\.0\.1:[0-9]{1,5}(/[A-Za-z0-9._~-]+)*/apiv2/?$ ]] ||
+        fail "--s-ui-api-url must use 127.0.0.1, include a port, and end with /apiv2"
       ;;
     *)
       fail "unsupported --adapter value: ${adapter_type}"
       ;;
   esac
   [[ "${service_unit}" =~ ^[A-Za-z0-9_.@:-]+$ ]] || fail "invalid systemd service unit"
-elif [[ -n "${server_url}${node_name}${adapter_type}${service_unit}" ]]; then
+elif [[ -n "${server_url}${node_name}${adapter_type}${service_unit}${s_ui_api_url}" ]]; then
   printf 'Keeping existing %s; supplied configuration options were not applied.\n' "${config_path}"
 fi
 
@@ -169,10 +179,17 @@ auth_cache_path: /var/lib/hyfleet-agent/auth-cache.json
 traffic_stats_url: http://127.0.0.1:18082
 traffic_stats_secret_env: HYFLEET_HY2_STATS_SECRET
 traffic_database_path: /var/lib/hyfleet-agent/agent.db
+local_database_path: /var/lib/hyfleet-agent/agent.db
 heartbeat_every: 15s
 desired_every: 10s
 traffic_every: 30s
 EOF
+  if [[ "${adapter_type}" == "s_ui" ]]; then
+    cat >> "${temporary_dir}/agent.yaml" <<EOF
+s_ui_api_url: ${s_ui_api_url}
+s_ui_token_env: HYFLEET_SUI_TOKEN
+EOF
+  fi
   install -o root -g hyfleet-agent -m 0640 "${temporary_dir}/agent.yaml" "${config_path}"
 fi
 
@@ -193,6 +210,41 @@ curl --fail --silent --show-error "${configured_server}/healthz" >/dev/null ||
   fail "cannot reach ${configured_server}/healthz with trusted TLS"
 
 environment_path="/etc/hyfleet/agent.env"
+configured_adapter="$(awk '$1 == "adapter_type:" { print $2; exit }' "${config_path}")"
+[[ "${configured_adapter}" =~ ^(native_hysteria2|standalone_sing_box|s_ui)$ ]] ||
+  fail "agent adapter_type is invalid"
+
+sui_token=""
+if [[ "${configured_adapter}" == "s_ui" ]]; then
+  if [[ -f "${environment_path}" ]]; then
+    sui_token_count="$(awk -F= '$1 == "HYFLEET_SUI_TOKEN" { count++ } END { print count+0 }' "${environment_path}")"
+    [[ "${sui_token_count}" -le 1 ]] || fail "${environment_path} contains duplicate S-UI token entries"
+    sui_token="$(awk -F= '$1 == "HYFLEET_SUI_TOKEN" { sub(/^[^=]*=/, ""); print; exit }' "${environment_path}")"
+  fi
+  if [[ -z "${sui_token}" ]]; then
+    printf 'Paste the local S-UI API token, then press Enter: ' > /dev/tty
+    IFS= read -r -s sui_token < /dev/tty
+    printf '\n' > /dev/tty
+  fi
+  [[ "${sui_token}" =~ ^[A-Za-z0-9._~+/=:@%-]{1,1024}$ ]] || fail "invalid S-UI API token"
+fi
+
+write_agent_environment() {
+  local enrollment_token_value="${1:-}"
+  : > "${temporary_dir}/agent.env"
+  if [[ -n "${sui_token}" ]]; then
+    printf 'HYFLEET_SUI_TOKEN=%s\n' "${sui_token}" >> "${temporary_dir}/agent.env"
+  fi
+  if [[ -n "${enrollment_token_value}" ]]; then
+    printf 'HYFLEET_ENROLLMENT_TOKEN=%s\n' "${enrollment_token_value}" >> "${temporary_dir}/agent.env"
+  fi
+  if [[ -s "${temporary_dir}/agent.env" ]]; then
+    install -o root -g hyfleet-agent -m 0640 "${temporary_dir}/agent.env" "${environment_path}"
+  else
+    rm -f -- "${environment_path}"
+  fi
+}
+
 has_credential=false
 if [[ -f "${state_path}" ]] &&
   grep -Eq '"node_credential"[[:space:]]*:[[:space:]]*"[^\"]+' "${state_path}"; then
@@ -204,11 +256,10 @@ if [[ "${has_credential}" != true ]]; then
   IFS= read -r -s enrollment_token < /dev/tty
   printf '\n' > /dev/tty
   [[ -n "${enrollment_token}" && ${#enrollment_token} -le 256 ]] || fail "invalid enrollment token"
-  printf 'HYFLEET_ENROLLMENT_TOKEN=%s\n' "${enrollment_token}" > "${temporary_dir}/agent.env"
-  install -o root -g hyfleet-agent -m 0640 "${temporary_dir}/agent.env" "${environment_path}"
+  write_agent_environment "${enrollment_token}"
   unset enrollment_token
 else
-  rm -f -- "${environment_path}"
+  write_agent_environment
 fi
 
 systemctl daemon-reload
@@ -233,7 +284,8 @@ if [[ "${has_credential}" != true ]]; then
   fail "Agent enrollment did not complete; the service was stopped and the token file was retained"
 fi
 
-rm -f -- "${environment_path}"
+write_agent_environment
+unset sui_token
 systemctl restart hyfleet-agent
 for _ in {1..10}; do
   if systemctl is-active --quiet hyfleet-agent; then
@@ -243,8 +295,11 @@ for _ in {1..10}; do
 done
 systemctl is-active --quiet hyfleet-agent || {
   journalctl -u hyfleet-agent -b -n 80 --no-pager || true
-  fail "Agent did not remain active after removing the one-time token"
+  fail "Agent did not remain active after removing the one-time enrollment token"
 }
 
-printf 'HyFleet Agent is enrolled and active. The one-time token file was removed.\n'
+printf 'HyFleet Agent is enrolled and active. The one-time enrollment token was removed.\n'
+if [[ "${configured_adapter}" == "s_ui" ]]; then
+  printf 'The local S-UI API token remains in %s with restricted permissions.\n' "${environment_path}"
+fi
 printf 'Confirm that the node becomes online in the HyFleet dashboard.\n'

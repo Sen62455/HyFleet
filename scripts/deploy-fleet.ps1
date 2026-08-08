@@ -49,6 +49,16 @@ foreach ($node in $fleet.Nodes) {
             throw "Unsupported component '$component' for $($node.Name)"
         }
     }
+    if ($node.ContainsKey("RequiredEnvironment")) {
+        if ($node.RequiredEnvironment.Count -gt 16) {
+            throw "Too many required environment variables for $($node.Name)"
+        }
+        foreach ($variableName in $node.RequiredEnvironment) {
+            if ([string]$variableName -notmatch "^[A-Z_][A-Z0-9_]{0,63}$") {
+                throw "Invalid required environment variable for $($node.Name)"
+            }
+        }
+    }
     if ($node.ContainsKey("IdentityFile") -and $node.IdentityFile) {
         $node.IdentityFile = (Resolve-Path -LiteralPath $node.IdentityFile).Path
     }
@@ -131,6 +141,11 @@ try {
                 "sha256sum -c SHA256SUMS",
                 "bash -n deploy/*.sh"
             )
+            if ($Node.ContainsKey("RequiredEnvironment")) {
+                foreach ($variableName in $Node.RequiredEnvironment) {
+                    $commands += "run_as_root grep -Eq '^$variableName=[^[:space:]]+$' /etc/hyfleet/agent.env"
+                }
+            }
             foreach ($component in $Node.Components) {
                 $commands += "run_as_root bash deploy/update-component.sh '$component'"
             }

@@ -7,6 +7,7 @@ import type {
   NodeRecord,
   Session,
   SetupStatus,
+  SUIState,
   IssuedSubscriptionToken,
   SubscriptionTokenInput,
   SubscriptionTokenRecord,
@@ -126,6 +127,27 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+
+  getSUIState: (nodeId: string) =>
+    request<SUIState>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/s-ui`),
+
+  setSUITargets: (nodeId: string, inboundIds: number[]) =>
+    request<SUIState>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/s-ui/targets`, {
+      method: "PUT",
+      body: JSON.stringify({ inbound_ids: inboundIds }),
+    }),
+
+  importSUIClient: (nodeId: string, clientId: number, userId: string) =>
+    request<UserRecord>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/s-ui/clients/${clientId}/import`,
+      { method: "POST", body: JSON.stringify({ user_id: userId }) },
+    ),
+
+  adoptSUIClient: (nodeId: string, clientId: number, confirmName: string) =>
+    request<UserRecord>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/s-ui/clients/${clientId}/adopt`,
+      { method: "POST", body: JSON.stringify({ confirm_name: confirmName }) },
+    ),
 
   async listUsers() {
     const result = await request<{ users: UserRecord[] }>("/api/v1/users");

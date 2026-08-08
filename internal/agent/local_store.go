@@ -26,6 +26,14 @@ type pendingKick struct {
 	Generation int64
 }
 
+type suiClientMapping struct {
+	UserID                string
+	RemoteClientID        int64
+	ManagementMode        string
+	RemoteName            string
+	CredentialFingerprint string
+}
+
 type localStore struct {
 	db *sql.DB
 }
@@ -117,6 +125,19 @@ func (store *localStore) migrate(ctx context.Context) error {
 			last_error_code TEXT NOT NULL DEFAULT '',
 			created_at INTEGER NOT NULL
 		);
+		CREATE TABLE IF NOT EXISTS sui_runtime (
+			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+			node_id TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS sui_client_mappings (
+			user_id TEXT PRIMARY KEY,
+			remote_client_id INTEGER NOT NULL UNIQUE CHECK (remote_client_id > 0),
+			management_mode TEXT NOT NULL CHECK (management_mode IN ('read_only', 'managed')),
+			remote_name TEXT NOT NULL,
+			credential_fingerprint TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
 	`); err != nil {
 		return fmt.Errorf("migrate Agent database: %w", err)
 	}
@@ -129,6 +150,120 @@ func (store *localStore) migrate(ctx context.Context) error {
 		VALUES (1, ?, 1)
 	`, cryptoutil.NewID()); err != nil {
 		return fmt.Errorf("initialize traffic source epoch: %w", err)
+	}
+	return nil
+}
+
+func (store *localStore) bindSUIStore(ctx context.Context, nodeID string) error {
+	if nodeID == "" {
+		return errors.New("cannot bind S-UI store without a node ID")
+	}
+	var current string
+	err := store.db.QueryRowContext(ctx, `
+		SELECT node_id FROM sui_runtime WHERE singleton = 1
+	`).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, err = store.db.ExecContext(ctx, `
+			INSERT INTO sui_runtime(singleton, node_id) VALUES (1, ?)
+		`, nodeID)
+		if err != nil {
+			return fmt.Errorf("bind S-UI store: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read S-UI store binding: %w", err)
+	}
+	if current != nodeID {
+		return errors.New("S-UI ownership database belongs to another node")
+	}
+	return nil
+}
+
+func (store *localStore) listSUIMappings(ctx context.Context) ([]suiClientMapping, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT user_id, remote_client_id, management_mode, remote_name,
+		       credential_fingerprint
+		FROM sui_client_mappings ORDER BY user_id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list S-UI mappings: %w", err)
+	}
+	defer rows.Close()
+	result := make([]suiClientMapping, 0)
+	for rows.Next() {
+		var mapping suiClientMapping
+		if err := rows.Scan(
+			&mapping.UserID, &mapping.RemoteClientID, &mapping.ManagementMode,
+			&mapping.RemoteName, &mapping.CredentialFingerprint,
+		); err != nil {
+			return nil, fmt.Errorf("scan S-UI mapping: %w", err)
+		}
+		result = append(result, mapping)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate S-UI mappings: %w", err)
+	}
+	return result, nil
+}
+
+func (store *localStore) upsertSUIMapping(
+	ctx context.Context,
+	mapping suiClientMapping,
+	now time.Time,
+) error {
+	if mapping.UserID == "" || mapping.RemoteClientID <= 0 ||
+		(mapping.ManagementMode != "read_only" && mapping.ManagementMode != "managed") ||
+		mapping.RemoteName == "" {
+		return errors.New("invalid S-UI mapping")
+	}
+	_, err := store.db.ExecContext(ctx, `
+		INSERT INTO sui_client_mappings(
+			user_id, remote_client_id, management_mode, remote_name,
+			credential_fingerprint, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET
+			remote_client_id = excluded.remote_client_id,
+			management_mode = excluded.management_mode,
+			remote_name = excluded.remote_name,
+			credential_fingerprint = excluded.credential_fingerprint,
+			updated_at = excluded.updated_at
+	`, mapping.UserID, mapping.RemoteClientID, mapping.ManagementMode,
+		mapping.RemoteName, mapping.CredentialFingerprint,
+		now.UnixMilli(), now.UnixMilli())
+	if err != nil {
+		return fmt.Errorf("upsert S-UI mapping: %w", err)
+	}
+	return nil
+}
+
+func (store *localStore) deleteSUIMapping(ctx context.Context, userID string) error {
+	if _, err := store.db.ExecContext(ctx, `
+		DELETE FROM sui_client_mappings WHERE user_id = ?
+	`, userID); err != nil {
+		return fmt.Errorf("delete S-UI mapping: %w", err)
+	}
+	return nil
+}
+
+func (store *localStore) primeTrafficBaseline(
+	ctx context.Context,
+	userID string,
+	counters trafficCounters,
+	now time.Time,
+) error {
+	if userID == "" || counters.TX < 0 || counters.RX < 0 {
+		return errors.New("invalid traffic baseline")
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO usage_baselines(user_id, tx_bytes, rx_bytes, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET
+			tx_bytes = excluded.tx_bytes,
+			rx_bytes = excluded.rx_bytes,
+			updated_at = excluded.updated_at
+	`, userID, counters.TX, counters.RX, now.UnixMilli()); err != nil {
+		return fmt.Errorf("prime traffic baseline: %w", err)
 	}
 	return nil
 }
@@ -195,7 +330,7 @@ func (store *localStore) recordTrafficSample(
 	}
 	sort.Strings(userIDs)
 
-	reset := false
+	resetUsers := make(map[string]struct{})
 	for _, userID := range userIDs {
 		current := counters[userID]
 		var previousTX, previousRX int64
@@ -203,8 +338,7 @@ func (store *localStore) recordTrafficSample(
 			SELECT tx_bytes, rx_bytes FROM usage_baselines WHERE user_id = ?
 		`, userID).Scan(&previousTX, &previousRX)
 		if err == nil && (current.TX < previousTX || current.RX < previousRX) {
-			reset = true
-			break
+			resetUsers[userID] = struct{}{}
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("read traffic baseline: %w", err)
@@ -216,6 +350,10 @@ func (store *localStore) recordTrafficSample(
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO usage_baselines(user_id, tx_bytes, rx_bytes, updated_at)
 				VALUES (?, ?, ?, ?)
+				ON CONFLICT(user_id) DO UPDATE SET
+					tx_bytes = excluded.tx_bytes,
+					rx_bytes = excluded.rx_bytes,
+					updated_at = excluded.updated_at
 			`, userID, current.TX, current.RX, sampledAt.UnixMilli()); err != nil {
 				return nil, fmt.Errorf("initialize traffic baseline: %w", err)
 			}
@@ -230,12 +368,9 @@ func (store *localStore) recordTrafficSample(
 		}
 		return nil, nil
 	}
-	if reset {
+	if len(resetUsers) > 0 {
 		sourceEpoch = cryptoutil.NewID()
 		sequence = 1
-		if _, err := tx.ExecContext(ctx, "DELETE FROM usage_baselines"); err != nil {
-			return nil, fmt.Errorf("reset traffic baselines: %w", err)
-		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE usage_runtime SET source_epoch = ?, next_sequence = 1 WHERE singleton = 1
 		`, sourceEpoch); err != nil {
@@ -254,6 +389,10 @@ func (store *localStore) recordTrafficSample(
 			return nil, fmt.Errorf("read traffic baseline after reset check: %w", err)
 		}
 		if errors.Is(err, sql.ErrNoRows) {
+			previousTX = 0
+			previousRX = 0
+		}
+		if _, reset := resetUsers[userID]; reset {
 			previousTX = 0
 			previousRX = 0
 		}

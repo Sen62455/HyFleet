@@ -7,6 +7,7 @@
             Target     = "root@DMIT_IP"
             Port       = 22
             Components = @("server", "agent")
+            RequiredEnvironment = @("HYFLEET_SUI_TOKEN")
         }
         @{
             Name       = "BandwagonHost"

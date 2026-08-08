@@ -68,6 +68,8 @@ type assignmentResponse struct {
 	OnlineSampledAt       *time.Time `json:"online_sampled_at"`
 	KickGeneration        int64      `json:"kick_generation"`
 	CredentialFingerprint string     `json:"credential_fingerprint"`
+	ManagementMode        string     `json:"management_mode"`
+	RemoteClientID        int64      `json:"remote_client_id,omitempty"`
 	DesiredVersion        int64      `json:"desired_version"`
 	AppliedVersion        int64      `json:"applied_version"`
 	State                 string     `json:"state"`
@@ -328,7 +330,9 @@ func (a *App) writeUserStoreError(
 	case errors.Is(err, store.ErrNotFound):
 		a.writeError(response, request, http.StatusNotFound, "user_resource_not_found", "user or assignment not found")
 	case errors.Is(err, store.ErrUnsupported):
-		a.writeError(response, request, http.StatusUnprocessableEntity, "native_nodes_only", "Phase 2 assignments support native Hysteria2 nodes only")
+		a.writeError(response, request, http.StatusUnprocessableEntity, "adapter_users_unsupported", "node adapter does not support managed users")
+	case errors.Is(err, store.ErrReadOnly):
+		a.writeError(response, request, http.StatusConflict, "assignment_read_only", "read-only assignments cannot change managed settings or credentials")
 	case errors.Is(err, store.ErrPending):
 		a.writeError(response, request, http.StatusConflict, "credential_rotation_pending", "wait for all pending node changes to apply before rotating credentials")
 	case errors.Is(err, store.ErrConflict):
@@ -422,7 +426,8 @@ func presentAssignment(assignment store.UserAssignment) assignmentResponse {
 		LastTrafficAt: assignment.LastTrafficAt, OnlineConnections: assignment.OnlineConnections,
 		OnlineSampledAt: assignment.OnlineSampledAt, KickGeneration: assignment.KickGeneration,
 		CredentialFingerprint: assignment.CredentialFingerprint,
-		DesiredVersion:        assignment.DesiredVersion, AppliedVersion: assignment.AppliedVersion,
+		ManagementMode:        assignment.ManagementMode, RemoteClientID: assignment.RemoteClientID,
+		DesiredVersion: assignment.DesiredVersion, AppliedVersion: assignment.AppliedVersion,
 		State: assignment.State, LastErrorCode: assignment.LastErrorCode,
 		LastErrorMessage: assignment.LastErrorMessage, LastAttemptAt: assignment.LastAttemptAt,
 		AppliedAt: assignment.AppliedAt, CreatedAt: assignment.CreatedAt, UpdatedAt: assignment.UpdatedAt,

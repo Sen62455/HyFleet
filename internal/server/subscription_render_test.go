@@ -48,7 +48,13 @@ func TestSubscriptionRenderersEscapeStructuredValues(t *testing.T) {
 		t.Fatalf("renderSubscription(clash) error = %v", err)
 	}
 	var clashValue struct {
-		Proxies []map[string]any `yaml:"proxies"`
+		Proxies     []map[string]any `yaml:"proxies"`
+		ProxyGroups []struct {
+			Name    string   `yaml:"name"`
+			Type    string   `yaml:"type"`
+			Proxies []string `yaml:"proxies"`
+		} `yaml:"proxy-groups"`
+		Rules []string `yaml:"rules"`
 	}
 	if err := yaml.Unmarshal(clash.Body, &clashValue); err != nil {
 		t.Fatalf("yaml.Unmarshal() error = %v; body = %s", err, clash.Body)
@@ -56,6 +62,12 @@ func TestSubscriptionRenderersEscapeStructuredValues(t *testing.T) {
 	if len(clashValue.Proxies) != 1 || clashValue.Proxies[0]["password"] != "user:p@ss/?# value" ||
 		clashValue.Proxies[0]["server"] != "2001:db8::1" || clashValue.Proxies[0]["skip-cert-verify"] != true {
 		t.Fatalf("unexpected Clash subscription: %#v", clashValue)
+	}
+	if len(clashValue.ProxyGroups) != 1 || clashValue.ProxyGroups[0].Name != "HyFleet" ||
+		clashValue.ProxyGroups[0].Type != "select" || len(clashValue.ProxyGroups[0].Proxies) != 1 ||
+		clashValue.ProxyGroups[0].Proxies[0] != "IPv6 / Tokyo #1" ||
+		len(clashValue.Rules) != 1 || clashValue.Rules[0] != "MATCH,HyFleet" {
+		t.Fatalf("Clash rule-mode configuration is incomplete: %#v", clashValue)
 	}
 
 	singBox, err := renderSubscription("sing-box", subscription)
@@ -93,7 +105,9 @@ func TestSubscriptionRenderersProduceValidEmptyDocuments(t *testing.T) {
 		}
 	}
 	clash, err := renderSubscription("clash", empty)
-	if err != nil || !strings.Contains(string(clash.Body), "proxies: []") {
+	if err != nil || !strings.Contains(string(clash.Body), "proxies: []") ||
+		!strings.Contains(string(clash.Body), "- DIRECT") ||
+		!strings.Contains(string(clash.Body), "- MATCH,HyFleet") {
 		t.Fatalf("empty Clash = %q, error = %v", clash.Body, err)
 	}
 	singBox, err := renderSubscription("sing-box", empty)

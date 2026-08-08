@@ -11,9 +11,9 @@
 - 订阅独立限流、无缓存响应、路径日志脱敏和一次性明文展示；
 - 对用户状态、到期、额度、节点、分配和 applied 凭据的严格筛选。
 
-本阶段只发布 `native_hysteria2` 节点。BandwagonHost 的
-`standalone_sing_box` 与 DMIT 的 `s_ui` 仍保持未托管状态；相应 Adapter
-完成后可以复用本阶段的 Token、筛选与渲染器加入同一订阅。
+`v0.4.0-dev` 首次发布时只包含 `native_hysteria2` 节点。自
+`v0.5.0-dev` 起，已显式接管并完成同步的 `s_ui` 分配也复用本阶段的
+Token、筛选与渲染器进入同一订阅；只读导入仍不会进入订阅。
 
 ## 节点与凭据资格
 
@@ -40,7 +40,8 @@
 | sing-box | `/sub/{token}/sing-box` |
 
 Base64 的原文是以换行分隔的 Hysteria2 URI。Clash Meta 输出顶层
-`proxies`，sing-box 输出顶层 `outbounds`。字段分别遵循
+`proxies`、`HyFleet` 选择组和兜底 `MATCH,HyFleet` 规则，因此导入完整
+配置后规则模式也会使用所选节点；sing-box 输出顶层 `outbounds`。字段分别遵循
 [Hysteria2 URI Scheme](https://v2.hysteria.network/docs/developers/URI-Scheme/)、
 [Mihomo Hysteria2](https://wiki.metacubex.one/en/config/proxies/hysteria2/) 和
 [sing-box Hysteria2 outbound](https://sing-box.sagernet.org/configuration/outbound/hysteria2/)。

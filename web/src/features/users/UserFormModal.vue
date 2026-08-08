@@ -18,7 +18,7 @@ import type { NodeRecord, UserInput, UserRecord } from "../../types";
 const props = defineProps<{
   show: boolean;
   user: UserRecord | null;
-  nativeNodes: NodeRecord[];
+  assignableNodes: NodeRecord[];
   saving: boolean;
 }>();
 
@@ -50,8 +50,8 @@ const form = reactive<UserFormModel>({
 
 const title = computed(() => (props.user ? "编辑用户" : "添加用户"));
 const nodeOptions = computed(() =>
-  props.nativeNodes.map((node) => ({
-    label: node.name,
+  props.assignableNodes.map((node) => ({
+    label: `${node.name}${node.adapter_type === "s_ui" ? " · S-UI" : ""}`,
     value: node.id,
     disabled: !node.enabled,
   })),
@@ -151,8 +151,8 @@ async function submit() {
           :options="nodeOptions"
           placeholder="可稍后分配"
         />
-        <template v-if="nativeNodes.length === 0" #feedback>
-          当前没有可分配的原生 Hysteria2 节点。
+        <template v-if="assignableNodes.length === 0" #feedback>
+          当前没有可分配的 Hysteria2 节点。
         </template>
       </n-form-item>
       <n-form-item label="备注" path="notes">

@@ -32,7 +32,10 @@ type Agent struct {
 	authCache   *AuthCache
 	localStore  *localStore
 	statsClient *hysteriaStatsClient
+	suiClient   *suiClient
 	usage       protocol.UsageInfo
+	adapterInfo protocol.AdapterInfo
+	adapterCore protocol.CoreInfo
 }
 
 func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
@@ -55,6 +58,20 @@ func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
 		if cfg.TrafficEvery <= 0 {
 			cfg.TrafficEvery = 30 * time.Second
 		}
+		if cfg.LocalDatabasePath == "" {
+			cfg.LocalDatabasePath = cfg.TrafficDatabasePath
+		}
+	}
+	if cfg.AdapterType == "s_ui" {
+		if cfg.LocalDatabasePath == "" {
+			cfg.LocalDatabasePath = filepath.Join(filepath.Dir(cfg.StatePath), "agent.db")
+		}
+		if cfg.SUIAPIURL == "" {
+			cfg.SUIAPIURL = "http://127.0.0.1:2095/app/apiv2"
+		}
+		if cfg.TrafficEvery <= 0 {
+			cfg.TrafficEvery = 30 * time.Second
+		}
 	}
 	state, err := LoadState(cfg.StatePath)
 	if err != nil {
@@ -69,9 +86,13 @@ func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
 		client:    &http.Client{Timeout: 20 * time.Second},
 		collector: NewCollector(),
 		state:     state,
+		adapterInfo: protocol.AdapterInfo{
+			Name: cfg.AdapterType, Status: "unknown",
+		},
+		adapterCore: protocol.CoreInfo{Name: cfg.CoreName},
 	}
 	if cfg.AdapterType == "native_hysteria2" {
-		local, err := openLocalStore(context.Background(), cfg.TrafficDatabasePath)
+		local, err := openLocalStore(context.Background(), cfg.LocalDatabasePath)
 		if err != nil {
 			return nil, err
 		}
@@ -92,6 +113,24 @@ func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
 			result.usage.LastErrorCode = "stats_not_configured"
 		} else {
 			result.statsClient = newHysteriaStatsClient(cfg.TrafficStatsURL, cfg.TrafficStatsSecret)
+		}
+	}
+	if cfg.AdapterType == "s_ui" {
+		local, err := openLocalStore(context.Background(), cfg.LocalDatabasePath)
+		if err != nil {
+			return nil, err
+		}
+		result.localStore = local
+		if state.NodeID != "" {
+			if err := local.bindSUIStore(context.Background(), state.NodeID); err != nil {
+				_ = local.Close()
+				return nil, err
+			}
+		}
+		result.suiClient = newSUIClient(cfg.SUIAPIURL, cfg.SUIToken)
+		result.usage.Enabled = cfg.SUIToken != ""
+		if cfg.SUIToken == "" {
+			result.usage.LastErrorCode = "sui_token_not_configured"
 		}
 	}
 	return result, nil
@@ -238,6 +277,11 @@ func (agent *Agent) enroll(ctx context.Context) error {
 	agent.state.NodeID = result.NodeID
 	agent.state.NodeCredential = result.NodeCredential
 	agent.state.PendingEnrollmentRequestID = ""
+	if agent.config.AdapterType == "s_ui" {
+		if err := agent.localStore.bindSUIStore(ctx, agent.state.NodeID); err != nil {
+			return err
+		}
+	}
 	return SaveState(agent.config.StatePath, agent.state)
 }
 
@@ -254,6 +298,17 @@ func (agent *Agent) heartbeat(ctx context.Context) (int64, error) {
 		}
 		usage.OutboxBatches = count
 	}
+	core := protocol.CoreInfo{
+		Name:    agent.config.CoreName,
+		Running: agent.collector.ServiceRunning(ctx, agent.config.ServiceUnit),
+	}
+	adapterInfo := agent.adapterInfo
+	if agent.config.AdapterType == "native_hysteria2" {
+		adapterInfo.Status = "compatible"
+		adapterInfo.ErrorCode = ""
+	} else if agent.config.AdapterType == "s_ui" {
+		core = agent.adapterCore
+	}
 	request := protocol.HeartbeatRequest{
 		InstallationID: agent.state.InstallationID,
 		AppliedVersion: agent.state.AppliedVersion,
@@ -261,10 +316,8 @@ func (agent *Agent) heartbeat(ctx context.Context) (int64, error) {
 			Version:  buildinfo.Version,
 			Protocol: protocol.MajorVersion,
 		},
-		Core: protocol.CoreInfo{
-			Name:    agent.config.CoreName,
-			Running: agent.collector.ServiceRunning(ctx, agent.config.ServiceUnit),
-		},
+		Core:      core,
+		Adapter:   adapterInfo,
 		Host:      metrics,
 		Usage:     usage,
 		SampledAt: time.Now().UTC(),
@@ -325,6 +378,12 @@ func (agent *Agent) pollDesired(ctx context.Context) error {
 				ctx, result, "kick_apply_failed", "native kick requests could not be applied",
 			)
 		}
+	} else if agent.config.AdapterType == "s_ui" {
+		if err := agent.applySUIDesired(ctx, result); err != nil {
+			code := suiErrorCode(err)
+			agent.logger.Error("apply S-UI desired state failed", "version", result.Snapshot.Version, "error_code", code)
+			return agent.ackFailed(ctx, result, code, "S-UI reconciliation rejected desired state")
+		}
 	} else if len(result.Snapshot.Users) != 0 {
 		return agent.ackFailed(
 			ctx, result, "adapter_users_unsupported", "this adapter cannot apply users in Phase 2",
@@ -346,12 +405,20 @@ func (agent *Agent) capabilities() []string {
 		return append(capabilities, "native_http_auth", "persistent_auth_cache",
 			"traffic_stats_v1", "traffic_outbox_v1", "online_snapshot_v1", "kick_generation_v1")
 	}
+	if agent.config.AdapterType == "s_ui" {
+		return append(capabilities, "sui_apiv2_v1", "sui_discovery_v1",
+			"sui_ownership_v1", "credential_material_v1", "traffic_stats_v1",
+			"traffic_outbox_v1", "online_snapshot_v1")
+	}
 	return append(capabilities, "read_only_adapter")
 }
 
 func (agent *Agent) runUsageCycle(ctx context.Context) error {
 	if agent.localStore == nil {
 		return nil
+	}
+	if agent.config.AdapterType == "s_ui" {
+		return agent.runSUIUsageCycle(ctx)
 	}
 	var cycleErrors []error
 	if agent.statsClient != nil {
@@ -431,20 +498,7 @@ func (agent *Agent) reportOnline(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	request := protocol.OnlineSnapshotRequest{
-		SnapshotID: cryptoutil.NewID(), InstallationID: agent.state.InstallationID,
-		SampledAt: time.Now().UTC(), Users: users,
-	}
-	var result protocol.OnlineSnapshotResponse
-	status, err := agent.doJSON(ctx, http.MethodPost, "/agent/v1/online-snapshot",
-		request, cryptoutil.NewID(), true, &result)
-	if err != nil {
-		return err
-	}
-	if status != http.StatusOK {
-		return fmt.Errorf("online snapshot returned status %d", status)
-	}
-	return nil
+	return agent.postOnlineSnapshot(ctx, users, time.Now().UTC())
 }
 
 func (agent *Agent) executePendingKicks(ctx context.Context) error {

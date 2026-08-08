@@ -13,12 +13,15 @@ import {
   relativeTime,
 } from "../../lib/format";
 import type { NodeRecord } from "../../types";
+import SUIAdapterPanel from "./SUIAdapterPanel.vue";
 
 defineProps<{ show: boolean; node: NodeRecord | null }>();
 const emit = defineEmits<{
   "update:show": [show: boolean];
   edit: [node: NodeRecord];
   enroll: [node: NodeRecord];
+  changed: [];
+  "session-expired": [];
 }>();
 
 function endpointLabel(node: NodeRecord) {
@@ -64,6 +67,13 @@ function endpointLabel(node: NodeRecord) {
           <div><dt>运行时间</dt><dd>{{ formatUptime(node.uptime_seconds) }}</dd></div>
         </dl>
       </section>
+
+      <s-u-i-adapter-panel
+        v-if="node.adapter_type === 's_ui'"
+        :node="node"
+        @changed="emit('changed')"
+        @session-expired="emit('session-expired')"
+      />
 
       <section class="detail-section">
         <div class="detail-section__heading">

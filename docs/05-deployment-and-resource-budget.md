@@ -38,7 +38,7 @@ placement will be selected only after the inventory is complete.
 ```text
 /usr/local/bin/hyfleet-agent
 /etc/hyfleet/agent.yaml                root:hyfleet-agent 0640, settings
-/etc/hyfleet/sui.token                 root:hyfleet-agent 0640, S-UI nodes only
+/etc/hyfleet/agent.env                 root:hyfleet-agent 0640, S-UI Token only after enrollment
 /var/lib/hyfleet/agent.credentials     hyfleet-agent 0600, node/native tokens
 /var/lib/hyfleet/agent.db              snapshots, mappings, baselines, outbox
 ```
@@ -77,13 +77,12 @@ deltas. It uses `/online` and `/kick` only when supported by the installed core.
 The Agent configuration holds a loopback base URL and token, for example:
 
 ```yaml
-adapter:
-  type: s_ui
-  base_url: http://127.0.0.1:2095/app/apiv2
-  token_file: /etc/hyfleet/sui.token
+adapter_type: s_ui
+s_ui_api_url: http://127.0.0.1:2095/app/apiv2
+s_ui_token_env: HYFLEET_SUI_TOKEN
 ```
 
-Actual port and base path may differ. The static token file is root-owned,
+Actual port and base path may differ. The persistent environment file is root-owned,
 group-readable only by `hyfleet-agent`, and excluded from backups unless the
 backup is explicitly encrypted. Use a dedicated token and treat it as
 full-control unless the tested S-UI version proves narrower authorization. The

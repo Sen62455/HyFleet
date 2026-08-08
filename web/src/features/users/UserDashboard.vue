@@ -47,7 +47,13 @@ const issuedSubscription = ref<IssuedSubscriptionToken | null>(null);
 const issuedSubscriptionOpen = ref(false);
 const issuedReturnUserID = ref<string | null>(null);
 
-const nativeNodes = computed(() => props.nodes.filter((node) => node.adapter_type === "native_hysteria2"));
+const assignableNodes = computed(() =>
+  props.nodes.filter(
+    (node) =>
+      node.adapter_type === "native_hysteria2" ||
+      (node.adapter_type === "s_ui" && node.s_ui_target_inbound_ids.length > 0),
+  ),
+);
 const onlineConnections = computed(() => users.value.reduce((total, user) => total + user.online_connections, 0));
 const limitedCount = computed(() => users.value.filter((user) => user.quota_state === "limited").length);
 const unavailableCount = computed(() => users.value.filter((user) => user.status !== "active").length);
@@ -60,7 +66,8 @@ function handleAPIError(error: unknown, fallback: string) {
   }
   const messages: Record<string, string> = {
     user_conflict: "用户名或节点分配已经存在。",
-    native_nodes_only: "当前阶段只支持分配原生 Hysteria2 节点。",
+    adapter_users_unsupported: "该节点尚不支持受管用户，或 S-UI 目标入站尚未配置。",
+    assignment_read_only: "只读导入不允许修改状态、额度或凭据。",
     user_resource_not_found: "用户或节点分配已不存在。",
     credential_rotation_pending: "节点仍有待同步配置，请等待同步完成后再轮换凭据。",
     subscription_token_expired: "该 Token 已到期，请创建新的 Token。",
@@ -542,14 +549,14 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
   <user-form-modal
     v-model:show="formOpen"
     :user="editingUser"
-    :native-nodes="nativeNodes"
+    :assignable-nodes="assignableNodes"
     :saving="saving"
     @submit="saveUser"
   />
   <user-detail-drawer
     :show="detailUser !== null"
     :user="detailUser"
-    :native-nodes="nativeNodes"
+    :assignable-nodes="assignableNodes"
     :subscription-tokens="subscriptionTokens"
     :subscription-loading="subscriptionLoading"
     :working="working"

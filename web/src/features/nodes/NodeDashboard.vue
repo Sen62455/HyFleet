@@ -251,6 +251,8 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
       @update:show="!$event && (detailNodeID = null)"
       @edit="openEdit"
       @enroll="enrollmentNode = $event"
+      @changed="loadNodes(true)"
+      @session-expired="emit('session-expired')"
     />
     <enrollment-dialog
       :show="enrollmentNode !== null"

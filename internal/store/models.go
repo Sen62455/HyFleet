@@ -14,6 +14,7 @@ var (
 	ErrUnauthorized    = errors.New("unauthorized")
 	ErrVersionConflict = errors.New("version conflict")
 	ErrUnsupported     = errors.New("unsupported")
+	ErrReadOnly        = errors.New("read-only assignment")
 )
 
 func unixTime(value int64) time.Time {

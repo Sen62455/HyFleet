@@ -249,13 +249,23 @@ func (s *Store) RecordHeartbeat(
 	}
 	defer func() { _ = tx.Rollback() }()
 	status := "online"
+	statusReason := ""
 	if !identity.Enabled {
 		status = "disabled"
+	} else if heartbeat.Adapter.Status == "incompatible" ||
+		heartbeat.Adapter.Status == "unavailable" ||
+		heartbeat.Adapter.Status == "not_configured" {
+		status = "degraded"
+		statusReason = heartbeat.Adapter.ErrorCode
 	}
 	var desiredVersion int64
 	err = tx.QueryRowContext(ctx, `
-		UPDATE nodes SET status = ?, status_reason = '', agent_version = ?,
+		UPDATE nodes SET status = ?, status_reason = ?, agent_version = ?,
 			protocol_version = ?, core_name = ?, core_version = ?, core_running = ?,
+			adapter_status = CASE WHEN ? = '' THEN adapter_status ELSE ? END,
+			adapter_version = CASE WHEN ? = '' THEN adapter_version ELSE ? END,
+			adapter_error_code = CASE WHEN ? = '' THEN adapter_error_code ELSE ? END,
+			adapter_last_probed_at = COALESCE(?, adapter_last_probed_at),
 			uptime_seconds = ?, cpu_percent = ?, memory_used_bytes = ?,
 			memory_total_bytes = ?, disk_used_bytes = ?, disk_total_bytes = ?,
 			network_rx_bps = ?, network_tx_bps = ?, load_1 = ?, load_5 = ?, load_15 = ?,
@@ -263,8 +273,12 @@ func (s *Store) RecordHeartbeat(
 			usage_error_code = ?, usage_sampled_at = ?, last_seen_at = ?, updated_at = ?
 		WHERE id = ? AND agent_installation_id = ?
 		RETURNING desired_version
-	`, status, heartbeat.Agent.Version, heartbeat.Agent.Protocol,
+	`, status, statusReason, heartbeat.Agent.Version, heartbeat.Agent.Protocol,
 		heartbeat.Core.Name, heartbeat.Core.Version, boolInt(heartbeat.Core.Running),
+		heartbeat.Adapter.Status, heartbeat.Adapter.Status,
+		heartbeat.Adapter.Version, heartbeat.Adapter.Version,
+		heartbeat.Adapter.Status, heartbeat.Adapter.ErrorCode,
+		nullableUnixMilli(heartbeat.Adapter.LastProbedAt),
 		heartbeat.Host.UptimeSeconds, heartbeat.Host.CPUPercent,
 		heartbeat.Host.MemoryUsedBytes, heartbeat.Host.MemoryTotalBytes,
 		heartbeat.Host.DiskUsedBytes, heartbeat.Host.DiskTotalBytes,

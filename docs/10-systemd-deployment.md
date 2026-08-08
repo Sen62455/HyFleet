@@ -2,8 +2,9 @@
 
 ## 当前结论
 
-阶段 1 必须先部署稳定，再进入阶段 2。阶段 2 会让 Agent 进入原生 Hysteria2
-认证链路；如果 Server 或 Agent 仍然启动失败，后续会难以区分部署故障和认证故障。
+本指南覆盖当前 `v0.5.0-dev` 的控制面、原生 Hysteria2 Agent、独立
+sing-box Agent 和 S-UI Agent。首次部署仍应先确认 Server 与三台 Agent
+稳定在线，再进行原生认证迁移或 S-UI 接管，便于区分部署故障和适配器故障。
 
 本指南适用于当前三台 `x86_64`、Ubuntu 24.04 主机：
 
@@ -13,8 +14,9 @@
 | LisaHost | 节点 | `native-hysteria2` | `hysteria-server.service` |
 | BandwagonHost | 节点 | `standalone-sing-box` | `sing-box.service` |
 
-阶段 1 Agent 只读取主机指标并执行固定的 `systemctl is-active` 检查。安装器不会读取、
-修改或重启 Hysteria2、sing-box、S-UI，也不会改变现有用户、密码和订阅。
+未接管时，Agent 只读取主机与适配器状态。原生 Hysteria2 配置迁移必须单独显式执行；
+S-UI 客户端也必须先只读导入、等待映射同步，再显式接管。普通安装和升级不会自动接管
+现有客户端。
 
 ## 部署前准备
 
@@ -38,14 +40,14 @@ Hysteria2 使用 UDP。即使 Hysteria2 正在使用 UDP 443，Nginx 仍可使�
 cd D:\zuoye\AI\Codex\Desktop\VPS\hyfleet
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
   -Architecture amd64 `
-  -Version v0.1.0-dev
+  -Version v0.5.0-dev
 ```
 
 输出文件位于：
 
 ```text
-output/releases/hyfleet-v0.1.0-dev-linux-amd64.tar.gz
-output/releases/hyfleet-v0.1.0-dev-linux-amd64.tar.gz.sha256
+output/releases/hyfleet-v0.5.0-dev-linux-amd64.tar.gz
+output/releases/hyfleet-v0.5.0-dev-linux-amd64.tar.gz.sha256
 ```
 
 打包脚本会构建前端、交叉编译 Linux ELF、检查 ELF 架构，并为包内文件生成
@@ -56,9 +58,9 @@ output/releases/hyfleet-v0.1.0-dev-linux-amd64.tar.gz.sha256
 在 Windows PowerShell 中，把 `DMIT_IP` 替换为 DMIT 的 SSH 地址：
 
 ```powershell
-scp .\output\releases\hyfleet-v0.1.0-dev-linux-amd64.tar.gz `
+scp .\output\releases\hyfleet-v0.5.0-dev-linux-amd64.tar.gz `
   root@DMIT_IP:/root/
-scp .\output\releases\hyfleet-v0.1.0-dev-linux-amd64.tar.gz.sha256 `
+scp .\output\releases\hyfleet-v0.5.0-dev-linux-amd64.tar.gz.sha256 `
   root@DMIT_IP:/root/
 ```
 
@@ -66,9 +68,9 @@ scp .\output\releases\hyfleet-v0.1.0-dev-linux-amd64.tar.gz.sha256 `
 
 ```bash
 cd /root
-sha256sum -c hyfleet-v0.1.0-dev-linux-amd64.tar.gz.sha256
-tar -xzf hyfleet-v0.1.0-dev-linux-amd64.tar.gz
-cd hyfleet-v0.1.0-dev-linux-amd64
+sha256sum -c hyfleet-v0.5.0-dev-linux-amd64.tar.gz.sha256
+tar -xzf hyfleet-v0.5.0-dev-linux-amd64.tar.gz
+cd hyfleet-v0.5.0-dev-linux-amd64
 sha256sum -c SHA256SUMS
 file bin/hyfleet-server bin/hyfleet-agent
 bash -n deploy/*.sh
@@ -242,17 +244,27 @@ sudo bash deploy/install-agent.sh \
 
 ## 9. 安装 DMIT Agent
 
-DMIT 已有解压目录，可直接运行：
+先登录 S-UI，在 `Admin` 页面创建一个有合理到期时间的专用 `API Token`。该 Token
+只显示一次；不要把它发送到聊天、写进 Git、放进 `fleet.local.psd1` 或作为命令行参数。
+
+确认 S-UI 的实际本机端口和面板路径。默认值通常对应
+`http://127.0.0.1:2095/app/apiv2`，但面板路径不是 `/app/` 时必须同步修改；地址必须使用
+明文 loopback IP、包含端口并以 `/apiv2` 结尾。DMIT 已有解压目录后运行：
 
 ```bash
 sudo bash deploy/install-agent.sh \
   --server-url https://panel.example.com \
   --node-name DMIT \
-  --adapter s-ui
+  --adapter s-ui \
+  --s-ui-api-url http://127.0.0.1:2095/app/apiv2
 ```
 
+安装器会先无回显读取本机 S-UI API Token，再读取一次性 HyFleet 注册 Token。注册完成后，
+只删除后者；S-UI Token 长期保存在 `/etc/hyfleet/agent.env`，权限为
+`root:hyfleet-agent 0640`。控制面、浏览器和 fleet 配置都不会收到该 Token。
+
 Server 和 Agent 共存时，`/etc/hyfleet` 保持 `root:root 0755`；`server.yaml`、
-`agent.yaml` 和各自临时环境文件仍分别使用 `0640` 和独立服务组，不会出现目录组所有权冲突。
+`agent.yaml` 和各自环境文件仍分别使用 `0640` 和独立服务组，不会出现目录组所有权冲突。
 
 ## 10. 验收阶段 1
 
@@ -286,7 +298,8 @@ sudo journalctl -u hyfleet-agent -b -n 30 --no-pager
 - Server 的本机和公网 `/healthz` 都成功；
 - 三台 Agent 都是 `active`，重启后可恢复；
 - 三台节点的主机指标合理，原代理服务仍正常；
-- `/etc/hyfleet/server.env` 和 `/etc/hyfleet/agent.env` 均不存在；
+- 管理员创建后 `/etc/hyfleet/server.env` 不存在；LisaHost/BandwagonHost 的一次性
+  `/etc/hyfleet/agent.env` 已删除；DMIT 的该文件只保留 `HYFLEET_SUI_TOKEN`；
 - `server.db` 和 `master.key` 已规划为成对备份。
 
 ## 故障诊断
@@ -317,6 +330,9 @@ sudo bash deploy/diagnose.sh agent > /tmp/hyfleet-agent-diagnostic.txt 2>&1
 | `HYFLEET_ENROLLMENT_TOKEN is empty` | Agent 未注册且 token 文件缺失 | 在面板生成新 token 后重新执行 Agent 安装脚本 |
 | `enrollment_rejected` | token 错误、失效或属于旧请求 | 生成新 token 后重试 |
 | `enrollment_conflict` | 面板 Adapter 不匹配或节点已绑定 | 核对 Adapter；未注册节点可用 `--replace-config` 修正 |
+| `sui_token_not_configured` | DMIT 缺少长期 S-UI Token | 重新执行安装器并在本机无回显输入新 Token |
+| `sui_api_unavailable` | loopback 地址、端口、路径或 Token 错误 | 核对实际面板路径和 `/apiv2`，不要把 Token 放进诊断输出 |
+| `sui_version_unsupported` | S-UI 不在已验证的 `v1.5.3` 至 `<v1.6.0` 范围 | 保持只读并使用受支持版本，升级适配器测试后再放宽 |
 | `x509` | 域名、证书链或有效期错误 | 修复可信证书，不要使用跳过校验参数 |
 | Nginx `502` | Server 未启动或 proxy_pass 端口错误 | 先检查本机 `/healthz` 和 Server 日志 |
 | `226/NAMESPACE` | VPS 不支持某项 systemd 隔离能力 | 提供完整诊断，不要直接删除全部加固项 |

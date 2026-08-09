@@ -1532,6 +1532,22 @@ pre {
   text-align: right;
 }
 
+.subscription-history-toggle {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  border-bottom: 1px solid #e7eae8;
+}
+
+.subscription-history-toggle .n-button {
+  color: #667085;
+  font-size: 11px;
+}
+
+.subscription-history-chevron {
+  margin-left: 2px;
+}
+
 .detail-metrics {
   display: grid;
   gap: 13px;

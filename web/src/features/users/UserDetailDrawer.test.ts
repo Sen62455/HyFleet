@@ -1,6 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
-import type { UserAssignment, UserRecord } from "../../types";
+import type { SubscriptionTokenRecord, UserAssignment, UserRecord } from "../../types";
 import UserDetailDrawer from "./UserDetailDrawer.vue";
 
 const assignment: UserAssignment = {
@@ -55,6 +55,29 @@ const user: UserRecord = {
   updated_at: "2026-08-08T01:00:00Z",
 };
 
+const activeToken: SubscriptionTokenRecord = {
+  id: "token-active",
+  user_id: user.id,
+  name: "当前设备",
+  token_prefix: "hys_active_",
+  status: "active",
+  allowed_formats: ["clash", "sing-box"],
+  expires_at: null,
+  revoked_at: null,
+  last_used_at: "2026-08-08T01:00:00Z",
+  created_at: "2026-08-08T00:00:00Z",
+  updated_at: "2026-08-08T01:00:00Z",
+};
+
+const revokedToken: SubscriptionTokenRecord = {
+  ...activeToken,
+  id: "token-revoked",
+  name: "已撤销设备",
+  token_prefix: "hys_revoked_",
+  status: "revoked",
+  revoked_at: "2026-08-08T02:00:00Z",
+};
+
 describe("UserDetailDrawer", () => {
   it("shows quota controls and subscription eligibility after S-UI adoption", async () => {
     const wrapper = mount(UserDetailDrawer, {
@@ -75,6 +98,44 @@ describe("UserDetailDrawer", () => {
     expect(wrapper.text()).toContain("已纳入订阅");
     expect(wrapper.text()).not.toContain("只读导入");
     expect(wrapper.find('button[aria-label="保存 DMIT 流量额度"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("keeps revoked subscription tokens out of the current list until history is expanded", async () => {
+    const wrapper = mount(UserDetailDrawer, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        user,
+        assignableNodes: [],
+        subscriptionTokens: [activeToken, revokedToken],
+        subscriptionLoading: false,
+        working: "",
+      },
+      global: { stubs: { teleport: true } },
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("当前设备");
+    expect(wrapper.text()).not.toContain("已撤销设备");
+    expect(wrapper.text()).toContain("历史 Token 1");
+    expect(wrapper.text()).toContain("1 个有效 Token");
+
+    const historyButton = wrapper.find('button[aria-label="展开历史 Token"]');
+    expect(historyButton.exists()).toBe(true);
+    await historyButton.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("已撤销设备");
+    expect(wrapper.text()).toContain("已撤销");
+
+    await wrapper.setProps({ subscriptionTokens: [revokedToken] });
+    await wrapper.find('button[aria-label="收起历史 Token"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).not.toContain("已撤销设备");
+    expect(wrapper.text()).toContain("暂无有效订阅 Token");
+    expect(wrapper.text()).toContain("0 个有效 Token");
     wrapper.unmount();
   });
 });

@@ -4,7 +4,7 @@
 sing-box 适配器。HyFleet Agent 也将成为主机状态的数据来源；三台机器完成监控观察后，
 即可移除 Beszel。
 
-## 从 v1.0.0 或 v1.1.x 升级到 v1.1.2
+## 从 v1.0.0 或 v1.1.x 升级到 v1.1.3
 
 升级顺序为 Server 在前、Agent 在后。升级程序会校验两层 SHA-256，在每台 VPS 的
 `/var/lib/hyfleet-updates` 下保存旧二进制、systemd 单元、配置和标准数据文件；健康检查
@@ -15,8 +15,8 @@ sing-box 适配器。HyFleet Agent 也将成为主机状态的数据来源；三
 
 ```powershell
 gh auth status
-gh release view v1.1.2 --repo Sen62455/HyFleet
-.\scripts\deploy-fleet.ps1 -Version v1.1.2
+gh release view v1.1.3 --repo Sen62455/HyFleet
+.\scripts\deploy-fleet.ps1 -Version v1.1.3
 ```
 
 `deploy-fleet.ps1` 会通过本机 GitHub 身份下载私有 Release、验证外层校验和，再并行上传
@@ -54,6 +54,9 @@ sudo bash deploy/update-component.sh agent
 `v1.1.2` 增加证书 SHA-256 指纹和公钥 SHA-256 Pin。自签名端点可在保持
 `tls_insecure` 的同时，让 Hysteria2 URI、Mihomo/Clash 和 sing-box 校验固定的证书或
 公钥。数据库迁移 `0009_tls_pins.sql` 会自动执行，原有节点的两个字段默认为空。
+
+`v1.1.3` 默认只在用户详情中展示有效订阅 Token。已撤销和已到期的记录仍保留用于审计，
+但收纳在按需展开的“历史 Token”中，避免长期使用后侧边栏不断增长。
 
 ## 修复 Agent 在线但 Hysteria2 超时
 
@@ -176,10 +179,10 @@ DMIT 同时承载 HyFleet Server 和 Agent。整个迁移过程中不要停止
 `hyfleet-server`，也不要移动或删除 `/etc/hyfleet`、`/var/lib/hyfleet/server.db` 和
 `/var/lib/hyfleet/master.key`。只替换 Agent 身份和 Agent 本地状态。
 
-先在已解压的 `v1.1.2` 发布目录中创建一致性备份，并保存 S-UI 与网络配置：
+先在已解压的 `v1.1.3` 发布目录中创建一致性备份，并保存 S-UI 与网络配置：
 
 ```bash
-cd /root/hyfleet-v1.1.2-linux-amd64
+cd /root/hyfleet-v1.1.3-linux-amd64
 sudo bash deploy/backup-server.sh --output-dir /root/hyfleet-server-backup
 
 MIGRATION_DIR="/root/dmit-native-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -228,7 +231,7 @@ sudo mv /etc/hyfleet/agent.yaml "$MIGRATION_DIR/agent.yaml"
 sudo mv /etc/hyfleet/agent.env "$MIGRATION_DIR/agent.env" 2>/dev/null || true
 sudo mv /var/lib/hyfleet-agent "$MIGRATION_DIR/hyfleet-agent-old"
 
-cd /root/hyfleet-v1.1.2-linux-amd64
+cd /root/hyfleet-v1.1.3-linux-amd64
 sudo bash deploy/install-agent.sh \
   --server-url https://panel.example.com \
   --node-name DMIT-native \

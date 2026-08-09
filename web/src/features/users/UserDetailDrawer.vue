@@ -1,6 +1,20 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { KeyRound, Link2, LogOut, Pencil, Plus, RotateCw, Save, Server, Trash2, Wifi } from "@lucide/vue";
+import {
+  ChevronDown,
+  ChevronUp,
+  History,
+  KeyRound,
+  Link2,
+  LogOut,
+  Pencil,
+  Plus,
+  RotateCw,
+  Save,
+  Server,
+  Trash2,
+  Wifi,
+} from "@lucide/vue";
 import {
   NButton,
   NDrawer,
@@ -47,6 +61,7 @@ const emit = defineEmits<{
 const selectedNodeID = ref<string | null>(null);
 const selectedLimitGiB = ref(0);
 const assignmentLimits = ref<Record<string, number>>({});
+const subscriptionHistoryOpen = ref(false);
 const assignedNodeIDs = computed(() => new Set(props.user?.assignments.map((item) => item.node_id) ?? []));
 const availableOptions = computed(() =>
   props.assignableNodes
@@ -57,8 +72,16 @@ const availableOptions = computed(() =>
       disabled: !node.enabled,
     })),
 );
-const activeSubscriptionCount = computed(
-  () => props.subscriptionTokens.filter((token) => token.status === "active").length,
+const activeSubscriptionTokens = computed(() =>
+  props.subscriptionTokens.filter((token) => token.status === "active"),
+);
+const inactiveSubscriptionTokens = computed(() =>
+  props.subscriptionTokens.filter((token) => token.status !== "active"),
+);
+const displayedSubscriptionTokens = computed(() =>
+  subscriptionHistoryOpen.value
+    ? [...activeSubscriptionTokens.value, ...inactiveSubscriptionTokens.value]
+    : activeSubscriptionTokens.value,
 );
 const managedAssignments = computed(
   () => props.user?.assignments.filter((assignment) => assignment.management_mode === "managed") ?? [],
@@ -72,6 +95,7 @@ watch(
   () => {
     selectedNodeID.value = null;
     selectedLimitGiB.value = 0;
+    subscriptionHistoryOpen.value = false;
     assignmentLimits.value = Object.fromEntries(
       (props.user?.assignments ?? []).map((assignment) => [
         assignment.id,
@@ -171,8 +195,8 @@ function formatLabel(format: string) {
           </n-button>
         </div>
         <div v-if="subscriptionLoading" class="subscription-loading"><n-spin :size="20" /></div>
-        <div v-else-if="subscriptionTokens.length" class="subscription-token-list">
-          <article v-for="token in subscriptionTokens" :key="token.id" class="subscription-token-item">
+        <div v-else-if="displayedSubscriptionTokens.length" class="subscription-token-list">
+          <article v-for="token in displayedSubscriptionTokens" :key="token.id" class="subscription-token-item">
             <header>
               <div>
                 <strong>{{ token.name }}</strong>
@@ -225,9 +249,25 @@ function formatLabel(format: string) {
         </div>
         <div v-else class="subscription-empty">
           <link2 :size="18" aria-hidden="true" />
-          <span>尚无订阅 Token</span>
+          <span>暂无有效订阅 Token</span>
         </div>
-        <div class="subscription-count">{{ activeSubscriptionCount }} 个有效 Token</div>
+        <div v-if="!subscriptionLoading && inactiveSubscriptionTokens.length" class="subscription-history-toggle">
+          <n-button
+            text
+            size="small"
+            :aria-expanded="subscriptionHistoryOpen"
+            :aria-label="subscriptionHistoryOpen ? '收起历史 Token' : '展开历史 Token'"
+            @click="subscriptionHistoryOpen = !subscriptionHistoryOpen"
+          >
+            <template #icon><n-icon><history /></n-icon></template>
+            历史 Token {{ inactiveSubscriptionTokens.length }}
+            <n-icon class="subscription-history-chevron">
+              <chevron-up v-if="subscriptionHistoryOpen" />
+              <chevron-down v-else />
+            </n-icon>
+          </n-button>
+        </div>
+        <div class="subscription-count">{{ activeSubscriptionTokens.length }} 个有效 Token</div>
       </section>
 
       <section class="detail-section">

@@ -4,7 +4,7 @@ HyFleet is a lightweight control plane for a small fleet of Hysteria2 VPS nodes.
 It provides centralized node, user, traffic, subscription, and health management
 without replacing Hysteria2 or sing-box.
 
-The repository contains the **v1.1.2 release** with native convergence and host
+The repository contains the **v1.1.3 release** with native convergence and host
 monitoring. Native Hysteria2 and compatible S-UI nodes share one user, traffic,
 status, credential, and subscription control plane.
 Standalone sing-box supports bounded operations, split-directory backup, and
@@ -131,10 +131,10 @@ you intend to install:
 ```bash
 curl --fail --location --proto '=https' --tlsv1.2 \
   -o install.sh \
-  https://raw.githubusercontent.com/Sen62455/HyFleet/v1.1.2/install.sh
+  https://raw.githubusercontent.com/Sen62455/HyFleet/v1.1.3/install.sh
 less install.sh
 sudo bash install.sh server \
-  --version v1.1.2 \
+  --version v1.1.3 \
   --public-url https://panel.example.com
 ```
 
@@ -173,7 +173,7 @@ Set `HYFLEET_BOOTSTRAP_TOKEN` before the first server start. Example files are i
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
-  -Architecture amd64 -Version v1.1.2
+  -Architecture amd64 -Version v1.1.3
 ```
 
 The archive, external checksum, Linux ELF binaries, idempotent installers, and

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -35,6 +36,21 @@ func (fixedCollector) Sample(context.Context) (protocol.HostMetrics, error) {
 }
 
 func (fixedCollector) ServiceRunning(context.Context, string) bool { return true }
+
+type failingCollector struct{}
+
+func (failingCollector) Facts() HostFacts {
+	return HostFacts{
+		OS: "linux", OSVersion: "24.04", Architecture: "amd64",
+		Hostname: "metrics-unavailable", KernelVersion: "test-kernel", CPUCores: 2,
+	}
+}
+
+func (failingCollector) Sample(context.Context) (protocol.HostMetrics, error) {
+	return protocol.HostMetrics{}, errors.New("host metrics unavailable")
+}
+
+func (failingCollector) ServiceRunning(context.Context, string) bool { return true }
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -131,6 +147,57 @@ func runAgentUntilHeartbeat(t *testing.T, runner *Agent, count func() int, want 
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Agent.Run() error = %v", err)
+	}
+}
+
+func TestHeartbeatContinuesWhenHostMetricsAreUnavailable(t *testing.T) {
+	nodeID := uuid.NewString()
+	installationID := uuid.NewString()
+	credential := "hya_" + nodeID + ".metrics-fallback"
+	heartbeats := make(chan protocol.HeartbeatRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/agent/v1/heartbeat" {
+			http.NotFound(response, request)
+			return
+		}
+		var heartbeat protocol.HeartbeatRequest
+		if err := json.NewDecoder(request.Body).Decode(&heartbeat); err != nil {
+			http.Error(response, "decode", http.StatusBadRequest)
+			return
+		}
+		heartbeats <- heartbeat
+		writeAgentJSON(response, protocol.HeartbeatResponse{ServerTime: time.Now().UTC()})
+	}))
+	defer server.Close()
+
+	statePath := filepath.Join(t.TempDir(), "agent-state.json")
+	if err := SaveState(statePath, State{
+		InstallationID: installationID,
+		NodeID:         nodeID,
+		NodeCredential: credential,
+	}); err != nil {
+		t.Fatalf("SaveState() error = %v", err)
+	}
+	runner, err := New(config.Agent{
+		ServerURL: server.URL, StatePath: statePath, AdapterType: "standalone_sing_box",
+		CoreName: "sing-box", ServiceUnit: "sing-box.service", AllowHTTP: true,
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runner.Close() })
+	runner.collector = failingCollector{}
+
+	if _, err := runner.heartbeat(context.Background()); err != nil {
+		t.Fatalf("heartbeat() error = %v", err)
+	}
+	heartbeat := <-heartbeats
+	if heartbeat.InstallationID != installationID {
+		t.Fatalf("heartbeat installation ID = %q, want %q", heartbeat.InstallationID, installationID)
+	}
+	if heartbeat.Host.Hostname != "metrics-unavailable" ||
+		heartbeat.Host.KernelVersion != "test-kernel" || heartbeat.Host.CPUCores != 2 {
+		t.Fatalf("fallback host facts = %#v", heartbeat.Host)
 	}
 }
 

@@ -4,7 +4,7 @@
 sing-box 适配器。HyFleet Agent 也将成为主机状态的数据来源；三台机器完成监控观察后，
 即可移除 Beszel。
 
-## 从 v1.0.0 升级到 v1.1.0
+## 从 v1.0.0 或 v1.1.0 升级到 v1.1.1
 
 升级顺序为 Server 在前、Agent 在后。升级程序会校验两层 SHA-256，在每台 VPS 的
 `/var/lib/hyfleet-updates` 下保存旧二进制、systemd 单元、配置和标准数据文件；健康检查
@@ -15,8 +15,8 @@ sing-box 适配器。HyFleet Agent 也将成为主机状态的数据来源；三
 
 ```powershell
 gh auth status
-gh release view v1.1.0 --repo Sen62455/HyFleet
-.\scripts\deploy-fleet.ps1 -Version v1.1.0
+gh release view v1.1.1 --repo Sen62455/HyFleet
+.\scripts\deploy-fleet.ps1 -Version v1.1.1
 ```
 
 `deploy-fleet.ps1` 会通过本机 GitHub 身份下载私有 Release、验证外层校验和，再并行上传
@@ -45,6 +45,11 @@ sudo bash deploy/update-component.sh agent
 
 单机上仍然应先更新 Server，再更新 Agent。成功更新后，脚本会输出可用于人工回滚的快照
 目录；确认稳定并完成异机备份前，不要删除该目录。
+
+`v1.1.1` 修复了 `v1.1.0` Agent systemd 沙箱把 `/proc` 限制为仅进程目录的问题。
+该限制会让主机指标采集报 `open /proc/stat: no such file or directory`，进而使三台节点都被
+标记为离线，但不会停止 Hysteria2 或影响已有订阅。新单元允许只读访问主机级 `/proc`
+指标，并在启动前验证所需文件可读；即使某次指标采集失败，Agent 仍会发送基础心跳。
 
 ## 本阶段变化
 

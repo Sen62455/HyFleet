@@ -300,9 +300,15 @@ func (agent *Agent) enroll(ctx context.Context) error {
 }
 
 func (agent *Agent) heartbeat(ctx context.Context) (int64, error) {
-	metrics, err := agent.collector.Sample(ctx)
-	if err != nil {
-		return 0, err
+	metrics, sampleErr := agent.collector.Sample(ctx)
+	if sampleErr != nil {
+		facts := agent.collector.Facts()
+		metrics = protocol.HostMetrics{
+			Hostname:      facts.Hostname,
+			KernelVersion: facts.KernelVersion,
+			CPUCores:      facts.CPUCores,
+		}
+		agent.logger.Warn("host metrics collection failed; sending heartbeat without fresh metrics", "error", sampleErr)
 	}
 	usage := agent.usage
 	if agent.localStore != nil {

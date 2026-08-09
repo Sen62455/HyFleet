@@ -129,10 +129,10 @@ you intend to install:
 ```bash
 curl --fail --location --proto '=https' --tlsv1.2 \
   -o install.sh \
-  https://raw.githubusercontent.com/Sen62455/HyFleet/v1.1.0/install.sh
+  https://raw.githubusercontent.com/Sen62455/HyFleet/v1.1.1/install.sh
 less install.sh
 sudo bash install.sh server \
-  --version v1.1.0 \
+  --version v1.1.1 \
   --public-url https://panel.example.com
 ```
 
@@ -171,7 +171,7 @@ Set `HYFLEET_BOOTSTRAP_TOKEN` before the first server start. Example files are i
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
-  -Architecture amd64 -Version v1.1.0
+  -Architecture amd64 -Version v1.1.1
 ```
 
 The archive, external checksum, Linux ELF binaries, idempotent installers, and

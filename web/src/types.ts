@@ -41,6 +41,8 @@ export interface NodeRecord {
   public_port: number;
   sni: string;
   tls_insecure: boolean;
+  tls_cert_fingerprint: string;
+  tls_public_key_sha256: string;
   enabled: boolean;
   status: NodeStatus;
   status_reason: string;
@@ -131,6 +133,8 @@ export interface NodeInput {
   public_port: number;
   sni: string;
   tls_insecure: boolean;
+  tls_cert_fingerprint: string;
+  tls_public_key_sha256: string;
   enabled?: boolean;
 }
 

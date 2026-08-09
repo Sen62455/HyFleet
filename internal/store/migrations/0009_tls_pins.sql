@@ -1,0 +1,2 @@
+ALTER TABLE nodes ADD COLUMN tls_cert_fingerprint TEXT NOT NULL DEFAULT '';
+ALTER TABLE nodes ADD COLUMN tls_public_key_sha256 TEXT NOT NULL DEFAULT '';

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"net/url"
@@ -12,10 +13,13 @@ import (
 )
 
 func TestSubscriptionRenderersEscapeStructuredValues(t *testing.T) {
+	certificateFingerprint := strings.TrimSuffix(strings.Repeat("AB:", 32), ":")
+	publicKeyPin := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
 	subscription := store.Subscription{Endpoints: []store.SubscriptionEndpoint{
 		{
 			NodeID: "node-one", NodeName: "IPv6 / Tokyo #1", PublicHost: "2001:db8::1",
 			PublicPort: 8443, SNI: "edge.example.com", TLSInsecure: true,
+			TLSCertFingerprint: certificateFingerprint, TLSPublicKeySHA256: publicKeyPin,
 			Credential: "user:p@ss/?# value",
 		},
 	}}
@@ -30,7 +34,8 @@ func TestSubscriptionRenderersEscapeStructuredValues(t *testing.T) {
 	}
 	if parsed.Scheme != "hysteria2" || parsed.Hostname() != "2001:db8::1" || parsed.Port() != "8443" ||
 		parsed.User.Username() != "user:p@ss/?# value" || parsed.Fragment != "IPv6 / Tokyo #1" ||
-		parsed.Query().Get("sni") != "edge.example.com" || parsed.Query().Get("insecure") != "1" {
+		parsed.Query().Get("sni") != "edge.example.com" || parsed.Query().Get("insecure") != "1" ||
+		parsed.Query().Get("pinSHA256") != certificateFingerprint {
 		t.Fatalf("unexpected Hysteria2 URI: %s", uriDocument.Body)
 	}
 
@@ -60,7 +65,8 @@ func TestSubscriptionRenderersEscapeStructuredValues(t *testing.T) {
 		t.Fatalf("yaml.Unmarshal() error = %v; body = %s", err, clash.Body)
 	}
 	if len(clashValue.Proxies) != 1 || clashValue.Proxies[0]["password"] != "user:p@ss/?# value" ||
-		clashValue.Proxies[0]["server"] != "2001:db8::1" || clashValue.Proxies[0]["skip-cert-verify"] != true {
+		clashValue.Proxies[0]["server"] != "2001:db8::1" || clashValue.Proxies[0]["skip-cert-verify"] != true ||
+		clashValue.Proxies[0]["fingerprint"] != certificateFingerprint {
 		t.Fatalf("unexpected Clash subscription: %#v", clashValue)
 	}
 	if len(clashValue.ProxyGroups) != 1 || clashValue.ProxyGroups[0].Name != "HyFleet" ||
@@ -79,9 +85,10 @@ func TestSubscriptionRenderersEscapeStructuredValues(t *testing.T) {
 			Tag      string `json:"tag"`
 			Password string `json:"password"`
 			TLS      struct {
-				Enabled    bool   `json:"enabled"`
-				ServerName string `json:"server_name"`
-				Insecure   bool   `json:"insecure"`
+				Enabled                    bool     `json:"enabled"`
+				ServerName                 string   `json:"server_name"`
+				Insecure                   bool     `json:"insecure"`
+				CertificatePublicKeySHA256 []string `json:"certificate_public_key_sha256"`
 			} `json:"tls"`
 		} `json:"outbounds"`
 	}
@@ -91,7 +98,9 @@ func TestSubscriptionRenderersEscapeStructuredValues(t *testing.T) {
 	if len(singBoxValue.Outbounds) != 1 || singBoxValue.Outbounds[0].Tag != "IPv6 / Tokyo #1" ||
 		singBoxValue.Outbounds[0].Password != "user:p@ss/?# value" ||
 		!singBoxValue.Outbounds[0].TLS.Enabled || !singBoxValue.Outbounds[0].TLS.Insecure ||
-		singBoxValue.Outbounds[0].TLS.ServerName != "edge.example.com" {
+		singBoxValue.Outbounds[0].TLS.ServerName != "edge.example.com" ||
+		len(singBoxValue.Outbounds[0].TLS.CertificatePublicKeySHA256) != 1 ||
+		singBoxValue.Outbounds[0].TLS.CertificatePublicKeySHA256[0] != publicKeyPin {
 		t.Fatalf("unexpected sing-box subscription: %#v", singBoxValue)
 	}
 }

@@ -29,6 +29,8 @@ type Node struct {
 	PublicPort               int
 	SNI                      string
 	TLSInsecure              bool
+	TLSCertFingerprint       string
+	TLSPublicKeySHA256       string
 	Enabled                  bool
 	Status                   string
 	StatusReason             string
@@ -84,37 +86,42 @@ type Node struct {
 }
 
 type NewNode struct {
-	ID          string
-	Name        string
-	Provider    string
-	Region      string
-	AdapterType string
-	PublicHost  string
-	PublicPort  int
-	SNI         string
-	TLSInsecure bool
-	Enabled     bool
-	Now         time.Time
+	ID                 string
+	Name               string
+	Provider           string
+	Region             string
+	AdapterType        string
+	PublicHost         string
+	PublicPort         int
+	SNI                string
+	TLSInsecure        bool
+	TLSCertFingerprint string
+	TLSPublicKeySHA256 string
+	Enabled            bool
+	Now                time.Time
 }
 
 type UpdateNode struct {
-	Name        string
-	Provider    string
-	Region      string
-	AdapterType string
-	PublicHost  string
-	PublicPort  int
-	SNI         string
-	TLSInsecure bool
-	Enabled     bool
-	Now         time.Time
+	Name               string
+	Provider           string
+	Region             string
+	AdapterType        string
+	PublicHost         string
+	PublicPort         int
+	SNI                string
+	TLSInsecure        bool
+	TLSCertFingerprint string
+	TLSPublicKeySHA256 string
+	Enabled            bool
+	Now                time.Time
 }
 
 const nodeColumns = `
 	id, name, provider, region, adapter_type, adapter_status, adapter_version,
 	adapter_error_code, adapter_last_probed_at, adapter_last_discovered_at,
 	sui_target_inbound_ids, public_host, public_port, sni,
-	tls_insecure, enabled, status, status_reason,
+	tls_insecure, tls_cert_fingerprint, tls_public_key_sha256,
+	enabled, status, status_reason,
 	desired_version, applied_version, COALESCE(agent_installation_id, ''),
 	agent_version, protocol_version, os_name, os_version, architecture,
 	hostname, kernel_version, core_name, core_version, core_running,
@@ -147,6 +154,7 @@ func scanNode(row rowScanner) (Node, error) {
 		&node.AdapterStatus, &node.AdapterVersion, &node.AdapterErrorCode,
 		&adapterLastProbed, &adapterLastDiscovered, &suiTargetInboundJSON,
 		&node.PublicHost, &node.PublicPort, &node.SNI, &tlsInsecure,
+		&node.TLSCertFingerprint, &node.TLSPublicKeySHA256,
 		&enabled, &node.Status, &node.StatusReason, &node.DesiredVersion,
 		&node.AppliedVersion, &node.AgentInstallationID, &node.AgentVersion,
 		&node.ProtocolVersion, &node.OSName, &node.OSVersion, &node.Architecture,
@@ -203,11 +211,13 @@ func (s *Store) CreateNode(ctx context.Context, input NewNode) (Node, error) {
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO nodes(
 			id, name, provider, region, adapter_type, public_host, public_port,
-			sni, tls_insecure, enabled, status,
+			sni, tls_insecure, tls_cert_fingerprint, tls_public_key_sha256,
+			enabled, status,
 			desired_version, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 	`, input.ID, input.Name, input.Provider, input.Region, input.AdapterType,
 		input.PublicHost, input.PublicPort, input.SNI, boolInt(input.TLSInsecure),
+		input.TLSCertFingerprint, input.TLSPublicKeySHA256,
 		boolInt(input.Enabled), status, input.Now.UnixMilli(), input.Now.UnixMilli())
 	if err != nil {
 		_ = tx.Rollback()
@@ -290,10 +300,12 @@ func (s *Store) UpdateNode(ctx context.Context, id string, input UpdateNode) (No
 	_, err = tx.ExecContext(ctx, `
 		UPDATE nodes SET name = ?, provider = ?, region = ?, adapter_type = ?,
 			public_host = ?, public_port = ?, sni = ?, tls_insecure = ?,
-			enabled = ?, status = ?, status_reason = '', desired_version = ?, updated_at = ?
+			tls_cert_fingerprint = ?, tls_public_key_sha256 = ?, enabled = ?,
+			status = ?, status_reason = '', desired_version = ?, updated_at = ?
 		WHERE id = ? AND archived_at IS NULL
 	`, input.Name, input.Provider, input.Region, input.AdapterType,
 		input.PublicHost, input.PublicPort, input.SNI, boolInt(input.TLSInsecure),
+		input.TLSCertFingerprint, input.TLSPublicKeySHA256,
 		boolInt(input.Enabled), status, version, input.Now.UnixMilli(), id)
 	if err != nil {
 		_ = tx.Rollback()

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/base64"
 	"net/http"
 	"net/url"
@@ -14,16 +15,21 @@ import (
 func TestUnifiedSubscriptionAPIAndCredentialRotation(t *testing.T) {
 	app := newTestApp(t)
 	app.bootstrap(t)
+	publicKeyPin := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
 
 	createdNode := app.request(t, http.MethodPost, "/api/v1/nodes", map[string]any{
 		"name": "subscription-node", "provider": "Test", "region": "Tokyo",
 		"adapter_type": "native_hysteria2", "public_host": "hy2.example.com",
 		"public_port": 8443, "sni": "edge.example.com", "tls_insecure": false,
+		"tls_cert_fingerprint":  strings.Repeat("ab", 32),
+		"tls_public_key_sha256": publicKeyPin,
 	}, app.csrf, "http://hyfleet.test")
 	requireStatus(t, createdNode, http.StatusCreated)
 	var node nodeResponse
 	decodeResponse(t, createdNode, &node)
-	if node.PublicHost != "hy2.example.com" || node.PublicPort != 8443 || node.SNI != "edge.example.com" {
+	if node.PublicHost != "hy2.example.com" || node.PublicPort != 8443 || node.SNI != "edge.example.com" ||
+		node.TLSCertFingerprint != strings.TrimSuffix(strings.Repeat("AB:", 32), ":") ||
+		node.TLSPublicKeySHA256 != publicKeyPin {
 		t.Fatalf("unexpected subscription endpoint: %#v", node)
 	}
 
@@ -154,6 +160,16 @@ func TestSubscriptionTokenValidationAndInvalidEndpoint(t *testing.T) {
 		"public_host": "https://hy2.example.com:443", "public_port": 0,
 	}, app.csrf, "http://hyfleet.test")
 	requireStatus(t, invalidNode, http.StatusUnprocessableEntity)
+	invalidFingerprint := app.request(t, http.MethodPost, "/api/v1/nodes", map[string]any{
+		"name": "invalid-fingerprint", "adapter_type": "native_hysteria2",
+		"tls_cert_fingerprint": "not-a-sha256-fingerprint",
+	}, app.csrf, "http://hyfleet.test")
+	requireStatus(t, invalidFingerprint, http.StatusUnprocessableEntity)
+	invalidPublicKeyPin := app.request(t, http.MethodPost, "/api/v1/nodes", map[string]any{
+		"name": "invalid-public-key-pin", "adapter_type": "native_hysteria2",
+		"tls_public_key_sha256": base64.StdEncoding.EncodeToString([]byte("too short")),
+	}, app.csrf, "http://hyfleet.test")
+	requireStatus(t, invalidPublicKeyPin, http.StatusUnprocessableEntity)
 
 	missingToken := app.request(t, http.MethodGet,
 		"/sub/hys_abcdefghijklmnopqrstuvwxyz0123456789/uri", nil, "", "")

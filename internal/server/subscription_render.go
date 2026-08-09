@@ -38,6 +38,7 @@ type clashHysteria2Proxy struct {
 	Password       string `yaml:"password"`
 	SNI            string `yaml:"sni,omitempty"`
 	SkipCertVerify bool   `yaml:"skip-cert-verify"`
+	Fingerprint    string `yaml:"fingerprint,omitempty"`
 }
 
 type singBoxSubscription struct {
@@ -54,9 +55,10 @@ type singBoxHysteria2Outbound struct {
 }
 
 type singBoxTLSData struct {
-	Enabled    bool   `json:"enabled"`
-	ServerName string `json:"server_name,omitempty"`
-	Insecure   bool   `json:"insecure"`
+	Enabled                    bool     `json:"enabled"`
+	ServerName                 string   `json:"server_name,omitempty"`
+	Insecure                   bool     `json:"insecure"`
+	CertificatePublicKeySHA256 []string `json:"certificate_public_key_sha256,omitempty"`
 }
 
 func renderSubscription(format string, subscription store.Subscription) (renderedSubscription, error) {
@@ -79,7 +81,7 @@ func renderSubscription(format string, subscription store.Subscription) (rendere
 			proxies = append(proxies, clashHysteria2Proxy{
 				Name: endpoint.NodeName, Type: "hysteria2", Server: endpoint.PublicHost,
 				Port: endpoint.PublicPort, Password: endpoint.Credential, SNI: endpoint.SNI,
-				SkipCertVerify: endpoint.TLSInsecure,
+				SkipCertVerify: endpoint.TLSInsecure, Fingerprint: endpoint.TLSCertFingerprint,
 			})
 			proxyNames = append(proxyNames, endpoint.NodeName)
 		}
@@ -105,6 +107,7 @@ func renderSubscription(format string, subscription store.Subscription) (rendere
 				ServerPort: endpoint.PublicPort, Password: endpoint.Credential,
 				TLS: singBoxTLSData{
 					Enabled: true, ServerName: endpoint.SNI, Insecure: endpoint.TLSInsecure,
+					CertificatePublicKeySHA256: optionalStringSlice(endpoint.TLSPublicKeySHA256),
 				},
 			})
 		}
@@ -143,6 +146,16 @@ func hysteria2URI(endpoint store.SubscriptionEndpoint) string {
 	if endpoint.TLSInsecure {
 		query.Set("insecure", "1")
 	}
+	if endpoint.TLSCertFingerprint != "" {
+		query.Set("pinSHA256", endpoint.TLSCertFingerprint)
+	}
 	value.RawQuery = query.Encode()
 	return value.String()
+}
+
+func optionalStringSlice(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return []string{value}
 }

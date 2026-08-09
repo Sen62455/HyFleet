@@ -4,7 +4,7 @@ HyFleet is a lightweight control plane for a small fleet of Hysteria2 VPS nodes.
 It provides centralized node, user, traffic, subscription, and health management
 without replacing Hysteria2 or sing-box.
 
-The repository contains the **v1.1 release** with native convergence and host
+The repository contains the **v1.1.2 release** with native convergence and host
 monitoring. Native Hysteria2 and compatible S-UI nodes share one user, traffic,
 status, credential, and subscription control plane.
 Standalone sing-box supports bounded operations, split-directory backup, and
@@ -29,6 +29,8 @@ health monitoring, while its user and subscription adapter remains out of scope.
   snapshots, kick generations, and global/per-node quotas.
 - Hashed per-user subscription Tokens with Hysteria2 URI, Base64, Clash Meta,
   and sing-box outputs.
+- Optional TLS certificate and public-key pins carried through Hysteria2 URI,
+  Mihomo/Clash, and sing-box subscriptions for self-signed endpoints.
 - Applied-only subscription eligibility and staged single/all-assignment
   credential rotation.
 - S-UI v1.5.x compatibility probing, Hysteria2 inbound discovery, explicit
@@ -129,10 +131,10 @@ you intend to install:
 ```bash
 curl --fail --location --proto '=https' --tlsv1.2 \
   -o install.sh \
-  https://raw.githubusercontent.com/Sen62455/HyFleet/v1.1.1/install.sh
+  https://raw.githubusercontent.com/Sen62455/HyFleet/v1.1.2/install.sh
 less install.sh
 sudo bash install.sh server \
-  --version v1.1.1 \
+  --version v1.1.2 \
   --public-url https://panel.example.com
 ```
 
@@ -171,7 +173,7 @@ Set `HYFLEET_BOOTSTRAP_TOKEN` before the first server start. Example files are i
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
-  -Architecture amd64 -Version v1.1.1
+  -Architecture amd64 -Version v1.1.2
 ```
 
 The archive, external checksum, Linux ELF binaries, idempotent installers, and

@@ -4,7 +4,7 @@
 sing-box 适配器。HyFleet Agent 也将成为主机状态的数据来源；三台机器完成监控观察后，
 即可移除 Beszel。
 
-## 从 v1.0.0 或 v1.1.0 升级到 v1.1.1
+## 从 v1.0.0 或 v1.1.x 升级到 v1.1.2
 
 升级顺序为 Server 在前、Agent 在后。升级程序会校验两层 SHA-256，在每台 VPS 的
 `/var/lib/hyfleet-updates` 下保存旧二进制、systemd 单元、配置和标准数据文件；健康检查
@@ -15,8 +15,8 @@ sing-box 适配器。HyFleet Agent 也将成为主机状态的数据来源；三
 
 ```powershell
 gh auth status
-gh release view v1.1.1 --repo Sen62455/HyFleet
-.\scripts\deploy-fleet.ps1 -Version v1.1.1
+gh release view v1.1.2 --repo Sen62455/HyFleet
+.\scripts\deploy-fleet.ps1 -Version v1.1.2
 ```
 
 `deploy-fleet.ps1` 会通过本机 GitHub 身份下载私有 Release、验证外层校验和，再并行上传
@@ -50,6 +50,58 @@ sudo bash deploy/update-component.sh agent
 该限制会让主机指标采集报 `open /proc/stat: no such file or directory`，进而使三台节点都被
 标记为离线，但不会停止 Hysteria2 或影响已有订阅。新单元允许只读访问主机级 `/proc`
 指标，并在启动前验证所需文件可读；即使某次指标采集失败，Agent 仍会发送基础心跳。
+
+`v1.1.2` 增加证书 SHA-256 指纹和公钥 SHA-256 Pin。自签名端点可在保持
+`tls_insecure` 的同时，让 Hysteria2 URI、Mihomo/Clash 和 sing-box 校验固定的证书或
+公钥。数据库迁移 `0009_tls_pins.sql` 会自动执行，原有节点的两个字段默认为空。
+
+## 修复 Agent 在线但 Hysteria2 超时
+
+Agent 在线只代表控制面链路和主机监控正常，不代表客户端能访问公网 UDP 端点。节点刚从
+sing-box 迁移到原生 Hysteria2 时，先在节点主机核对真实监听端口：
+
+```bash
+sudo systemctl status hysteria-server --no-pager --full
+sudo awk '/^[[:space:]]*listen:/ { print }' /etc/hysteria/config.yaml
+sudo ss -lunp | grep hysteria
+sudo ufw status
+```
+
+HyFleet 中该节点的“UDP 端口”必须与 `ss` 显示的端口完全一致。防火墙需要放行 UDP，
+放行同号 TCP 不能替代 UDP。若云厂商还有独立防火墙或安全组，也要同步放行该 UDP
+端口。
+
+自签名证书分别生成证书指纹和 sing-box 公钥 Pin：
+
+```bash
+sudo openssl x509 -noout -fingerprint -sha256 \
+  -in /etc/hysteria/server.crt | cut -d= -f2
+
+sudo openssl x509 -in /etc/hysteria/server.crt -pubkey -noout \
+  | openssl pkey -pubin -outform der \
+  | openssl dgst -sha256 -binary \
+  | openssl enc -base64
+```
+
+这两个命令不会输出私钥。然后编辑原生节点：
+
+1. “公网域名或 IP”填写客户端实际访问的地址；
+2. “UDP 端口”填写当前 Hysteria2 的真实监听端口；
+3. 没有基于 SNI 的服务端路由时，不要沿用旧 sing-box 的伪装 SNI；
+4. 自签名证书启用“跳过证书验证”；
+5. 将第一条命令结果填入“证书 SHA-256 指纹”；
+6. 将第二条命令结果填入“公钥 SHA-256（Base64）”。
+
+保存后等待节点配置版本重新一致，再刷新 Clash Provider。生成的 Clash 节点应包含正确的
+`port`、`skip-cert-verify: true` 和 `fingerprint`。如果仍超时，在服务端执行以下命令并
+同时触发客户端测速：
+
+```bash
+sudo journalctl -u hysteria-server --since '-5 minutes' --follow
+```
+
+完全没有新日志通常表示公网地址、UDP 端口或上游防火墙仍不匹配；出现 TLS 或鉴权日志则
+按具体错误检查 Pin、SNI 或用户同步状态。
 
 ## 本阶段变化
 
@@ -115,9 +167,103 @@ sudo bash deploy/update-component.sh agent
 10. 停止旧 S-UI 或 sing-box 服务，但暂时不要卸载；观察原生节点至少 24 小时。
 11. 从旧节点解除用户分配，归档旧记录，再将替换节点改回原显示名称。
 
-迁移 DMIT 时，应在第 3 步前导出 S-UI 入站和客户端信息；观察期内保持 S-UI 已停止但仍
-安装。迁移 BandwagonHost 时，应保留完整 sing-box 配置目录和防火墙规则；切换生产端口
-前，原生 Hysteria 服务不得监听与旧服务相同的 UDP 端口。
+迁移 BandwagonHost 时，应保留完整 sing-box 配置目录和防火墙规则；切换生产端口前，
+原生 Hysteria 服务不得监听与旧服务相同的 UDP 端口。
+
+## DMIT 从 S-UI 迁移到原生 Hysteria2
+
+DMIT 同时承载 HyFleet Server 和 Agent。整个迁移过程中不要停止
+`hyfleet-server`，也不要移动或删除 `/etc/hyfleet`、`/var/lib/hyfleet/server.db` 和
+`/var/lib/hyfleet/master.key`。只替换 Agent 身份和 Agent 本地状态。
+
+先在已解压的 `v1.1.2` 发布目录中创建一致性备份，并保存 S-UI 与网络配置：
+
+```bash
+cd /root/hyfleet-v1.1.2-linux-amd64
+sudo bash deploy/backup-server.sh --output-dir /root/hyfleet-server-backup
+
+MIGRATION_DIR="/root/dmit-native-$(date -u +%Y%m%dT%H%M%SZ)"
+sudo install -d -m 0700 "$MIGRATION_DIR"
+sudo cp -a /etc/hyfleet "$MIGRATION_DIR/hyfleet-config"
+sudo cp -a /var/lib/hyfleet-agent "$MIGRATION_DIR/hyfleet-agent-state"
+sudo systemctl cat s-ui > "$MIGRATION_DIR/s-ui.service.txt"
+sudo systemctl cat hyfleet-server > "$MIGRATION_DIR/hyfleet-server.service.txt"
+sudo systemctl cat hyfleet-agent > "$MIGRATION_DIR/hyfleet-agent.service.txt"
+sudo cp -a /usr/local/s-ui "$MIGRATION_DIR/s-ui" 2>/dev/null || true
+sudo ufw status verbose > "$MIGRATION_DIR/ufw.txt"
+sudo iptables-save > "$MIGRATION_DIR/iptables.rules"
+```
+
+把备份归档和 master key 分开复制到 DMIT 之外。另从 S-UI 导出入站和客户端信息，并记录
+当前生产 UDP 端口、域名、证书和密钥路径。不要把客户端密码、Token 或私钥提交到 Git。
+
+安装原生 Hysteria2 后，先选择一个空闲的临时 UDP 端口。若准备使用 UDP 443，要先确认
+Caddy 或其他程序没有占用 HTTP/3：
+
+```bash
+sudo ss -lunp
+sudo ss -lunp | grep ':443 ' || true
+```
+
+在 `/etc/hysteria/config.yaml` 中使用临时端口和现有可信证书。下例以 `24443` 为例，
+必须改成配置文件中的实际端口。初次启动可使用临时随机
+密码鉴权；注册新 Agent 后，`configure-hysteria.sh` 会把它替换为 HyFleet HTTP 鉴权，
+并配置回环流量统计。确认服务只监听临时端口：
+
+```bash
+sudo systemctl enable --now hysteria-server
+sudo systemctl status hysteria-server --no-pager --full
+sudo ss -lunp | grep hysteria
+HY2_TEMP_PORT=24443
+sudo ufw allow "${HY2_TEMP_PORT}/udp"
+```
+
+在 HyFleet 新建 `DMIT-native`，选择“原生 Hysteria2”，填写临时公网端点与正确 TLS
+设置，并生成一次性 Agent 注册 Token。然后只移走旧 Agent 文件；以下命令不会改动 Server
+数据库、Server 配置或 master key：
+
+```bash
+sudo systemctl stop hyfleet-agent hyfleet-agent-ops.socket
+sudo mv /etc/hyfleet/agent.yaml "$MIGRATION_DIR/agent.yaml"
+sudo mv /etc/hyfleet/agent.env "$MIGRATION_DIR/agent.env" 2>/dev/null || true
+sudo mv /var/lib/hyfleet-agent "$MIGRATION_DIR/hyfleet-agent-old"
+
+cd /root/hyfleet-v1.1.2-linux-amd64
+sudo bash deploy/install-agent.sh \
+  --server-url https://panel.example.com \
+  --node-name DMIT-native \
+  --adapter native-hysteria2 \
+  --core-config-path /etc/hysteria/config.yaml \
+  --replace-config
+sudo bash deploy/configure-hysteria.sh
+```
+
+安装器会在终端安全提示中要求粘贴一次性 Token。将 `panel.example.com` 替换为实际控制面
+域名，但不要把 Token 写在命令参数或 Shell 历史里。随后确认控制面仍健康：
+
+```bash
+sudo systemctl is-active hyfleet-server hyfleet-agent hysteria-server
+curl --fail --show-error --silent http://127.0.0.1:8080/healthz
+sudo journalctl -u hyfleet-agent -n 100 --no-pager
+```
+
+先给 `DMIT-native` 分配一个测试用户，在临时端口验收鉴权、Clash 订阅、流量、在线状态、
+核心重启和配置备份。通过后再迁移其余用户。维护窗口中停止 S-UI，确认生产 UDP 端口已
+释放，只修改 Hysteria 的 `listen`，重启后同步更新 HyFleet 节点端口：
+
+```bash
+sudo systemctl stop s-ui
+sudo ss -lunp
+sudoedit /etc/hysteria/config.yaml
+sudo systemctl restart hysteria-server
+sudo systemctl status hysteria-server --no-pager --full
+sudo ss -lunp | grep hysteria
+```
+
+再次从外部验证 DMIT 订阅节点。观察至少 24 小时后，再解除旧 `DMIT` 节点的用户分配并
+归档旧记录；S-UI 在观察期只停止、不卸载。若验证失败，停止原生 Hysteria，恢复备份的
+Agent 文件和 `/var/lib/hyfleet-agent`，启动 `s-ui` 与旧 Agent，即可回滚代理管理链路，
+HyFleet Server 数据不需要回滚。
 
 ## 删除旧面板
 

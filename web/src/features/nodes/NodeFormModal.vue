@@ -35,6 +35,8 @@ const form = reactive<Required<NodeInput>>({
   public_port: 443,
   sni: "",
   tls_insecure: false,
+  tls_cert_fingerprint: "",
+  tls_public_key_sha256: "",
   enabled: true,
 });
 
@@ -65,6 +67,8 @@ watch(
     form.public_port = node?.public_port ?? 443;
     form.sni = node?.sni ?? "";
     form.tls_insecure = node?.tls_insecure ?? false;
+    form.tls_cert_fingerprint = node?.tls_cert_fingerprint ?? "";
+    form.tls_public_key_sha256 = node?.tls_public_key_sha256 ?? "";
     form.enabled = node?.enabled ?? true;
     formRef.value?.restoreValidation();
   },
@@ -86,6 +90,8 @@ async function submit() {
     public_port: form.public_port,
     sni: form.sni.trim(),
     tls_insecure: form.tls_insecure,
+    tls_cert_fingerprint: form.tls_cert_fingerprint.trim(),
+    tls_public_key_sha256: form.tls_public_key_sha256.trim(),
     enabled: form.enabled,
   });
 }
@@ -138,6 +144,20 @@ async function submit() {
         <div><strong>跳过证书验证</strong></div>
         <n-switch v-model:value="form.tls_insecure" aria-label="跳过证书验证" />
       </div>
+      <n-form-item label="证书 SHA-256 指纹" path="tls_cert_fingerprint">
+        <n-input
+          v-model:value="form.tls_cert_fingerprint"
+          maxlength="95"
+          placeholder="AA:BB:CC:..."
+        />
+      </n-form-item>
+      <n-form-item label="公钥 SHA-256（Base64）" path="tls_public_key_sha256">
+        <n-input
+          v-model:value="form.tls_public_key_sha256"
+          maxlength="44"
+          placeholder="Base64 SHA-256"
+        />
+      </n-form-item>
       <div class="switch-row">
         <div>
           <strong>启用节点</strong>

@@ -199,6 +199,8 @@ watch(() => props.node.id, () => void loadMetrics());
             <div><dt>核心</dt><dd>{{ [node.core_name, node.core_version].filter(Boolean).join(" ") || "尚未上报" }}</dd></div>
             <div><dt>适配方式</dt><dd>{{ adapterLabels[node.adapter_type] }}</dd></div>
             <div><dt>订阅端点</dt><dd>{{ endpointLabel(node) }}</dd></div>
+            <div><dt>证书固定</dt><dd>{{ node.tls_cert_fingerprint ? "已配置" : "未配置" }}</dd></div>
+            <div><dt>公钥固定</dt><dd>{{ node.tls_public_key_sha256 ? "已配置" : "未配置" }}</dd></div>
           </dl>
         </section>
         <section class="detail-band">

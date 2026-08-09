@@ -61,6 +61,8 @@ last-seen time, and revocation time. Browser cookies contain the opaque token.
 | `enabled` | Whether reconciliation/subscription use is allowed |
 | `public_host`, `public_port` | Proxy endpoint, never Agent management endpoint |
 | `sni`, `tls_insecure` | Client-facing TLS metadata |
+| `tls_cert_fingerprint` | Optional SHA-256 certificate pin for HY2 URI and Mihomo |
+| `tls_public_key_sha256` | Optional Base64 SHA-256 public-key pin for sing-box |
 | `obfs_type`, `obfs_password_enc` | Optional client configuration; secret encrypted |
 | `tags_json` | Small validated tag object |
 | `desired_version`, `applied_version` | Monotonic node revisions |

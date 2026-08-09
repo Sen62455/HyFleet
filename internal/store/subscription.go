@@ -43,13 +43,15 @@ type IssuedSubscriptionToken struct {
 }
 
 type SubscriptionEndpoint struct {
-	NodeID      string
-	NodeName    string
-	PublicHost  string
-	PublicPort  int
-	SNI         string
-	TLSInsecure bool
-	Credential  string
+	NodeID             string
+	NodeName           string
+	PublicHost         string
+	PublicPort         int
+	SNI                string
+	TLSInsecure        bool
+	TLSCertFingerprint string
+	TLSPublicKeySHA256 string
+	Credential         string
 }
 
 type Subscription struct {
@@ -287,6 +289,7 @@ func (s *Store) ResolveSubscription(
 	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT n.id, n.name, n.public_host, n.public_port, n.sni, n.tls_insecure,
+		       n.tls_cert_fingerprint, n.tls_public_key_sha256,
 		       c.id, c.secret_ciphertext, c.key_version
 		FROM node_user_assignments a
 		JOIN nodes n ON n.id = a.node_id
@@ -313,6 +316,7 @@ func (s *Store) ResolveSubscription(
 		if err := rows.Scan(
 			&endpoint.NodeID, &endpoint.NodeName, &endpoint.PublicHost,
 			&endpoint.PublicPort, &endpoint.SNI, &tlsInsecure,
+			&endpoint.TLSCertFingerprint, &endpoint.TLSPublicKeySHA256,
 			&credentialID, &ciphertext, &keyVersion,
 		); err != nil {
 			_ = rows.Close()

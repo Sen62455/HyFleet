@@ -7,6 +7,7 @@
 - 每个用户可创建多个独立、可轮换、可撤销、可到期的订阅 Token；
 - Hysteria2 URI、标准 Base64、Clash Meta YAML 与 sing-box JSON 输出；
 - 节点公网域名/IP、UDP 端口、TLS SNI 和证书校验设置；
+- 自签名端点的证书 SHA-256 指纹与公钥 SHA-256 固定；
 - 单节点与用户全部节点的 Hysteria2 凭据轮换；
 - 订阅独立限流、无缓存响应、路径日志脱敏和一次性明文展示；
 - 对用户状态、到期、额度、节点、分配和 applied 凭据的严格筛选。
@@ -45,6 +46,12 @@ Base64 的原文是以换行分隔的 Hysteria2 URI。Clash Meta 输出顶层
 [Hysteria2 URI Scheme](https://v2.hysteria.network/docs/developers/URI-Scheme/)、
 [Mihomo Hysteria2](https://wiki.metacubex.one/en/config/proxies/hysteria2/) 和
 [sing-box Hysteria2 outbound](https://sing-box.sagernet.org/configuration/outbound/hysteria2/)。
+
+从 `v1.1.2` 起，自签名证书可配置两类 Pin。证书指纹会进入 Hysteria2 URI 的
+`pinSHA256` 和 Mihomo 的 `fingerprint`；Base64 公钥哈希会进入 sing-box 的
+`tls.certificate_public_key_sha256`。两者不是同一个值，不能互相替代。自签名节点应同时
+启用“跳过证书验证”和对应客户端的 Pin；只有 `insecure` 而没有 Pin 会暴露中间人攻击
+风险。
 
 所有订阅响应包含 `Cache-Control: no-store`。访问日志把完整路径改写为
 `/sub/[redacted]/格式`，不会记录 Token。数据库只保存 Token 的 SHA-256
@@ -87,6 +94,7 @@ WAL 和 master key；丢失 master key 后无法生成订阅或轮换凭据。
 - Hysteria2 对外 UDP 端口；
 - 需要覆盖时填写 TLS SNI；
 - 只有自签名或明确需要时才启用“跳过证书验证”。
+- 自签名节点填写证书指纹；需要 sing-box 输出时另外填写 Base64 公钥哈希。
 
 保存后等待节点和分配重新显示“已同步”，再进入用户详情创建订阅 Token。可用占位符进行
 服务端检查，不要把真实地址写入 shell 历史、工单或 Git：

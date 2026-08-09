@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,9 +23,12 @@ func TestSubscriptionTokenAndAppliedCredentialLifecycle(t *testing.T) {
 	defer database.Close()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	masterKey := bytes.Repeat([]byte{0x51}, 32)
+	certificateFingerprint := strings.TrimSuffix(strings.Repeat("AB:", 32), ":")
+	publicKeyPin := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
 	node, err := database.CreateNode(ctx, NewNode{
 		ID: uuid.NewString(), Name: "Tokyo edge", AdapterType: "native_hysteria2",
 		PublicHost: "hy2.example.com", PublicPort: 8443, SNI: "edge.example.com",
+		TLSCertFingerprint: certificateFingerprint, TLSPublicKeySHA256: publicKeyPin,
 		Enabled: true, Now: now,
 	})
 	if err != nil {
@@ -71,7 +75,9 @@ func TestSubscriptionTokenAndAppliedCredentialLifecycle(t *testing.T) {
 		ctx, cryptoutil.TokenHash(issued.Secret), "uri", now.Add(5*time.Second), masterKey,
 	)
 	if err != nil || len(applied.Endpoints) != 1 || applied.Endpoints[0].Credential != firstSecret ||
-		applied.Endpoints[0].PublicHost != "hy2.example.com" || applied.Endpoints[0].PublicPort != 8443 {
+		applied.Endpoints[0].PublicHost != "hy2.example.com" || applied.Endpoints[0].PublicPort != 8443 ||
+		applied.Endpoints[0].TLSCertFingerprint != certificateFingerprint ||
+		applied.Endpoints[0].TLSPublicKeySHA256 != publicKeyPin {
 		t.Fatalf("applied subscription = %#v, error = %v", applied, err)
 	}
 

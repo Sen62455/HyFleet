@@ -1,6 +1,9 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"net"
 	"net/http"
@@ -13,15 +16,17 @@ import (
 )
 
 type nodeRequest struct {
-	Name        string  `json:"name"`
-	Provider    string  `json:"provider"`
-	Region      string  `json:"region"`
-	AdapterType string  `json:"adapter_type"`
-	PublicHost  *string `json:"public_host"`
-	PublicPort  *int    `json:"public_port"`
-	SNI         *string `json:"sni"`
-	TLSInsecure *bool   `json:"tls_insecure"`
-	Enabled     *bool   `json:"enabled"`
+	Name               string  `json:"name"`
+	Provider           string  `json:"provider"`
+	Region             string  `json:"region"`
+	AdapterType        string  `json:"adapter_type"`
+	PublicHost         *string `json:"public_host"`
+	PublicPort         *int    `json:"public_port"`
+	SNI                *string `json:"sni"`
+	TLSInsecure        *bool   `json:"tls_insecure"`
+	TLSCertFingerprint *string `json:"tls_cert_fingerprint"`
+	TLSPublicKeySHA256 *string `json:"tls_public_key_sha256"`
+	Enabled            *bool   `json:"enabled"`
 }
 
 type nodeResponse struct {
@@ -40,6 +45,8 @@ type nodeResponse struct {
 	PublicPort               int        `json:"public_port"`
 	SNI                      string     `json:"sni"`
 	TLSInsecure              bool       `json:"tls_insecure"`
+	TLSCertFingerprint       string     `json:"tls_cert_fingerprint"`
+	TLSPublicKeySHA256       string     `json:"tls_public_key_sha256"`
 	Enabled                  bool       `json:"enabled"`
 	Status                   string     `json:"status"`
 	StatusReason             string     `json:"status_reason"`
@@ -201,20 +208,22 @@ func (a *App) handleCreateNode(response http.ResponseWriter, request *http.Reque
 	if input.Enabled != nil {
 		enabled = *input.Enabled
 	}
-	publicHost, publicPort, sni, tlsInsecure := nodeEndpointValues(input, nil)
+	publicHost, publicPort, sni, tlsInsecure, tlsCertFingerprint, tlsPublicKeySHA256 := nodeEndpointValues(input, nil)
 	now := time.Now().UTC()
 	node, err := a.store.CreateNode(request.Context(), store.NewNode{
-		ID:          cryptoutil.NewID(),
-		Name:        input.Name,
-		Provider:    input.Provider,
-		Region:      input.Region,
-		AdapterType: input.AdapterType,
-		PublicHost:  publicHost,
-		PublicPort:  publicPort,
-		SNI:         sni,
-		TLSInsecure: tlsInsecure,
-		Enabled:     enabled,
-		Now:         now,
+		ID:                 cryptoutil.NewID(),
+		Name:               input.Name,
+		Provider:           input.Provider,
+		Region:             input.Region,
+		AdapterType:        input.AdapterType,
+		PublicHost:         publicHost,
+		PublicPort:         publicPort,
+		SNI:                sni,
+		TLSInsecure:        tlsInsecure,
+		TLSCertFingerprint: tlsCertFingerprint,
+		TLSPublicKeySHA256: tlsPublicKeySHA256,
+		Enabled:            enabled,
+		Now:                now,
 	})
 	if err != nil {
 		a.writeError(response, request, http.StatusConflict, "node_conflict", "a node with that name already exists")
@@ -246,19 +255,21 @@ func (a *App) handleUpdateNode(response http.ResponseWriter, request *http.Reque
 		a.writeError(response, request, http.StatusInternalServerError, "node_read_failed", "could not read node")
 		return
 	}
-	publicHost, publicPort, sni, tlsInsecure := nodeEndpointValues(input, &current)
+	publicHost, publicPort, sni, tlsInsecure, tlsCertFingerprint, tlsPublicKeySHA256 := nodeEndpointValues(input, &current)
 	now := time.Now().UTC()
 	node, err := a.store.UpdateNode(request.Context(), current.ID, store.UpdateNode{
-		Name:        input.Name,
-		Provider:    input.Provider,
-		Region:      input.Region,
-		AdapterType: input.AdapterType,
-		PublicHost:  publicHost,
-		PublicPort:  publicPort,
-		SNI:         sni,
-		TLSInsecure: tlsInsecure,
-		Enabled:     *input.Enabled,
-		Now:         now,
+		Name:               input.Name,
+		Provider:           input.Provider,
+		Region:             input.Region,
+		AdapterType:        input.AdapterType,
+		PublicHost:         publicHost,
+		PublicPort:         publicPort,
+		SNI:                sni,
+		TLSInsecure:        tlsInsecure,
+		TLSCertFingerprint: tlsCertFingerprint,
+		TLSPublicKeySHA256: tlsPublicKeySHA256,
+		Enabled:            *input.Enabled,
+		Now:                now,
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		a.writeError(response, request, http.StatusNotFound, "node_not_found", "node not found")
@@ -322,6 +333,20 @@ func normalizeNodeRequest(input nodeRequest) nodeRequest {
 		value := normalizeEndpointHost(*input.SNI)
 		input.SNI = &value
 	}
+	if input.TLSCertFingerprint != nil {
+		value := strings.TrimSpace(*input.TLSCertFingerprint)
+		if normalized, ok := canonicalTLSCertFingerprint(value); ok {
+			value = normalized
+		}
+		input.TLSCertFingerprint = &value
+	}
+	if input.TLSPublicKeySHA256 != nil {
+		value := strings.TrimSpace(*input.TLSPublicKeySHA256)
+		if normalized, ok := canonicalTLSPublicKeySHA256(value); ok {
+			value = normalized
+		}
+		input.TLSPublicKeySHA256 = &value
+	}
 	return input
 }
 
@@ -340,6 +365,16 @@ func validateNodeRequest(input nodeRequest) string {
 	}
 	if input.SNI != nil && *input.SNI != "" && !validEndpointHost(*input.SNI) {
 		return "sni must be a domain name or IP address"
+	}
+	if input.TLSCertFingerprint != nil && *input.TLSCertFingerprint != "" {
+		if _, ok := canonicalTLSCertFingerprint(*input.TLSCertFingerprint); !ok {
+			return "tls_cert_fingerprint must be a SHA-256 certificate fingerprint"
+		}
+	}
+	if input.TLSPublicKeySHA256 != nil && *input.TLSPublicKeySHA256 != "" {
+		if _, ok := canonicalTLSPublicKeySHA256(*input.TLSPublicKeySHA256); !ok {
+			return "tls_public_key_sha256 must be a base64-encoded SHA-256 public key hash"
+		}
 	}
 	switch input.AdapterType {
 	case "native_hysteria2", "standalone_sing_box", "s_ui":
@@ -370,7 +405,9 @@ func (a *App) presentNode(node store.Node, now time.Time) nodeResponse {
 		SUITargetInboundIDs:     node.SUITargetInboundIDs,
 		PublicHost:              node.PublicHost, PublicPort: node.PublicPort,
 		SNI: node.SNI, TLSInsecure: node.TLSInsecure,
-		Enabled: node.Enabled, Status: status,
+		TLSCertFingerprint: node.TLSCertFingerprint,
+		TLSPublicKeySHA256: node.TLSPublicKeySHA256,
+		Enabled:            node.Enabled, Status: status,
 		StatusReason: node.StatusReason, DesiredVersion: node.DesiredVersion,
 		AppliedVersion: node.AppliedVersion, AgentInstallationID: node.AgentInstallationID,
 		AgentVersion: node.AgentVersion, ProtocolVersion: node.ProtocolVersion,
@@ -399,16 +436,20 @@ func (a *App) presentNode(node store.Node, now time.Time) nodeResponse {
 	}
 }
 
-func nodeEndpointValues(input nodeRequest, current *store.Node) (string, int, string, bool) {
+func nodeEndpointValues(input nodeRequest, current *store.Node) (string, int, string, bool, string, string) {
 	publicHost := ""
 	publicPort := 443
 	sni := ""
 	tlsInsecure := false
+	tlsCertFingerprint := ""
+	tlsPublicKeySHA256 := ""
 	if current != nil {
 		publicHost = current.PublicHost
 		publicPort = current.PublicPort
 		sni = current.SNI
 		tlsInsecure = current.TLSInsecure
+		tlsCertFingerprint = current.TLSCertFingerprint
+		tlsPublicKeySHA256 = current.TLSPublicKeySHA256
 	}
 	if input.PublicHost != nil {
 		publicHost = *input.PublicHost
@@ -422,7 +463,42 @@ func nodeEndpointValues(input nodeRequest, current *store.Node) (string, int, st
 	if input.TLSInsecure != nil {
 		tlsInsecure = *input.TLSInsecure
 	}
-	return publicHost, publicPort, sni, tlsInsecure
+	if input.TLSCertFingerprint != nil {
+		tlsCertFingerprint = *input.TLSCertFingerprint
+	}
+	if input.TLSPublicKeySHA256 != nil {
+		tlsPublicKeySHA256 = *input.TLSPublicKeySHA256
+	}
+	return publicHost, publicPort, sni, tlsInsecure, tlsCertFingerprint, tlsPublicKeySHA256
+}
+
+func canonicalTLSCertFingerprint(value string) (string, bool) {
+	compact := strings.ReplaceAll(strings.TrimSpace(value), ":", "")
+	if len(compact) != sha256.Size*2 {
+		return "", false
+	}
+	decoded, err := hex.DecodeString(compact)
+	if err != nil || len(decoded) != sha256.Size {
+		return "", false
+	}
+	hexValue := strings.ToUpper(hex.EncodeToString(decoded))
+	var result strings.Builder
+	result.Grow(len(hexValue) + sha256.Size - 1)
+	for index := 0; index < len(hexValue); index += 2 {
+		if index > 0 {
+			result.WriteByte(':')
+		}
+		result.WriteString(hexValue[index : index+2])
+	}
+	return result.String(), true
+}
+
+func canonicalTLSPublicKeySHA256(value string) (string, bool) {
+	decoded, err := base64.StdEncoding.Strict().DecodeString(strings.TrimSpace(value))
+	if err != nil || len(decoded) != sha256.Size {
+		return "", false
+	}
+	return base64.StdEncoding.EncodeToString(decoded), true
 }
 
 func normalizeEndpointHost(value string) string {

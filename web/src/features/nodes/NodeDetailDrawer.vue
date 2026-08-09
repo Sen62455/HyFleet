@@ -123,6 +123,8 @@ function endpointLabel(node: NodeRecord) {
           <div><dt>订阅端点</dt><dd>{{ endpointLabel(node) }}</dd></div>
           <div><dt>TLS SNI</dt><dd>{{ node.sni || node.public_host || "-" }}</dd></div>
           <div><dt>证书验证</dt><dd>{{ node.tls_insecure ? "跳过" : "验证" }}</dd></div>
+          <div><dt>证书固定</dt><dd>{{ node.tls_cert_fingerprint ? "已配置" : "未配置" }}</dd></div>
+          <div><dt>公钥固定</dt><dd>{{ node.tls_public_key_sha256 ? "已配置" : "未配置" }}</dd></div>
         </dl>
       </section>
 

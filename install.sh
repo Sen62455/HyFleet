@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 repository="Sen62455/HyFleet"
-version="v1.0.0"
+version="v1.2.0"
 temporary_dir=""
 max_archive_bytes=$((64 * 1024 * 1024))
 max_checksum_bytes=1024
@@ -11,8 +11,8 @@ max_archive_entries=256
 usage() {
   cat <<'EOF'
 Usage:
-  sudo bash install.sh server [--version v1.0.0] --public-url https://panel.example.com
-  sudo bash install.sh agent [--version v1.0.0] --server-url https://panel.example.com \
+  sudo bash install.sh server [--version v1.2.0] --public-url https://panel.example.com
+  sudo bash install.sh agent [--version v1.2.0] --server-url https://panel.example.com \
     --node-name NODE --adapter native-hysteria2|standalone-sing-box|s-ui [options]
 
 This bootstrap supports systemd-based Debian and Ubuntu on amd64 or arm64. It

@@ -94,7 +94,15 @@ try {
     }
 
     $jobScript = {
-        param($Node, $ArchivePath, $ChecksumPath, $ArchiveName, $ChecksumName, $PackageName)
+        param(
+            $Node,
+            $ArchivePath,
+            $ChecksumPath,
+            $ArchiveName,
+            $ChecksumName,
+            $PackageName,
+            $Component
+        )
         $ErrorActionPreference = "Stop"
         Set-StrictMode -Version Latest
 
@@ -126,7 +134,7 @@ try {
             throw "Generated remote directory is invalid"
         }
         try {
-            Write-Output "[$($Node.Name)] preparing $PackageName"
+            Write-Output "[$($Node.Name)] preparing $PackageName ($Component)"
             Invoke-NativeChecked ssh ($sshArguments + @($target, "install -d -m 0700 '$remoteDirectory'"))
             Invoke-NativeChecked scp ($scpArguments + @($ArchivePath, "${target}:${remoteDirectory}/"))
             Invoke-NativeChecked scp ($scpArguments + @($ChecksumPath, "${target}:${remoteDirectory}/"))
@@ -141,46 +149,53 @@ try {
                 "sha256sum -c SHA256SUMS",
                 "bash -n deploy/*.sh"
             )
-            if ($Node.ContainsKey("RequiredEnvironment")) {
+            if ($Component -eq "agent" -and $Node.ContainsKey("RequiredEnvironment")) {
                 foreach ($variableName in $Node.RequiredEnvironment) {
                     $commands += "run_as_root grep -Eq '^$variableName=[^[:space:]]+$' /etc/hyfleet/agent.env"
                 }
             }
-            foreach ($component in $Node.Components) {
-                $commands += "run_as_root bash deploy/update-component.sh '$component'"
-            }
+            $commands += "run_as_root bash deploy/update-component.sh '$Component'"
             Invoke-NativeChecked ssh ($sshArguments + @($target, ($commands -join "; ")))
-            Write-Output "[$($Node.Name)] update completed"
+            Write-Output "[$($Node.Name)] $Component update completed"
         }
         finally {
             & ssh @sshArguments $target "rm -rf -- '$remoteDirectory'" 2>$null | Out-Null
         }
     }
 
-    $jobs = @()
-    foreach ($node in $fleet.Nodes) {
-        $jobs += Start-Job -Name $node.Name -ScriptBlock $jobScript -ArgumentList @(
-            $node, $archivePath, $checksumPath, $archiveName, $checksumName, $packageName
-        )
-    }
-    Wait-Job -Job $jobs | Out-Null
-    $failures = @()
-    foreach ($job in $jobs) {
-        try {
-            Receive-Job -Job $job -ErrorAction Stop | ForEach-Object { Write-Host $_ }
-            if ($job.State -ne "Completed") {
-                throw ($job.ChildJobs[0].JobStateInfo.Reason.Message)
+    foreach ($component in @("server", "agent")) {
+        $phaseNodes = @($fleet.Nodes | Where-Object { $_.Components -contains $component })
+        if ($phaseNodes.Count -eq 0) {
+            continue
+        }
+        Write-Host "Starting $component update phase for $($phaseNodes.Count) node(s)."
+        $jobs = @()
+        foreach ($node in $phaseNodes) {
+            $jobs += Start-Job -Name "$($node.Name)-$component" -ScriptBlock $jobScript -ArgumentList @(
+                $node, $archivePath, $checksumPath, $archiveName, $checksumName,
+                $packageName, $component
+            )
+        }
+        Wait-Job -Job $jobs | Out-Null
+        $failures = @()
+        foreach ($job in $jobs) {
+            try {
+                Receive-Job -Job $job -ErrorAction Stop | ForEach-Object { Write-Host $_ }
+                if ($job.State -ne "Completed") {
+                    throw ($job.ChildJobs[0].JobStateInfo.Reason.Message)
+                }
+            }
+            catch {
+                $failures += "$($job.Name): $($_.Exception.Message)"
+            }
+            finally {
+                Remove-Job -Job $job -Force
             }
         }
-        catch {
-            $failures += "$($job.Name): $($_.Exception.Message)"
+        if ($failures.Count -gt 0) {
+            throw ("Fleet $component update phase failed:`n" + ($failures -join "`n"))
         }
-        finally {
-            Remove-Job -Job $job -Force
-        }
-    }
-    if ($failures.Count -gt 0) {
-        throw ("Fleet update failed:`n" + ($failures -join "`n"))
+        Write-Host "Completed $component update phase."
     }
     Write-Host "All $($fleet.Nodes.Count) nodes now run $Version."
 }

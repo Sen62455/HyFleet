@@ -22,6 +22,10 @@ type Collector interface {
 	ServiceRunning(context.Context, string) bool
 }
 
+type TelemetryCollector interface {
+	SampleTelemetry(context.Context) protocol.TelemetrySnapshotRequest
+}
+
 type networkSample struct {
 	rxBytes int64
 	txBytes int64

@@ -30,6 +30,7 @@ type Agent struct {
 	logger                *slog.Logger
 	client                *http.Client
 	collector             Collector
+	telemetryCollector    TelemetryCollector
 	state                 State
 	authCache             *AuthCache
 	localStore            *localStore
@@ -44,6 +45,9 @@ type Agent struct {
 }
 
 func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
+	if cfg.TelemetryEvery <= 0 {
+		cfg.TelemetryEvery = time.Minute
+	}
 	if cfg.LocalDatabasePath == "" {
 		cfg.LocalDatabasePath = filepath.Join(filepath.Dir(cfg.StatePath), "agent.db")
 	}
@@ -82,17 +86,19 @@ func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
 	if err := SaveState(cfg.StatePath, state); err != nil {
 		return nil, err
 	}
+	collector := NewCollector()
 	result := &Agent{
 		config:    cfg,
 		logger:    logger,
 		client:    &http.Client{Timeout: 20 * time.Second},
-		collector: NewCollector(),
+		collector: collector,
 		state:     state,
 		adapterInfo: protocol.AdapterInfo{
 			Name: cfg.AdapterType, Status: "unknown",
 		},
 		adapterCore: protocol.CoreInfo{Name: cfg.CoreName},
 	}
+	result.telemetryCollector, _ = collector.(TelemetryCollector)
 	local, err := openLocalStore(context.Background(), cfg.LocalDatabasePath)
 	if err != nil {
 		return nil, err
@@ -177,14 +183,19 @@ func (agent *Agent) Run(ctx context.Context) error {
 	if _, err := agent.heartbeat(ctx); err != nil {
 		agent.logger.Warn("initial heartbeat failed", "error", err)
 	}
+	if err := agent.reportTelemetry(ctx); err != nil {
+		agent.logger.Warn("initial telemetry report failed", "error", err)
+	}
 	if err := agent.pollDesired(ctx); err != nil {
 		agent.logger.Warn("initial desired-state poll failed", "error", err)
 	}
 	agent.startOperationCycle(ctx, "initial")
 	heartbeatTimer := time.NewTimer(jitter(agent.config.HeartbeatEvery))
+	telemetryTimer := time.NewTimer(jitter(agent.config.TelemetryEvery))
 	desiredTimer := time.NewTimer(jitter(agent.config.DesiredEvery))
 	trafficTimer := time.NewTimer(jitter(agent.config.TrafficEvery))
 	defer heartbeatTimer.Stop()
+	defer telemetryTimer.Stop()
 	defer desiredTimer.Stop()
 	defer trafficTimer.Stop()
 	for {
@@ -201,6 +212,11 @@ func (agent *Agent) Run(ctx context.Context) error {
 				agent.logger.Warn("heartbeat failed", "error", err)
 			}
 			heartbeatTimer.Reset(jitter(agent.config.HeartbeatEvery))
+		case <-telemetryTimer.C:
+			if err := agent.reportTelemetry(ctx); err != nil {
+				agent.logger.Warn("telemetry report failed", "error", err)
+			}
+			telemetryTimer.Reset(jitter(agent.config.TelemetryEvery))
 		case <-desiredTimer.C:
 			if err := agent.sendPendingAck(ctx); err != nil {
 				agent.logger.Warn("desired acknowledgement retry failed", "error", err)
@@ -354,6 +370,38 @@ func (agent *Agent) heartbeat(ctx context.Context) (int64, error) {
 	return result.DesiredVersion, nil
 }
 
+func (agent *Agent) reportTelemetry(ctx context.Context) error {
+	if agent.telemetryCollector == nil {
+		return nil
+	}
+	request := agent.telemetryCollector.SampleTelemetry(ctx)
+	request.InstallationID = agent.state.InstallationID
+	if request.SampledAt.IsZero() {
+		request.SampledAt = time.Now().UTC()
+	}
+	if request.Processes == nil {
+		request.Processes = []protocol.ProcessTelemetry{}
+	}
+	if request.Services == nil {
+		request.Services = []protocol.ServiceTelemetry{}
+	}
+	var result protocol.TelemetrySnapshotResponse
+	status, err := agent.doJSON(
+		ctx, http.MethodPost, "/agent/v1/telemetry", request,
+		cryptoutil.NewID(), true, &result,
+	)
+	if status == http.StatusNotFound || status == http.StatusMethodNotAllowed {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK || !result.Accepted {
+		return fmt.Errorf("telemetry report returned invalid response (status %d)", status)
+	}
+	return nil
+}
+
 func (agent *Agent) pollDesired(ctx context.Context) error {
 	endpoint := "/agent/v1/desired?after=" + strconv.FormatInt(agent.state.AppliedVersion, 10)
 	var result protocol.DesiredEnvelope
@@ -422,7 +470,7 @@ func (agent *Agent) pollDesired(ctx context.Context) error {
 func (agent *Agent) capabilities() []string {
 	capabilities := []string{
 		"host_metrics", "desired_state_v1", "node_operations_v1",
-		"operation_result_outbox_v1",
+		"operation_result_outbox_v1", "runtime_telemetry_v1",
 	}
 	if agent.config.AdapterType == "native_hysteria2" {
 		return append(capabilities, "native_http_auth", "persistent_auth_cache",

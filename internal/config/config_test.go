@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -108,6 +109,9 @@ state_path: state.json
 	if cfg.AdapterType != "native_hysteria2" || !filepath.IsAbs(cfg.StatePath) {
 		t.Fatalf("unexpected Agent config: %#v", cfg)
 	}
+	if cfg.TelemetryEvery != time.Minute {
+		t.Fatalf("TelemetryEvery = %s, want 1m", cfg.TelemetryEvery)
+	}
 
 	for name, replacement := range map[string]string{
 		"http":        strings.Replace(validBody, "https://", "http://", 1),
@@ -116,6 +120,7 @@ state_path: state.json
 		"unit option": strings.Replace(validBody, "hysteria-server.service", "--help", 1),
 		"config path": strings.Replace(validBody, "state_path: state.json", "state_path: state.json\ncore_config_path: /etc/other/config.yaml", 1),
 		"unknown":     validBody + "heartbeat_typo: 10s\n",
+		"telemetry":   validBody + "telemetry_every: 5s\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := writeConfig(t, "invalid.yaml", replacement)

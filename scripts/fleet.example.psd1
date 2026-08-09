@@ -3,21 +3,20 @@
     Architecture = "amd64"
     Nodes        = @(
         @{
-            Name       = "DMIT"
-            Target     = "root@DMIT_IP"
+            Name       = "control-node"
+            Target     = "root@CONTROL_NODE_HOST"
             Port       = 22
             Components = @("server", "agent")
-            RequiredEnvironment = @("HYFLEET_SUI_TOKEN")
         }
         @{
-            Name       = "BandwagonHost"
-            Target     = "root@BANDWAGONHOST_IP"
+            Name       = "edge-node-a"
+            Target     = "root@EDGE_NODE_A_HOST"
             Port       = 22
             Components = @("agent")
         }
         @{
-            Name       = "LisaHost"
-            Target     = "root@LISAHOST_IP"
+            Name       = "edge-node-b"
+            Target     = "root@EDGE_NODE_B_HOST"
             Port       = 22
             Components = @("agent")
         }

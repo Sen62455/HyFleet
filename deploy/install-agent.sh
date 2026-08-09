@@ -24,7 +24,7 @@ usage() {
 Usage:
   sudo bash deploy/install-agent.sh \
     --server-url https://panel.example.com \
-    --node-name LisaHost \
+    --node-name edge-node-a \
     --adapter native-hysteria2
 
 Adapters:
@@ -226,6 +226,7 @@ traffic_stats_secret_env: HYFLEET_HY2_STATS_SECRET
 traffic_database_path: /var/lib/hyfleet-agent/agent.db
 local_database_path: /var/lib/hyfleet-agent/agent.db
 heartbeat_every: 15s
+telemetry_every: 60s
 desired_every: 10s
 traffic_every: 30s
 EOF

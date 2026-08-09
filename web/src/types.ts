@@ -124,6 +124,46 @@ export interface NodeMetricSeries {
   samples: NodeMetricSample[];
 }
 
+export interface HostProcessSnapshot {
+  pid: number;
+  name: string;
+  unit?: string;
+  cpu_percent: number;
+  rss_bytes: number;
+  uptime_seconds: number;
+}
+
+export interface SystemdServiceSnapshot {
+  unit: string;
+  description?: string;
+  active_state: string;
+  sub_state: string;
+  cpu_percent: number;
+  cpu_peak_percent: number;
+  memory_bytes: number;
+  memory_peak_bytes: number;
+  tasks: number;
+  restarts: number;
+  main_pid: number;
+}
+
+export interface NodeTelemetrySnapshot {
+  supported: boolean;
+  sampled_at: string | null;
+  processes_available: boolean;
+  processes_error_code: string;
+  processes_total: number;
+  processes_truncated: boolean;
+  processes_sampled_at: string | null;
+  processes: HostProcessSnapshot[];
+  services_available: boolean;
+  services_error_code: string;
+  services_total: number;
+  services_truncated: boolean;
+  services_sampled_at: string | null;
+  services: SystemdServiceSnapshot[];
+}
+
 export interface NodeInput {
   name: string;
   provider: string;

@@ -27,6 +27,7 @@ import {
   relativeTime,
 } from "../../lib/format";
 import type { MetricRange, NodeMetricSeries, NodeRecord } from "../../types";
+import HostTelemetryPanel from "./HostTelemetryPanel.vue";
 import NodeOperationsPanel from "./NodeOperationsPanel.vue";
 import SUIAdapterPanel from "./SUIAdapterPanel.vue";
 
@@ -44,6 +45,7 @@ const metricRange = ref<MetricRange>("24h");
 const metrics = ref<NodeMetricSeries>({ range: "24h", step_seconds: 60, samples: [] });
 const metricsLoading = ref(false);
 const metricsError = ref("");
+const telemetryPanel = ref<InstanceType<typeof HostTelemetryPanel> | null>(null);
 const ranges: { value: MetricRange; label: string }[] = [
   { value: "1h", label: "1 小时" },
   { value: "6h", label: "6 小时" },
@@ -91,6 +93,11 @@ async function loadMetrics(silent = false) {
   }
 }
 
+function refreshMonitoring() {
+  void loadMetrics();
+  void telemetryPanel.value?.refresh();
+}
+
 function endpointLabel(node: NodeRecord) {
   if (!node.public_host) return "未配置";
   const host = node.public_host.includes(":") ? `[${node.public_host}]` : node.public_host;
@@ -130,7 +137,7 @@ watch(() => props.node.id, () => void loadMetrics());
       <div>
         <n-tooltip trigger="hover">
           <template #trigger>
-            <n-button circle secondary aria-label="刷新监控" :loading="metricsLoading" @click="loadMetrics()">
+            <n-button circle secondary aria-label="刷新监控" :loading="metricsLoading" @click="refreshMonitoring">
               <template #icon><n-icon><refresh-cw /></n-icon></template>
             </n-button>
           </template>
@@ -186,8 +193,31 @@ watch(() => props.node.id, () => void loadMetrics());
       </article>
     </section>
 
+    <host-telemetry-panel
+      ref="telemetryPanel"
+      :node-id="node.id"
+      @session-expired="emit('session-expired')"
+    />
+
     <section class="node-detail-lower">
       <div class="node-detail-column">
+        <section class="detail-band">
+          <h2>资源详情</h2>
+          <div class="detail-metrics">
+            <metric-bar label="CPU" :value="node.cpu_percent" :display="formatPercent(node.cpu_percent)" />
+            <metric-bar label="内存" :value="percent(node.memory_used_bytes, node.memory_total_bytes)" :display="`${formatBytes(node.memory_used_bytes)} / ${formatBytes(node.memory_total_bytes)}`" />
+            <metric-bar label="Swap" :value="percent(node.swap_used_bytes, node.swap_total_bytes)" :display="`${formatBytes(node.swap_used_bytes)} / ${formatBytes(node.swap_total_bytes)}`" />
+            <metric-bar label="根分区" :value="percent(node.disk_used_bytes, node.disk_total_bytes)" :display="`${formatBytes(node.disk_used_bytes)} / ${formatBytes(node.disk_total_bytes)}`" />
+          </div>
+          <dl class="detail-list detail-list--two">
+            <div><dt>CPU 核心</dt><dd>{{ node.cpu_cores || "-" }}</dd></div>
+            <div><dt>负载（1 / 5 / 15 分钟）</dt><dd>{{ node.load_1.toFixed(2) }} / {{ node.load_5.toFixed(2) }} / {{ node.load_15.toFixed(2) }}</dd></div>
+            <div><dt>磁盘读取 / 写入</dt><dd>{{ formatBytes(node.disk_read_bytes_per_second) }}/s / {{ formatBytes(node.disk_write_bytes_per_second) }}/s</dd></div>
+            <div><dt>网卡接收 / 发送</dt><dd>{{ formatRate(node.network_rx_bps) }} / {{ formatRate(node.network_tx_bps) }}</dd></div>
+            <div><dt>累计接收</dt><dd>{{ formatBytes(node.network_rx_bytes_total) }}</dd></div>
+            <div><dt>累计发送</dt><dd>{{ formatBytes(node.network_tx_bytes_total) }}</dd></div>
+          </dl>
+        </section>
         <section class="detail-band">
           <h2>系统信息</h2>
           <dl class="detail-list detail-list--two">
@@ -205,7 +235,6 @@ watch(() => props.node.id, () => void loadMetrics());
         </section>
         <section class="detail-band">
           <h2>流量与在线</h2>
-          <div class="detail-metrics"><metric-bar label="磁盘" :value="percent(node.disk_used_bytes, node.disk_total_bytes)" :display="`${formatBytes(node.disk_used_bytes)} / ${formatBytes(node.disk_total_bytes)}`" /></div>
           <dl class="detail-list detail-list--two">
             <div><dt>在线用户 / 连接</dt><dd>{{ node.online_users }} / {{ node.online_connections }}</dd></div>
             <div><dt>未识别用户</dt><dd>{{ node.online_unknown_users }}</dd></div>

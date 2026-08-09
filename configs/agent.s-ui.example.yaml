@@ -6,6 +6,7 @@ service_unit: s-ui.service
 operations_socket_path: /run/hyfleet-agent-ops.sock
 state_path: /var/lib/hyfleet-agent/agent-state.json
 heartbeat_every: 15s
+telemetry_every: 60s
 desired_every: 10s
 traffic_every: 30s
 local_database_path: /var/lib/hyfleet-agent/agent.db

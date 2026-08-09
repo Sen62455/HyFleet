@@ -37,7 +37,7 @@ Hysteria2 使用 UDP。即使 Hysteria2 正在使用 UDP 443，Nginx 仍可使�
 在项目根目录运行：
 
 ```powershell
-cd D:\zuoye\AI\Codex\Desktop\VPS\hyfleet
+cd C:\path\to\hyfleet
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
   -Architecture amd64 `
   -Version v0.6.0-dev

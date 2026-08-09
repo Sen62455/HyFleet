@@ -19,15 +19,24 @@ import (
 )
 
 type linuxCollector struct {
-	mu           sync.Mutex
-	previousCPU  [2]uint64
-	previousNet  networkSample
-	previousDisk diskSample
-	facts        HostFacts
+	mu                 sync.Mutex
+	telemetryMu        sync.Mutex
+	previousCPU        [2]uint64
+	previousNet        networkSample
+	previousDisk       diskSample
+	previousProcessCPU uint64
+	previousProcesses  map[int]processCounter
+	previousServices   map[string]serviceCounter
+	serviceCPUPeaks    map[string]float64
+	facts              HostFacts
 }
 
 func NewCollector() Collector {
-	return &linuxCollector{facts: readLinuxFacts()}
+	return &linuxCollector{
+		facts: readLinuxFacts(), previousProcesses: make(map[int]processCounter),
+		previousServices: make(map[string]serviceCounter),
+		serviceCPUPeaks:  make(map[string]float64),
+	}
 }
 
 func (collector *linuxCollector) Facts() HostFacts {

@@ -28,6 +28,7 @@ type Agent struct {
 	CoreConfigPath       string
 	OperationsSocketPath string
 	HeartbeatEvery       time.Duration
+	TelemetryEvery       time.Duration
 	DesiredEvery         time.Duration
 	AllowHTTP            bool
 	AuthListen           string
@@ -53,6 +54,7 @@ type agentFile struct {
 	CoreConfigPath        string `yaml:"core_config_path"`
 	OperationsSocketPath  string `yaml:"operations_socket_path"`
 	HeartbeatEvery        string `yaml:"heartbeat_every"`
+	TelemetryEvery        string `yaml:"telemetry_every"`
 	DesiredEvery          string `yaml:"desired_every"`
 	AllowHTTP             bool   `yaml:"allow_insecure_http"`
 	AuthListen            string `yaml:"auth_listen"`
@@ -79,6 +81,7 @@ func LoadAgent(path string) (Agent, error) {
 		EnrollmentTokenEnv:    "HYFLEET_ENROLLMENT_TOKEN",
 		StatePath:             "../var/agent-state.json",
 		HeartbeatEvery:        "15s",
+		TelemetryEvery:        "60s",
 		DesiredEvery:          "10s",
 		TrafficStatsSecretEnv: "HYFLEET_HY2_STATS_SECRET",
 		TrafficEvery:          "30s",
@@ -205,6 +208,10 @@ func LoadAgent(path string) (Agent, error) {
 	if err != nil {
 		return Agent{}, err
 	}
+	telemetry, err := parseDuration("telemetry_every", file.TelemetryEvery, 30*time.Second, 10*time.Minute)
+	if err != nil {
+		return Agent{}, err
+	}
 	desired, err := parseDuration("desired_every", file.DesiredEvery, 5*time.Second, 5*time.Minute)
 	if err != nil {
 		return Agent{}, err
@@ -224,6 +231,7 @@ func LoadAgent(path string) (Agent, error) {
 		CoreConfigPath:       file.CoreConfigPath,
 		OperationsSocketPath: file.OperationsSocketPath,
 		HeartbeatEvery:       heartbeat,
+		TelemetryEvery:       telemetry,
 		DesiredEvery:         desired,
 		AllowHTTP:            file.AllowHTTP,
 		AuthListen:           file.AuthListen,

@@ -71,6 +71,7 @@ docker exec "${container_name}" bash -lc '
 docker exec "${container_name}" bash -lc '
   set -Eeuo pipefail
   cd /opt/hyfleet
+  grep -qx "ProtectProc=default" deploy/systemd/hyfleet-agent.service
   mkdir -p /etc/sing-box/conf /var/lib/hyfleet-agent-ops
   printf "%s\n" "{\"log\":{\"level\":\"info\"}}" > /etc/sing-box/conf/00_log.json
   printf "%s\n" "{\"inbounds\":[{\"type\":\"hysteria2\"}]}" > /etc/sing-box/conf/12_hysteria2_inbounds.json
@@ -85,6 +86,7 @@ operations_socket_path: /run/hyfleet-agent-ops.sock
 state_path: /var/lib/hyfleet-agent/agent-state.json
 local_database_path: /var/lib/hyfleet-agent/agent.db
 heartbeat_every: 15s
+telemetry_every: 60s
 desired_every: 10s
 EOF
   result="$(printf "%s" "{\"operation\":{\"id\":\"8bf7ac09-4750-481b-a007-5c2296373fd4\",\"sequence\":1,\"type\":\"backup_config\",\"attempt\":1}}" | bin/hyfleet-agent-ops -config /etc/hyfleet/ops-test.yaml)"

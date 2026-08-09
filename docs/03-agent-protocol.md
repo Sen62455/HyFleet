@@ -1,12 +1,13 @@
-# Agent Protocol Draft
+# Agent Protocol v1
 
-- Status: design draft for Phase 1
+- Status: implemented v1 contract
 - Base path: `/agent/v1`
 - Encoding: JSON over HTTPS
 - Time: RFC 3339 UTC in wire payloads
 
-This is a semantic contract, not a final OpenAPI specification. Phase 1 will add
-machine-readable schemas and conformance tests.
+This document describes the semantic contract implemented by the v1 Agent and
+Server. It is not an OpenAPI specification; protocol behavior is also covered by
+the repository's conformance and integration tests.
 
 ## 1. Transport decisions
 
@@ -14,7 +15,7 @@ machine-readable schemas and conformance tests.
 - HTTPS certificate verification is mandatory outside explicit local tests.
 - Normal operation uses short requests and polling, not WebSocket or a broker.
 - Poll interval defaults: desired state 10 seconds, heartbeat 15 seconds, traffic
-  30 seconds, with bounded jitter.
+  30 seconds, and runtime telemetry 60 seconds, with bounded jitter.
 - Failure uses exponential backoff with jitter, capped at five minutes, while
   local authentication and outbox processing continue.
 - Request and response bodies are size limited and decompression bombs rejected.
@@ -105,9 +106,34 @@ Request fields:
 }
 ```
 
-Response returns server time, current desired version, credential-rotation hint,
-and optionally a poll-backoff override. Host values are validated for finiteness
-and plausible bounds.
+Response returns only the server time and current desired version. Host values
+are validated for finiteness and plausible bounds.
+
+### `POST /agent/v1/telemetry`
+
+Reports a bounded runtime snapshot independently from heartbeat scheduling. The
+request identifies the Agent installation and sample time, then carries two
+independently available sections:
+
+- Processes include PID, bounded name, optional systemd unit, CPU percentage,
+  RSS bytes, and uptime. At most 16 entries are sent, selected from the leading
+  CPU and RSS consumers; command lines, environments, executable paths, and open
+  files are never collected.
+- Services include unit, bounded description, active/sub states, current and
+  peak CPU, current and peak memory, task and restart counts, and main PID. At
+  most 128 systemd services are sent.
+- Each section includes `available`, a stable error code when unavailable,
+  discovered total, and `truncated`. An unavailable section contains no entries.
+
+The Server validates all counts, bounds, identifiers, text, and timestamps. It
+stores one latest snapshot per node rather than a time series. A newer partial
+sample records the current failure but retains the affected section's last
+successful entries and successful sample time; the other section continues to
+update. An out-of-order sample never replaces a newer snapshot.
+
+Response fields are `accepted` and `server_time`. During a mixed-version rollout,
+an older Server may answer `404 Not Found` or `405 Method Not Allowed`; the Agent
+treats either response as telemetry unsupported and continues its other work.
 
 ### `GET /agent/v1/desired?after=<version>`
 
@@ -254,7 +280,8 @@ credential in subscriptions until this snapshot is acknowledged as applied.
 - Credential-material authorization is bound to the current desired version and
   hash; a conflict requires polling and replanning before another apply.
 - Traffic batches use unique IDs and server-side unique constraints.
-- Enrollment and mutating admin API requests accept idempotency keys in Phase 1.
+- Enrollment and mutating admin API requests use request IDs or idempotency keys
+  according to their endpoint contracts.
 - Agent requests may arrive out of order; only explicit sequence/version fields
   establish ordering.
 

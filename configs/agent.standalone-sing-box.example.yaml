@@ -8,4 +8,5 @@ operations_socket_path: /run/hyfleet-agent-ops.sock
 state_path: /var/lib/hyfleet-agent/agent-state.json
 local_database_path: /var/lib/hyfleet-agent/agent.db
 heartbeat_every: 15s
+telemetry_every: 60s
 desired_every: 10s

@@ -29,6 +29,22 @@ node-local configuration backup. A configured directory may contain at most 512
 regular files/directories, be at most 16 levels deep, and contain at most 8 MiB
 of uncompressed data. Symbolic links and special files are rejected.
 
+## Runtime telemetry
+
+Detailed process and service telemetry requires a native Linux Agent with a
+readable procfs mounted at `/proc` and a working systemd/systemctl interface. The
+packaged Agent unit uses `ProtectProc=default` and `ProcSubset=all` so the Agent
+can read the bounded process facts needed for monitoring. Hosts that hide other
+processes through stricter procfs or service sandbox settings cannot provide the
+complete process view without an operator-approved unit override.
+
+Process and systemd collection degrade independently. If either source is
+temporarily unavailable, enrollment, heartbeat, desired-state convergence, and
+the other telemetry section continue. The API reports a stable section error
+and keeps that section's last successful values and sample time. The Agent scans
+at most 4096 PIDs, reports at most 16 leading processes, and reports at most 128
+systemd services per snapshot.
+
 ## Deployment contracts
 
 - Server native layout: `/etc/hyfleet` and `/var/lib/hyfleet`.

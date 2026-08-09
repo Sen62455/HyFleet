@@ -4,7 +4,7 @@ param(
     [string]$Architecture = "amd64",
 
     [ValidatePattern("^[0-9A-Za-z][0-9A-Za-z._-]*$")]
-    [string]$Version = "v1.0.0"
+    [string]$Version = "v1.2.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -138,7 +138,14 @@ foreach ($binaryName in @("hyfleet-server", "hyfleet-agent", "hyfleet-agent-ops"
     }
 }
 
-foreach ($directory in @("bin", "configs", (Join-Path "deploy" "systemd"), "docs")) {
+foreach ($directory in @(
+    "bin",
+    "configs",
+    (Join-Path "deploy" "systemd"),
+    "docker",
+    "docs",
+    (Join-Path "docs" "adr")
+)) {
     New-Item -ItemType Directory -Force -Path (Join-Path $bundlePath $directory) | Out-Null
 }
 Copy-Item (Join-Path $binaryOutput "hyfleet-server") (Join-Path $bundlePath "bin")
@@ -160,6 +167,19 @@ foreach ($scriptName in @(
     Copy-Item (Join-Path (Join-Path $repositoryRoot "deploy") $scriptName) (Join-Path $bundlePath "deploy")
 }
 foreach ($documentName in @(
+    "README.md",
+    "00-product-requirements.md",
+    "01-system-architecture.md",
+    "02-domain-and-data-model.md",
+    "03-agent-protocol.md",
+    "04-security-threat-model.md",
+    "05-deployment-and-resource-budget.md",
+    "06-vps-inventory.md",
+    "07-development-stages.md",
+    "08-phase-0-review.md",
+    "09-phase-1-foundation.md",
+    "project-overview.zh-CN.md",
+    "native-cutover-runbook.zh-CN.md",
     "10-systemd-deployment.md",
     "11-phase-2-native-users.md",
     "12-phase-3-traffic-and-updates.md",
@@ -168,9 +188,20 @@ foreach ($documentName in @(
     "15-phase-6-operations.md",
     "16-phase-7-public-release.md",
     "17-native-convergence-and-monitoring.md",
-    "compatibility.md"
+    "compatibility.md",
+    "inventory.example.yaml",
+    (Join-Path "adr" "README.md"),
+    (Join-Path "adr" "0001-control-plane-and-agent.md"),
+    (Join-Path "adr" "0002-go-vue-sqlite-stack.md"),
+    (Join-Path "adr" "0003-polling-and-eventual-consistency.md"),
+    (Join-Path "adr" "0004-agent-side-adapters.md"),
+    (Join-Path "adr" "0005-credentials-and-accounting.md")
 )) {
-    Copy-Item (Join-Path (Join-Path $repositoryRoot "docs") $documentName) (Join-Path $bundlePath "docs")
+    $documentTarget = Join-Path (Join-Path $bundlePath "docs") $documentName
+    Copy-Item (Join-Path (Join-Path $repositoryRoot "docs") $documentName) $documentTarget
+}
+foreach ($dockerFileName in @("compose.yaml", ".env.example")) {
+    Copy-Item (Join-Path (Join-Path $repositoryRoot "docker") $dockerFileName) (Join-Path $bundlePath "docker")
 }
 foreach ($rootFileName in @("install.sh", "README.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md")) {
     Copy-Item (Join-Path $repositoryRoot $rootFileName) $bundlePath

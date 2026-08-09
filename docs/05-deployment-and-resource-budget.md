@@ -102,7 +102,7 @@ treated as credential-bearing secrets.
 | Idle RSS | <= 30 MiB | <= 80 MiB |
 | Idle CPU, 5-minute average | < 1% | < 1% for three nodes |
 | Installed binary/assets | <= 35 MiB | <= 50 MiB |
-| Routine write rate | <= 1 Agent batch / 30 s | <= 1 heartbeat / node / 15 s; metrics / node / 60 s |
+| Routine write/report rate | <= 1 traffic batch / 30 s; <= 1 telemetry report / 60 s | <= 1 heartbeat / node / 15 s; <= 1 telemetry snapshot upsert / node / 60 s |
 | Minimum practical RAM | 128 MiB for Agent alone | 256 MiB |
 | Recommended RAM with data plane | 256 MiB+ | 512 MiB if colocated |
 
@@ -112,11 +112,14 @@ sing-box, S-UI, the OS, and reverse proxy require additional memory.
 ## 6. Sampling and retention
 
 - Heartbeat: 15 seconds with jitter; current state kept in the node row.
-- Host metrics: sampled every 15 seconds, persisted as one-minute aggregates.
+- Host metrics: sampled with each heartbeat and upserted into one-minute buckets;
+  retain 30 days. Longer API ranges are downsampled at query time, not stored as
+  a separate rollup series.
+- Runtime telemetry: 60 seconds with jitter. The Server keeps only the latest
+  snapshot per node, with at most 16 leading processes and 128 systemd services;
+  no runtime telemetry history is retained.
 - Traffic: sampled every 30 seconds, durable outbox until acknowledged.
 - Online state: 30 seconds by default and not used for accounting.
-- One-minute metrics: retain seven days.
-- One-hour metric rollups: retain 90 days.
 - Traffic totals: retain for the user lifecycle; detailed deltas use a separately
   documented retention policy before v1.0.
 - Audit logs: retain at least 180 days by default with configurable pruning.

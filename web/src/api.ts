@@ -10,6 +10,7 @@ import type {
   NodeOperationRecord,
   NodeOperationType,
   NodeRecord,
+  NodeTelemetrySnapshot,
   MetricRange,
   OperationFilters,
   OperationPage,
@@ -121,6 +122,11 @@ export const api = {
   getNodeMetrics: (nodeId: string, range: MetricRange = "24h") =>
     request<NodeMetricSeries>(
       `/api/v1/nodes/${encodeURIComponent(nodeId)}/metrics?range=${encodeURIComponent(range)}`,
+    ),
+
+  getNodeTelemetry: (nodeId: string) =>
+    request<NodeTelemetrySnapshot>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/telemetry`,
     ),
 
   createNode: (input: NodeInput) =>

@@ -31,6 +31,14 @@ func (collector *genericCollector) Sample(_ context.Context) (protocol.HostMetri
 	}, nil
 }
 
+func (collector *genericCollector) SampleTelemetry(_ context.Context) protocol.TelemetrySnapshotRequest {
+	return protocol.TelemetrySnapshotRequest{
+		SampledAt: time.Now().UTC(), ProcessesErrorCode: "unsupported_os",
+		ServicesErrorCode: "unsupported_os", Processes: []protocol.ProcessTelemetry{},
+		Services: []protocol.ServiceTelemetry{},
+	}
+}
+
 func (collector *genericCollector) ServiceRunning(_ context.Context, _ string) bool {
 	return false
 }

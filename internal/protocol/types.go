@@ -5,6 +5,8 @@ import "time"
 const (
 	MajorVersion            = 1
 	MaxTrafficItemsPerBatch = 1000
+	MaxTelemetryProcesses   = 16
+	MaxTelemetryServices    = 128
 )
 
 type ErrorResponse struct {
@@ -111,6 +113,49 @@ type HostMetrics struct {
 type HeartbeatResponse struct {
 	ServerTime     time.Time `json:"server_time"`
 	DesiredVersion int64     `json:"desired_version"`
+}
+
+type TelemetrySnapshotRequest struct {
+	InstallationID     string             `json:"installation_id"`
+	SampledAt          time.Time          `json:"sampled_at"`
+	ProcessesAvailable bool               `json:"processes_available"`
+	ProcessesErrorCode string             `json:"processes_error_code,omitempty"`
+	ProcessesTotal     int                `json:"processes_total"`
+	ProcessesTruncated bool               `json:"processes_truncated"`
+	Processes          []ProcessTelemetry `json:"processes"`
+	ServicesAvailable  bool               `json:"services_available"`
+	ServicesErrorCode  string             `json:"services_error_code,omitempty"`
+	ServicesTotal      int                `json:"services_total"`
+	ServicesTruncated  bool               `json:"services_truncated"`
+	Services           []ServiceTelemetry `json:"services"`
+}
+
+type ProcessTelemetry struct {
+	PID           int     `json:"pid"`
+	Name          string  `json:"name"`
+	Unit          string  `json:"unit,omitempty"`
+	CPUPercent    float64 `json:"cpu_percent"`
+	RSSBytes      int64   `json:"rss_bytes"`
+	UptimeSeconds int64   `json:"uptime_seconds"`
+}
+
+type ServiceTelemetry struct {
+	Unit            string  `json:"unit"`
+	Description     string  `json:"description,omitempty"`
+	ActiveState     string  `json:"active_state"`
+	SubState        string  `json:"sub_state"`
+	CPUPercent      float64 `json:"cpu_percent"`
+	CPUPeakPercent  float64 `json:"cpu_peak_percent"`
+	MemoryBytes     int64   `json:"memory_bytes"`
+	MemoryPeakBytes int64   `json:"memory_peak_bytes"`
+	Tasks           int64   `json:"tasks"`
+	Restarts        int64   `json:"restarts"`
+	MainPID         int     `json:"main_pid"`
+}
+
+type TelemetrySnapshotResponse struct {
+	Accepted   bool      `json:"accepted"`
+	ServerTime time.Time `json:"server_time"`
 }
 
 type DesiredSnapshot struct {

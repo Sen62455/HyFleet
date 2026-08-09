@@ -74,6 +74,7 @@ func (a *App) Handler() (http.Handler, error) {
 			authenticated.Post("/nodes", a.handleCreateNode)
 			authenticated.Get("/nodes/{nodeID}", a.handleGetNode)
 			authenticated.Get("/nodes/{nodeID}/metrics", a.handleListNodeMetrics)
+			authenticated.Get("/nodes/{nodeID}/telemetry", a.handleGetNodeTelemetry)
 			authenticated.Put("/nodes/{nodeID}", a.handleUpdateNode)
 			authenticated.Delete("/nodes/{nodeID}", a.handleArchiveNode)
 			authenticated.Post("/nodes/{nodeID}/enrollment-token", a.handleEnrollmentToken)
@@ -129,6 +130,7 @@ func (a *App) Handler() (http.Handler, error) {
 		agent.Group(func(secured chi.Router) {
 			secured.Use(a.agentMiddleware)
 			secured.Post("/heartbeat", a.handleAgentHeartbeat)
+			secured.Post("/telemetry", a.handleAgentTelemetry)
 			secured.Get("/desired", a.handleAgentDesired)
 			secured.Post("/desired/{version}/ack", a.handleAgentDesiredAck)
 			secured.Post("/traffic-batches", a.handleAgentTrafficBatches)

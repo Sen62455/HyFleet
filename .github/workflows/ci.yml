@@ -80,6 +80,7 @@ jobs:
       - name: Verify Agent systemd units
         shell: bash
         run: |
+          grep -Fx 'ProtectProc=default' deploy/systemd/hyfleet-agent.service
           grep -Fx 'ProcSubset=all' deploy/systemd/hyfleet-agent.service
           grep -Fx 'ExecStartPre=/usr/bin/test -r /proc/stat' deploy/systemd/hyfleet-agent.service
           sudo groupadd --system hyfleet-agent

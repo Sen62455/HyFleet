@@ -52,17 +52,26 @@ export interface NodeRecord {
   os_name: string;
   os_version: string;
   architecture: string;
+  hostname: string;
+  kernel_version: string;
   core_name: string;
   core_version: string;
   core_running: boolean;
   uptime_seconds: number;
+  cpu_cores: number;
   cpu_percent: number;
   memory_used_bytes: number;
   memory_total_bytes: number;
+  swap_used_bytes: number;
+  swap_total_bytes: number;
   disk_used_bytes: number;
   disk_total_bytes: number;
+  disk_read_bytes_per_second: number;
+  disk_write_bytes_per_second: number;
   network_rx_bps: number;
   network_tx_bps: number;
+  network_rx_bytes_total: number;
+  network_tx_bytes_total: number;
   load_1: number;
   load_5: number;
   load_15: number;
@@ -84,6 +93,33 @@ export interface NodeRecord {
   last_applied_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export type MetricRange = "1h" | "6h" | "24h" | "7d" | "30d";
+
+export interface NodeMetricSample {
+  bucket_at: string;
+  cpu_percent: number;
+  memory_used_bytes: number;
+  memory_total_bytes: number;
+  swap_used_bytes: number;
+  swap_total_bytes: number;
+  disk_used_bytes: number;
+  disk_total_bytes: number;
+  disk_read_bytes_per_second: number;
+  disk_write_bytes_per_second: number;
+  network_rx_bps: number;
+  network_tx_bps: number;
+  load_1: number;
+  load_5: number;
+  load_15: number;
+  sampled_at: string;
+}
+
+export interface NodeMetricSeries {
+  range: MetricRange;
+  step_seconds: number;
+  samples: NodeMetricSample[];
 }
 
 export interface NodeInput {
@@ -293,11 +329,27 @@ export interface NodeOperationRecord {
   error_code: string;
   error_message: string;
   rolled_back: boolean;
+  requested_by: string;
   expires_at: string;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface OperationFilters {
+  node_id?: string;
+  type?: NodeOperationType | "";
+  status?: NodeOperationStatus | "";
+  limit?: number;
+  offset?: number;
+}
+
+export interface OperationPage {
+  operations: NodeOperationRecord[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface ConfigBackupRecord {

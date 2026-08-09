@@ -6,9 +6,13 @@ import type {
   CreateUserResponse,
   EnrollmentToken,
   NodeInput,
+  NodeMetricSeries,
   NodeOperationRecord,
   NodeOperationType,
   NodeRecord,
+  MetricRange,
+  OperationFilters,
+  OperationPage,
   Session,
   SetupStatus,
   SUIState,
@@ -114,6 +118,11 @@ export const api = {
     return result.nodes;
   },
 
+  getNodeMetrics: (nodeId: string, range: MetricRange = "24h") =>
+    request<NodeMetricSeries>(
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/metrics?range=${encodeURIComponent(range)}`,
+    ),
+
   createNode: (input: NodeInput) =>
     request<NodeRecord>("/api/v1/nodes", { method: "POST", body: JSON.stringify(input) }),
 
@@ -132,11 +141,21 @@ export const api = {
       body: "{}",
     }),
 
-  async listNodeOperations(nodeId: string) {
+  async listNodeOperations(nodeId: string, limit = 50) {
     const result = await request<{ operations: NodeOperationRecord[] }>(
-      `/api/v1/nodes/${encodeURIComponent(nodeId)}/operations`,
+      `/api/v1/nodes/${encodeURIComponent(nodeId)}/operations?limit=${encodeURIComponent(limit)}`,
     );
     return result.operations;
+  },
+
+  listOperations: (filters: OperationFilters = {}) => {
+    const query = new URLSearchParams();
+    if (filters.node_id) query.set("node_id", filters.node_id);
+    if (filters.type) query.set("type", filters.type);
+    if (filters.status) query.set("status", filters.status);
+    query.set("limit", String(filters.limit ?? 20));
+    query.set("offset", String(filters.offset ?? 0));
+    return request<OperationPage>(`/api/v1/operations?${query.toString()}`);
   },
 
   createNodeOperation: (nodeId: string, type: NodeOperationType, maxLines = 0) =>

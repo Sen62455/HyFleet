@@ -88,6 +88,24 @@ func TestNodeOperationAPIQueuesReportsRetriesAndAlerts(t *testing.T) {
 	if retry.Sequence != 2 || retry.Attempt != 2 || retry.RetryOf != operation.ID {
 		t.Fatalf("retry operation = %#v", retry)
 	}
+	global := app.request(t, http.MethodGet,
+		"/api/v1/operations?node_id="+node.ID+"&status=failed&limit=10&offset=0", nil, "", "")
+	requireStatus(t, global, http.StatusOK)
+	var globalPage struct {
+		Operations []nodeOperationResponse `json:"operations"`
+		Total      int                     `json:"total"`
+		Limit      int                     `json:"limit"`
+		Offset     int                     `json:"offset"`
+	}
+	decodeResponse(t, global, &globalPage)
+	if globalPage.Total != 1 || globalPage.Limit != 10 || globalPage.Offset != 0 ||
+		len(globalPage.Operations) != 1 || globalPage.Operations[0].ID != operation.ID ||
+		globalPage.Operations[0].RequestedBy != "admin" {
+		t.Fatalf("global operation page = %#v", globalPage)
+	}
+	invalidFilter := app.request(t, http.MethodGet,
+		"/api/v1/operations?status=unknown", nil, "", "")
+	requireStatus(t, invalidFilter, http.StatusUnprocessableEntity)
 
 	alerts := app.request(t, http.MethodGet, "/api/v1/alerts", nil, "", "")
 	requireStatus(t, alerts, http.StatusOK)

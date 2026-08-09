@@ -18,8 +18,8 @@ import type {
   NodeRecord,
 } from "../../types";
 
-const props = defineProps<{ node: NodeRecord }>();
-const emit = defineEmits<{ changed: []; "session-expired": [] }>();
+const props = withDefaults(defineProps<{ node: NodeRecord; compact?: boolean }>(), { compact: false });
+const emit = defineEmits<{ changed: []; "session-expired": []; "view-all": [] }>();
 const message = useMessage();
 const dialog = useDialog();
 
@@ -60,8 +60,8 @@ async function load(silent = false) {
   loadError.value = "";
   try {
     [operations.value, backups.value] = await Promise.all([
-      api.listNodeOperations(props.node.id),
-      api.listConfigBackups(props.node.id),
+      api.listNodeOperations(props.node.id, props.compact ? 3 : 50),
+      props.compact ? Promise.resolve([]) : api.listConfigBackups(props.node.id),
     ]);
   } catch (error) {
     loadError.value = readableError(error, "运维记录加载失败。");
@@ -160,14 +160,17 @@ watch(
   <section class="detail-section operations-panel">
     <div class="detail-section__heading">
       <h2>运维</h2>
-      <n-tooltip trigger="hover">
-        <template #trigger>
-          <n-button circle quaternary size="small" :loading="refreshing" aria-label="刷新运维记录" @click="load()">
-            <template #icon><n-icon><refresh-cw /></n-icon></template>
-          </n-button>
-        </template>
-        刷新
-      </n-tooltip>
+      <div class="operations-panel__heading-actions">
+        <n-button v-if="compact" text type="primary" size="small" @click="emit('view-all')">查看全部操作</n-button>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button circle quaternary size="small" :loading="refreshing" aria-label="刷新运维记录" @click="load()">
+              <template #icon><n-icon><refresh-cw /></n-icon></template>
+            </n-button>
+          </template>
+          刷新
+        </n-tooltip>
+      </div>
     </div>
 
     <div class="operations-toolbar" aria-label="节点运维操作">
@@ -251,12 +254,12 @@ watch(
             重试
           </n-button>
         </div>
-        <pre v-if="operation.output" class="operation-output">{{ operation.output }}</pre>
+        <pre v-if="operation.output && !compact" class="operation-output">{{ operation.output }}</pre>
       </article>
     </div>
     <div v-else class="operations-state">尚无运维操作</div>
 
-    <div v-if="backups.length" class="backup-list">
+    <div v-if="backups.length && !compact" class="backup-list">
       <h3>节点本地备份</h3>
       <div v-for="backup in backups" :key="backup.id" class="backup-row">
         <div>

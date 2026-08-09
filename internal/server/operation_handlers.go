@@ -33,11 +33,44 @@ type nodeOperationResponse struct {
 	ErrorCode    string     `json:"error_code"`
 	ErrorMessage string     `json:"error_message"`
 	RolledBack   bool       `json:"rolled_back"`
+	RequestedBy  string     `json:"requested_by"`
 	ExpiresAt    time.Time  `json:"expires_at"`
 	StartedAt    *time.Time `json:"started_at"`
 	CompletedAt  *time.Time `json:"completed_at"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+func (a *App) handleListOperations(response http.ResponseWriter, request *http.Request) {
+	query := request.URL.Query()
+	limit := boundedQueryLimit(query.Get("limit"), 20, 100)
+	offset, err := strconv.Atoi(query.Get("offset"))
+	if query.Get("offset") == "" {
+		offset = 0
+	} else if err != nil || offset < 0 || offset > 1_000_000 {
+		a.writeError(response, request, http.StatusUnprocessableEntity, "validation_failed", "offset must be a non-negative integer")
+		return
+	}
+	page, err := a.store.ListOperations(request.Context(), store.OperationFilter{
+		NodeID: strings.TrimSpace(query.Get("node_id")), Type: strings.TrimSpace(query.Get("type")),
+		Status: strings.TrimSpace(query.Get("status")), Limit: limit, Offset: offset,
+	})
+	if errors.Is(err, store.ErrUnsupported) {
+		a.writeError(response, request, http.StatusUnprocessableEntity, "validation_failed", "operation filters are invalid")
+		return
+	}
+	if err != nil {
+		a.logger.Error("list operations failed", "request_id", requestIDFromContext(request.Context()), "error", err)
+		a.writeError(response, request, http.StatusInternalServerError, "operations_read_failed", "could not read operations")
+		return
+	}
+	result := make([]nodeOperationResponse, 0, len(page.Operations))
+	for _, operation := range page.Operations {
+		result = append(result, presentNodeOperation(operation))
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"operations": result, "total": page.Total, "limit": limit, "offset": offset,
+	})
 }
 
 type configBackupResponse struct {
@@ -297,7 +330,8 @@ func presentNodeOperation(operation store.NodeOperation) nodeOperationResponse {
 		RetryOf: operation.RetryOf, Attempt: operation.Attempt, MaxLines: operation.MaxLines,
 		Output: operation.Output, ErrorCode: operation.ErrorCode,
 		ErrorMessage: operation.ErrorMessage, RolledBack: operation.RolledBack,
-		ExpiresAt: operation.ExpiresAt, StartedAt: operation.StartedAt,
+		RequestedBy: operation.RequestedBy,
+		ExpiresAt:   operation.ExpiresAt, StartedAt: operation.StartedAt,
 		CompletedAt: operation.CompletedAt, CreatedAt: operation.CreatedAt,
 		UpdatedAt: operation.UpdatedAt,
 	}

@@ -122,7 +122,8 @@ func (a *App) handleAgentHeartbeat(response http.ResponseWriter, request *http.R
 func validHeartbeat(input protocol.HeartbeatRequest) bool {
 	if input.InstallationID == "" || input.Agent.Protocol != protocol.MajorVersion ||
 		input.AppliedVersion < 0 || input.Host.UptimeSeconds < 0 || input.Agent.Version == "" ||
-		len(input.Agent.Version) > 64 || len(input.Core.Name) > 64 || len(input.Core.Version) > 64 {
+		len(input.Agent.Version) > 64 || len(input.Core.Name) > 64 || len(input.Core.Version) > 64 ||
+		len(input.Host.Hostname) > 255 || len(input.Host.KernelVersion) > 128 {
 		return false
 	}
 	if input.Adapter.Name != "" || input.Adapter.Status != "" {
@@ -146,10 +147,15 @@ func validHeartbeat(input protocol.HeartbeatRequest) bool {
 			return false
 		}
 	}
-	if input.Host.CPUPercent > 100 || input.Host.MemoryUsedBytes < 0 ||
+	if input.Host.CPUPercent > 100 || input.Host.CPUCores < 0 || input.Host.CPUCores > 4096 ||
+		input.Host.MemoryUsedBytes < 0 ||
 		input.Host.MemoryTotalBytes < input.Host.MemoryUsedBytes || input.Host.DiskUsedBytes < 0 ||
-		input.Host.DiskTotalBytes < input.Host.DiskUsedBytes || input.Host.NetworkRXBPS < 0 ||
-		input.Host.NetworkTXBPS < 0 || input.SampledAt.IsZero() ||
+		input.Host.SwapUsedBytes < 0 || input.Host.SwapTotalBytes < input.Host.SwapUsedBytes ||
+		input.Host.DiskTotalBytes < input.Host.DiskUsedBytes ||
+		input.Host.DiskReadBytesPerSecond < 0 || input.Host.DiskWriteBytesPerSecond < 0 ||
+		input.Host.NetworkRXBPS < 0 || input.Host.NetworkTXBPS < 0 ||
+		input.Host.NetworkRXBytesTotal < 0 || input.Host.NetworkTXBytesTotal < 0 ||
+		input.SampledAt.IsZero() ||
 		input.Usage.OutboxBatches < 0 || input.Usage.OutboxBatches > 1000000 ||
 		len(input.Usage.LastErrorCode) > 64 {
 		return false

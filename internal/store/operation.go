@@ -56,7 +56,8 @@ type ConfigBackup struct {
 const operationColumns = `
 	o.id, o.node_id, n.name, o.sequence, o.type, o.status,
 	COALESCE(o.retry_of, ''), o.attempt, o.max_lines, o.output,
-	o.error_code, o.error_message, o.rolled_back, o.requested_by,
+	o.error_code, o.error_message, o.rolled_back,
+	COALESCE((SELECT username FROM admins WHERE id = o.requested_by), o.requested_by),
 	o.expires_at, o.started_at, o.completed_at, o.created_at, o.updated_at
 `
 
@@ -90,6 +91,78 @@ func ValidOperationType(value string) bool {
 	default:
 		return false
 	}
+}
+
+func ValidOperationStatus(value string) bool {
+	switch value {
+	case "queued", "running", "succeeded", "failed", "expired":
+		return true
+	default:
+		return false
+	}
+}
+
+type OperationFilter struct {
+	NodeID string
+	Type   string
+	Status string
+	Limit  int
+	Offset int
+}
+
+type OperationPage struct {
+	Operations []NodeOperation
+	Total      int
+}
+
+func (s *Store) ListOperations(ctx context.Context, filter OperationFilter) (OperationPage, error) {
+	if filter.Limit < 1 || filter.Limit > 100 {
+		filter.Limit = 20
+	}
+	if filter.Offset < 0 || (filter.Type != "" && !ValidOperationType(filter.Type)) ||
+		(filter.Status != "" && !ValidOperationStatus(filter.Status)) {
+		return OperationPage{}, ErrUnsupported
+	}
+	where := []string{"n.archived_at IS NULL"}
+	arguments := make([]any, 0, 5)
+	if filter.NodeID != "" {
+		where = append(where, "o.node_id = ?")
+		arguments = append(arguments, filter.NodeID)
+	}
+	if filter.Type != "" {
+		where = append(where, "o.type = ?")
+		arguments = append(arguments, filter.Type)
+	}
+	if filter.Status != "" {
+		where = append(where, "o.status = ?")
+		arguments = append(arguments, filter.Status)
+	}
+	fromWhere := ` FROM node_operations o JOIN nodes n ON n.id = o.node_id WHERE ` + strings.Join(where, " AND ")
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*)`+fromWhere, arguments...).Scan(&total); err != nil {
+		return OperationPage{}, fmt.Errorf("count operations: %w", err)
+	}
+	queryArguments := append(append([]any{}, arguments...), filter.Limit, filter.Offset)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+operationColumns+fromWhere+`
+		ORDER BY o.created_at DESC, o.sequence DESC LIMIT ? OFFSET ?
+	`, queryArguments...)
+	if err != nil {
+		return OperationPage{}, fmt.Errorf("list operations: %w", err)
+	}
+	defer rows.Close()
+	operations := make([]NodeOperation, 0, filter.Limit)
+	for rows.Next() {
+		operation, err := scanNodeOperation(rows)
+		if err != nil {
+			return OperationPage{}, fmt.Errorf("scan operation: %w", err)
+		}
+		operations = append(operations, operation)
+	}
+	if err := rows.Err(); err != nil {
+		return OperationPage{}, fmt.Errorf("iterate operations: %w", err)
+	}
+	return OperationPage{Operations: operations, Total: total}, nil
 }
 
 func normalizeOperationLines(operationType string, maxLines int) (int, error) {
@@ -236,6 +309,12 @@ func (s *Store) ListNodeOperations(ctx context.Context, nodeID string, limit int
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate node operations: %w", err)
+	}
+	// Release the query connection before the existence check below. With the
+	// original one-connection pool, an empty operation list otherwise waited on
+	// its own still-open rows and starved heartbeats for every node.
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close node operations: %w", err)
 	}
 	if len(operations) == 0 {
 		var exists int
@@ -531,6 +610,9 @@ func (s *Store) ListConfigBackups(ctx context.Context, nodeID string, limit int)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate config backups: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close config backups: %w", err)
 	}
 	if len(backups) == 0 {
 		var exists int

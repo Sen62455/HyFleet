@@ -266,9 +266,13 @@ func (s *Store) RecordHeartbeat(
 			adapter_version = CASE WHEN ? = '' THEN adapter_version ELSE ? END,
 			adapter_error_code = CASE WHEN ? = '' THEN adapter_error_code ELSE ? END,
 			adapter_last_probed_at = COALESCE(?, adapter_last_probed_at),
-			uptime_seconds = ?, cpu_percent = ?, memory_used_bytes = ?,
-			memory_total_bytes = ?, disk_used_bytes = ?, disk_total_bytes = ?,
-			network_rx_bps = ?, network_tx_bps = ?, load_1 = ?, load_5 = ?, load_15 = ?,
+			hostname = ?, kernel_version = ?, uptime_seconds = ?, cpu_cores = ?,
+			cpu_percent = ?, memory_used_bytes = ?, memory_total_bytes = ?,
+			swap_used_bytes = ?, swap_total_bytes = ?, disk_used_bytes = ?, disk_total_bytes = ?,
+			disk_read_bytes_per_second = ?, disk_write_bytes_per_second = ?,
+			network_rx_bps = ?, network_tx_bps = ?,
+			network_rx_bytes_total = ?, network_tx_bytes_total = ?,
+			load_1 = ?, load_5 = ?, load_15 = ?,
 			usage_enabled = ?, usage_available = ?, usage_outbox_batches = ?,
 			usage_error_code = ?, usage_sampled_at = ?, last_seen_at = ?, updated_at = ?
 		WHERE id = ? AND agent_installation_id = ?
@@ -278,11 +282,14 @@ func (s *Store) RecordHeartbeat(
 		heartbeat.Adapter.Status, heartbeat.Adapter.Status,
 		heartbeat.Adapter.Version, heartbeat.Adapter.Version,
 		heartbeat.Adapter.Status, heartbeat.Adapter.ErrorCode,
-		nullableUnixMilli(heartbeat.Adapter.LastProbedAt),
-		heartbeat.Host.UptimeSeconds, heartbeat.Host.CPUPercent,
-		heartbeat.Host.MemoryUsedBytes, heartbeat.Host.MemoryTotalBytes,
+		nullableUnixMilli(heartbeat.Adapter.LastProbedAt), heartbeat.Host.Hostname,
+		heartbeat.Host.KernelVersion, heartbeat.Host.UptimeSeconds, heartbeat.Host.CPUCores,
+		heartbeat.Host.CPUPercent, heartbeat.Host.MemoryUsedBytes, heartbeat.Host.MemoryTotalBytes,
+		heartbeat.Host.SwapUsedBytes, heartbeat.Host.SwapTotalBytes,
 		heartbeat.Host.DiskUsedBytes, heartbeat.Host.DiskTotalBytes,
+		heartbeat.Host.DiskReadBytesPerSecond, heartbeat.Host.DiskWriteBytesPerSecond,
 		heartbeat.Host.NetworkRXBPS, heartbeat.Host.NetworkTXBPS,
+		heartbeat.Host.NetworkRXBytesTotal, heartbeat.Host.NetworkTXBytesTotal,
 		heartbeat.Host.Load1, heartbeat.Host.Load5, heartbeat.Host.Load15,
 		boolInt(heartbeat.Usage.Enabled), boolInt(heartbeat.Usage.Available),
 		heartbeat.Usage.OutboxBatches, heartbeat.Usage.LastErrorCode,
@@ -300,8 +307,9 @@ func (s *Store) RecordHeartbeat(
 		INSERT INTO node_metric_samples(
 			node_id, bucket_at, cpu_percent, memory_used_bytes, memory_total_bytes,
 			disk_used_bytes, disk_total_bytes, network_rx_bps, network_tx_bps,
-			load_1, load_5, load_15, sampled_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			load_1, load_5, load_15, sampled_at, swap_used_bytes, swap_total_bytes,
+			disk_read_bytes_per_second, disk_write_bytes_per_second
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(node_id, bucket_at) DO UPDATE SET
 			cpu_percent = excluded.cpu_percent,
 			memory_used_bytes = excluded.memory_used_bytes,
@@ -313,13 +321,19 @@ func (s *Store) RecordHeartbeat(
 			load_1 = excluded.load_1,
 			load_5 = excluded.load_5,
 			load_15 = excluded.load_15,
-			sampled_at = excluded.sampled_at
+			sampled_at = excluded.sampled_at,
+			swap_used_bytes = excluded.swap_used_bytes,
+			swap_total_bytes = excluded.swap_total_bytes,
+			disk_read_bytes_per_second = excluded.disk_read_bytes_per_second,
+			disk_write_bytes_per_second = excluded.disk_write_bytes_per_second
 	`, identity.NodeID, bucket, heartbeat.Host.CPUPercent,
 		heartbeat.Host.MemoryUsedBytes, heartbeat.Host.MemoryTotalBytes,
 		heartbeat.Host.DiskUsedBytes, heartbeat.Host.DiskTotalBytes,
 		heartbeat.Host.NetworkRXBPS, heartbeat.Host.NetworkTXBPS,
 		heartbeat.Host.Load1, heartbeat.Host.Load5, heartbeat.Host.Load15,
-		heartbeat.SampledAt.UnixMilli()); err != nil {
+		heartbeat.SampledAt.UnixMilli(), heartbeat.Host.SwapUsedBytes,
+		heartbeat.Host.SwapTotalBytes, heartbeat.Host.DiskReadBytesPerSecond,
+		heartbeat.Host.DiskWriteBytesPerSecond); err != nil {
 		return 0, fmt.Errorf("upsert metric sample: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `

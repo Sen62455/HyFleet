@@ -26,6 +26,7 @@ const failedOperation: NodeOperationRecord = {
   error_code: "core_restart_failed",
   error_message: "core restart failed",
   rolled_back: true,
+  requested_by: "admin",
   expires_at: "2026-08-08T01:15:00Z",
   started_at: "2026-08-08T01:00:00Z",
   completed_at: "2026-08-08T01:00:03Z",
@@ -58,6 +59,7 @@ describe("NodeOperationsPanel", () => {
       retry_of: failedOperation.id,
       attempt: 2,
       rolled_back: false,
+      requested_by: "admin",
     });
 
     const host = defineComponent({

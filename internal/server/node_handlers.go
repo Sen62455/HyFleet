@@ -51,17 +51,26 @@ type nodeResponse struct {
 	OSName                   string     `json:"os_name"`
 	OSVersion                string     `json:"os_version"`
 	Architecture             string     `json:"architecture"`
+	Hostname                 string     `json:"hostname"`
+	KernelVersion            string     `json:"kernel_version"`
 	CoreName                 string     `json:"core_name"`
 	CoreVersion              string     `json:"core_version"`
 	CoreRunning              bool       `json:"core_running"`
 	UptimeSeconds            int64      `json:"uptime_seconds"`
+	CPUCores                 int        `json:"cpu_cores"`
 	CPUPercent               float64    `json:"cpu_percent"`
 	MemoryUsedBytes          int64      `json:"memory_used_bytes"`
 	MemoryTotalBytes         int64      `json:"memory_total_bytes"`
+	SwapUsedBytes            int64      `json:"swap_used_bytes"`
+	SwapTotalBytes           int64      `json:"swap_total_bytes"`
 	DiskUsedBytes            int64      `json:"disk_used_bytes"`
 	DiskTotalBytes           int64      `json:"disk_total_bytes"`
+	DiskReadBytesPerSecond   int64      `json:"disk_read_bytes_per_second"`
+	DiskWriteBytesPerSecond  int64      `json:"disk_write_bytes_per_second"`
 	NetworkRXBPS             int64      `json:"network_rx_bps"`
 	NetworkTXBPS             int64      `json:"network_tx_bps"`
+	NetworkRXBytesTotal      int64      `json:"network_rx_bytes_total"`
+	NetworkTXBytesTotal      int64      `json:"network_tx_bytes_total"`
 	Load1                    float64    `json:"load_1"`
 	Load5                    float64    `json:"load_5"`
 	Load15                   float64    `json:"load_15"`
@@ -83,6 +92,25 @@ type nodeResponse struct {
 	LastAppliedAt            *time.Time `json:"last_applied_at"`
 	CreatedAt                time.Time  `json:"created_at"`
 	UpdatedAt                time.Time  `json:"updated_at"`
+}
+
+type nodeMetricResponse struct {
+	BucketAt                time.Time `json:"bucket_at"`
+	CPUPercent              float64   `json:"cpu_percent"`
+	MemoryUsedBytes         int64     `json:"memory_used_bytes"`
+	MemoryTotalBytes        int64     `json:"memory_total_bytes"`
+	SwapUsedBytes           int64     `json:"swap_used_bytes"`
+	SwapTotalBytes          int64     `json:"swap_total_bytes"`
+	DiskUsedBytes           int64     `json:"disk_used_bytes"`
+	DiskTotalBytes          int64     `json:"disk_total_bytes"`
+	DiskReadBytesPerSecond  int64     `json:"disk_read_bytes_per_second"`
+	DiskWriteBytesPerSecond int64     `json:"disk_write_bytes_per_second"`
+	NetworkRXBPS            int64     `json:"network_rx_bps"`
+	NetworkTXBPS            int64     `json:"network_tx_bps"`
+	Load1                   float64   `json:"load_1"`
+	Load5                   float64   `json:"load_5"`
+	Load15                  float64   `json:"load_15"`
+	SampledAt               time.Time `json:"sampled_at"`
 }
 
 func (a *App) handleListNodes(response http.ResponseWriter, request *http.Request) {
@@ -110,6 +138,52 @@ func (a *App) handleGetNode(response http.ResponseWriter, request *http.Request)
 		return
 	}
 	writeJSON(response, http.StatusOK, a.presentNode(node, time.Now().UTC()))
+}
+
+func (a *App) handleListNodeMetrics(response http.ResponseWriter, request *http.Request) {
+	rangeName := strings.TrimSpace(request.URL.Query().Get("range"))
+	if rangeName == "" {
+		rangeName = "24h"
+	}
+	ranges := map[string]time.Duration{
+		"1h": time.Hour, "6h": 6 * time.Hour, "24h": 24 * time.Hour,
+		"7d": 7 * 24 * time.Hour, "30d": 30 * 24 * time.Hour,
+	}
+	duration, ok := ranges[rangeName]
+	if !ok {
+		a.writeError(response, request, http.StatusUnprocessableEntity, "validation_failed", "range must be 1h, 6h, 24h, 7d, or 30d")
+		return
+	}
+	until := time.Now().UTC()
+	samples, step, err := a.store.ListNodeMetricSamples(
+		request.Context(), chi.URLParam(request, "nodeID"), until.Add(-duration), until, 360,
+	)
+	if errors.Is(err, store.ErrNotFound) {
+		a.writeError(response, request, http.StatusNotFound, "node_not_found", "node not found")
+		return
+	}
+	if err != nil {
+		a.logger.Error("list node metrics failed", "request_id", requestIDFromContext(request.Context()), "error", err)
+		a.writeError(response, request, http.StatusInternalServerError, "node_metrics_read_failed", "could not read node metrics")
+		return
+	}
+	result := make([]nodeMetricResponse, 0, len(samples))
+	for _, sample := range samples {
+		result = append(result, nodeMetricResponse{
+			BucketAt: sample.BucketAt, CPUPercent: sample.CPUPercent,
+			MemoryUsedBytes: sample.MemoryUsedBytes, MemoryTotalBytes: sample.MemoryTotalBytes,
+			SwapUsedBytes: sample.SwapUsedBytes, SwapTotalBytes: sample.SwapTotalBytes,
+			DiskUsedBytes: sample.DiskUsedBytes, DiskTotalBytes: sample.DiskTotalBytes,
+			DiskReadBytesPerSecond:  sample.DiskReadBytesPerSecond,
+			DiskWriteBytesPerSecond: sample.DiskWriteBytesPerSecond,
+			NetworkRXBPS:            sample.NetworkRXBPS, NetworkTXBPS: sample.NetworkTXBPS,
+			Load1: sample.Load1, Load5: sample.Load5, Load15: sample.Load15,
+			SampledAt: sample.SampledAt,
+		})
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"range": rangeName, "step_seconds": int64(step / time.Second), "samples": result,
+	})
 }
 
 func (a *App) handleCreateNode(response http.ResponseWriter, request *http.Request) {
@@ -301,11 +375,16 @@ func (a *App) presentNode(node store.Node, now time.Time) nodeResponse {
 		AppliedVersion: node.AppliedVersion, AgentInstallationID: node.AgentInstallationID,
 		AgentVersion: node.AgentVersion, ProtocolVersion: node.ProtocolVersion,
 		OSName: node.OSName, OSVersion: node.OSVersion, Architecture: node.Architecture,
+		Hostname: node.Hostname, KernelVersion: node.KernelVersion,
 		CoreName: node.CoreName, CoreVersion: node.CoreVersion, CoreRunning: node.CoreRunning,
-		UptimeSeconds: node.UptimeSeconds, CPUPercent: node.CPUPercent,
+		UptimeSeconds: node.UptimeSeconds, CPUCores: node.CPUCores, CPUPercent: node.CPUPercent,
 		MemoryUsedBytes: node.MemoryUsedBytes, MemoryTotalBytes: node.MemoryTotalBytes,
+		SwapUsedBytes: node.SwapUsedBytes, SwapTotalBytes: node.SwapTotalBytes,
 		DiskUsedBytes: node.DiskUsedBytes, DiskTotalBytes: node.DiskTotalBytes,
-		NetworkRXBPS: node.NetworkRXBPS, NetworkTXBPS: node.NetworkTXBPS,
+		DiskReadBytesPerSecond:  node.DiskReadBytesPerSecond,
+		DiskWriteBytesPerSecond: node.DiskWriteBytesPerSecond,
+		NetworkRXBPS:            node.NetworkRXBPS, NetworkTXBPS: node.NetworkTXBPS,
+		NetworkRXBytesTotal: node.NetworkRXBytesTotal, NetworkTXBytesTotal: node.NetworkTXBytesTotal,
 		Load1: node.Load1, Load5: node.Load5, Load15: node.Load15,
 		UsageEnabled: node.UsageEnabled, UsageAvailable: node.UsageAvailable,
 		UsageOutboxBatches: node.UsageOutboxBatches, UsageErrorCode: node.UsageErrorCode,

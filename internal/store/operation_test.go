@@ -57,6 +57,30 @@ func TestRetryNodeSyncRebuildsOnlyLatestDesiredState(t *testing.T) {
 	}
 }
 
+func TestEmptyNodeHistoryReleasesSingleConnection(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	database, _, node, _ := newOperationTestStore(t, "native_hysteria2", now)
+	database.DB().SetMaxOpenConns(1)
+	database.DB().SetMaxIdleConns(1)
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	operations, err := database.ListNodeOperations(ctx, node.ID, 50)
+	if err != nil {
+		t.Fatalf("ListNodeOperations(empty) error = %v", err)
+	}
+	if len(operations) != 0 {
+		t.Fatalf("ListNodeOperations(empty) = %#v", operations)
+	}
+	backups, err := database.ListConfigBackups(ctx, node.ID, 50)
+	if err != nil {
+		t.Fatalf("ListConfigBackups(empty) error = %v", err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("ListConfigBackups(empty) = %#v", backups)
+	}
+}
+
 func newOperationTestStore(t *testing.T, adapter string, now time.Time) (*Store, Admin, Node, AgentIdentity) {
 	t.Helper()
 	database, err := Open(context.Background(), filepath.Join(t.TempDir(), "operations.db"))

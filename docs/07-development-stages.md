@@ -111,8 +111,30 @@ matrix, security policy, contribution guide, screenshots, and clean-host E2E.
 Exit gate: a new supported VPS can install from the release documentation; CI and
 security gates pass; no real fleet secret or identifying inventory is in Git.
 
+## Phase 8: Native convergence and host monitoring (`v1.1`)
+
+Implementation status: in post-v1 development; production migration remains an
+operator-controlled, one-host-at-a-time acceptance step.
+
+Deliver replacement-native-node migration for existing S-UI and standalone
+sing-box hosts, a compact fleet overview, full per-node host details, bounded
+30-day metric history, dedicated filtered operation history, and heartbeat
+isolation from database reads and long-running node operations. Keep legacy
+adapters intact as migration rollback paths.
+
+Tests: an empty operation-history read on a single SQLite connection, concurrent
+heartbeats while another read connection is occupied, heartbeats during a blocked
+operation executor, metric aggregation/retention bounds, operation filtering and
+pagination, Linux collector compilation, and desktop/mobile browser flows.
+
+Exit gate: all intended hosts run native Hysteria2 for 24 hours with plausible
+host metrics, users and subscriptions contain the expected nodes, a controlled
+restart affects only its target, and the old Beszel/S-UI/sing-box management
+layers can be stopped without losing required capability. Uninstall remains a
+separate, recoverable operator decision.
+
 ## Post-v1 candidates
 
 Multi-admin RBAC/TOTP, Telegram/webhook alerts, approved Ansible jobs, PostgreSQL,
-more sing-box protocols, device limits, and larger-fleet push optimization. Each
-requires a new ADR and measured need.
+more protocols, device limits, and larger-fleet push optimization. Each requires
+a new ADR and measured need.

@@ -80,14 +80,26 @@ Request fields:
   "agent": {"version": "0.1.0", "protocol": 1},
   "core": {"name": "hysteria2", "version": "v2.x", "running": true},
   "host": {
+    "hostname": "node-a",
+    "kernel_version": "6.8.0",
     "uptime_seconds": 12345,
+    "cpu_cores": 2,
     "cpu_percent": 2.5,
     "memory_used_bytes": 123,
     "memory_total_bytes": 456,
+    "swap_used_bytes": 0,
+    "swap_total_bytes": 1024,
     "disk_used_bytes": 789,
     "disk_total_bytes": 1024,
+    "disk_read_bytes_per_second": 0,
+    "disk_write_bytes_per_second": 0,
     "network_rx_bps": 0,
-    "network_tx_bps": 0
+    "network_tx_bps": 0,
+    "network_rx_bytes_total": 0,
+    "network_tx_bytes_total": 0,
+    "load_1": 0.1,
+    "load_5": 0.05,
+    "load_15": 0.01
   },
   "sampled_at": "2026-08-07T00:00:00Z"
 }
@@ -185,13 +197,14 @@ client passwords are never accepted by this endpoint.
 
 ### `GET /agent/v1/operations?after=<sequence>`
 
-Reserved for Phase 6. Returns only typed operations such as `probe_core`,
-`restart_core`, `kick_user`, or `tail_core_log`. There is no `command` string.
+Returns only typed operations such as `probe_core`, `restart_core`,
+`tail_core_log`, or `backup_config`. There is no `command` string. Agent-side
+execution is single-flight and independent from heartbeat scheduling.
 
 ### `POST /agent/v1/operations/{id}/result`
 
-Reserved for Phase 6. Idempotently acknowledges typed operation results with a
-redacted bounded output.
+Idempotently acknowledges typed operation results with a redacted bounded output.
+Results are stored in an Agent-local Outbox until the control plane accepts them.
 
 ## 5. Desired-state schema v1
 

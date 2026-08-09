@@ -1,6 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { Bell, LogOut, Plus, RefreshCw, Server, UsersRound } from "@lucide/vue";
+import {
+  Bell,
+  ClipboardList,
+  LayoutDashboard,
+  LogOut,
+  Plus,
+  RefreshCw,
+  Server,
+  UsersRound,
+} from "@lucide/vue";
 import { NAlert, NBadge, NButton, NIcon, NSpin, NTooltip, useDialog, useMessage } from "naive-ui";
 import { api, APIError } from "../../api";
 import BrandMark from "../../components/BrandMark.vue";
@@ -8,10 +17,12 @@ import { issueCount } from "../../lib/format";
 import type { AlertRecord, NodeInput, NodeRecord, Session } from "../../types";
 import AlertDrawer from "../alerts/AlertDrawer.vue";
 import EnrollmentDialog from "./EnrollmentDialog.vue";
-import NodeDetailDrawer from "./NodeDetailDrawer.vue";
+import FleetOverview from "./FleetOverview.vue";
+import NodeDetailPage from "./NodeDetailPage.vue";
 import NodeFormModal from "./NodeFormModal.vue";
 import NodeTable from "./NodeTable.vue";
 import UserDashboard from "../users/UserDashboard.vue";
+import OperationsDashboard from "../operations/OperationsDashboard.vue";
 
 const props = defineProps<{ session: Session }>();
 const emit = defineEmits<{ logout: []; "session-expired": [] }>();
@@ -27,7 +38,10 @@ const saving = ref(false);
 const editingNode = ref<NodeRecord | null>(null);
 const detailNodeID = ref<string | null>(null);
 const enrollmentNode = ref<NodeRecord | null>(null);
-const activeView = ref<"nodes" | "users">("nodes");
+type DashboardView = "overview" | "nodes" | "users" | "operations" | "node-detail";
+const activeView = ref<DashboardView>("overview");
+const detailReturnView = ref<"overview" | "nodes" | "users" | "operations">("overview");
+const operationsNodeFilter = ref("");
 const alerts = ref<AlertRecord[]>([]);
 const alertsOpen = ref(false);
 const alertsLoading = ref(false);
@@ -93,14 +107,23 @@ async function acknowledgeAlert(alert: AlertRecord) {
 }
 
 function selectAlertNode(nodeId: string) {
-  activeView.value = "nodes";
-  detailNodeID.value = nodeId;
-  alertsOpen.value = false;
+	openNode(nodeId, "overview");
+	alertsOpen.value = false;
 }
 
 function openNodeFromUsers(nodeId: string) {
-  activeView.value = "nodes";
-  detailNodeID.value = nodeId;
+	openNode(nodeId, "users");
+}
+
+function openNode(nodeId: string, from: "overview" | "nodes" | "users" | "operations" = "nodes") {
+	detailNodeID.value = nodeId;
+	detailReturnView.value = from;
+	activeView.value = "node-detail";
+}
+
+function openOperations(nodeId = "") {
+	operationsNodeFilter.value = nodeId;
+	activeView.value = "operations";
 }
 
 function openCreate() {
@@ -122,7 +145,7 @@ async function saveNode(input: Required<NodeInput>) {
     formOpen.value = false;
     editingNode.value = null;
     await loadNodes(true);
-    detailNodeID.value = saved.id;
+		openNode(saved.id, "nodes");
     message.success(saved.desired_version === 1 ? "节点已添加" : "节点已更新");
   } catch (error) {
     handleAPIError(error, "节点保存失败。 ");
@@ -141,7 +164,10 @@ function archiveNode(node: NodeRecord) {
     async onPositiveClick() {
       try {
         await api.archiveNode(node.id);
-        if (detailNodeID.value === node.id) detailNodeID.value = null;
+				if (detailNodeID.value === node.id) {
+					detailNodeID.value = null;
+					activeView.value = "nodes";
+				}
         await loadNodes(true);
         message.success("节点已归档");
       } catch (error) {
@@ -182,7 +208,20 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
           <button
             type="button"
             class="topbar__nav-item"
-            :class="{ 'topbar__nav-item--active': activeView === 'nodes' }"
+            :class="{ 'topbar__nav-item--active': activeView === 'overview' }"
+            aria-label="总览"
+            title="总览"
+            @click="activeView = 'overview'"
+          >
+            <layout-dashboard :size="16" aria-hidden="true" />
+            <span>总览</span>
+          </button>
+          <button
+            type="button"
+            class="topbar__nav-item"
+            :class="{ 'topbar__nav-item--active': activeView === 'nodes' || activeView === 'node-detail' }"
+            aria-label="节点"
+            title="节点"
             @click="activeView = 'nodes'"
           >
             <server :size="16" aria-hidden="true" />
@@ -192,10 +231,23 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
             type="button"
             class="topbar__nav-item"
             :class="{ 'topbar__nav-item--active': activeView === 'users' }"
+            aria-label="用户"
+            title="用户"
             @click="activeView = 'users'"
           >
             <users-round :size="16" aria-hidden="true" />
             <span>用户</span>
+          </button>
+          <button
+            type="button"
+            class="topbar__nav-item"
+            :class="{ 'topbar__nav-item--active': activeView === 'operations' }"
+            aria-label="操作记录"
+            title="操作记录"
+            @click="openOperations()"
+          >
+            <clipboard-list :size="16" aria-hidden="true" />
+            <span>操作记录</span>
           </button>
         </nav>
         <div class="topbar__account">
@@ -227,7 +279,20 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
       </div>
     </header>
 
-    <main v-if="activeView === 'nodes'" id="nodes" class="workspace">
+    <fleet-overview
+      v-if="activeView === 'overview'"
+      :nodes="nodes"
+      :alerts="alerts"
+      :loading="loading"
+      :refreshing="refreshing"
+      :error="loadError"
+      @select="openNode($event.id, 'overview')"
+      @refresh="loadNodes()"
+      @create="openCreate"
+      @alerts="alertsOpen = true; loadAlerts()"
+    />
+
+    <main v-else-if="activeView === 'nodes'" id="nodes" class="workspace">
       <div class="page-heading">
         <div>
           <h1>节点</h1>
@@ -288,17 +353,36 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
         <node-table
           v-else
           :nodes="nodes"
-          @select="detailNodeID = $event.id"
+          @select="openNode($event.id, 'nodes')"
           @action="handleAction"
         />
       </section>
     </main>
 
     <user-dashboard
-      v-else
+      v-else-if="activeView === 'users'"
       :nodes="nodes"
       @nodes-changed="loadNodes(true)"
       @open-node="openNodeFromUsers"
+      @session-expired="emit('session-expired')"
+    />
+
+    <operations-dashboard
+      v-else-if="activeView === 'operations'"
+      :nodes="nodes"
+      :initial-node-id="operationsNodeFilter"
+      @select-node="openNode($event, 'operations')"
+      @session-expired="emit('session-expired')"
+    />
+
+    <node-detail-page
+      v-else-if="activeView === 'node-detail' && detailNode"
+      :node="detailNode"
+      @back="activeView = detailReturnView"
+      @edit="openEdit"
+      @enroll="enrollmentNode = $event"
+      @operations="openOperations"
+      @changed="loadNodes(true)"
       @session-expired="emit('session-expired')"
     />
 
@@ -307,15 +391,6 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
       :node="editingNode"
       :saving="saving"
       @submit="saveNode"
-    />
-    <node-detail-drawer
-      :show="detailNode !== null"
-      :node="detailNode"
-      @update:show="!$event && (detailNodeID = null)"
-      @edit="openEdit"
-      @enroll="enrollmentNode = $event"
-      @changed="loadNodes(true)"
-      @session-expired="emit('session-expired')"
     />
     <enrollment-dialog
       :show="enrollmentNode !== null"

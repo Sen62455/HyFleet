@@ -29,14 +29,21 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			return nil, fmt.Errorf("create database directory: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	dsn := sqliteDSN(path)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	// A single connection keeps connection-scoped SQLite PRAGMAs authoritative
-	// and is sufficient for the deliberately small Phase 1 fleet workload.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	// The Server receives heartbeats, Agent results, maintenance work, and UI reads
+	// concurrently. A one-connection pool lets any stalled read starve every node.
+	// Connection-level DSN options keep the SQLite policy consistent across this
+	// deliberately small pool while WAL allows reads beside the short write jobs.
+	maxConnections := 4
+	if path == ":memory:" {
+		maxConnections = 1
+	}
+	db.SetMaxOpenConns(maxConnections)
+	db.SetMaxIdleConns(maxConnections)
 	for _, pragma := range []string{
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA busy_timeout = 5000",
@@ -54,6 +61,18 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	return store, nil
+}
+
+func sqliteDSN(path string) string {
+	if path == ":memory:" {
+		return path
+	}
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator +
+		"_busy_timeout=5000&_foreign_keys=on&_journal_mode=WAL&_synchronous=NORMAL&_txlock=immediate"
 }
 
 func (s *Store) Close() error {

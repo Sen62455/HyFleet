@@ -41,9 +41,9 @@ const form = reactive<Required<NodeInput>>({
 const title = computed(() => (props.node ? "编辑节点" : "添加节点"));
 const adapterLocked = computed(() => Boolean(props.node?.agent_installation_id));
 const adapterOptions = [
-  { label: "原生 Hysteria2", value: "native_hysteria2" },
-  { label: "独立 sing-box", value: "standalone_sing_box" },
-  { label: "S-UI", value: "s_ui" },
+  { label: "原生 Hysteria2（推荐）", value: "native_hysteria2" },
+  { label: "独立 sing-box（迁移兼容）", value: "standalone_sing_box" },
+  { label: "S-UI（迁移兼容）", value: "s_ui" },
 ];
 const rules: FormRules = {
   name: [

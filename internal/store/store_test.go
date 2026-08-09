@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/hyfleet/hyfleet/internal/cryptoutil"
+	"github.com/hyfleet/hyfleet/internal/protocol"
 	"github.com/hyfleet/hyfleet/internal/store/migrations"
 )
 
@@ -38,6 +41,68 @@ func TestOpenAppliesMigrationsAndSQLitePolicy(t *testing.T) {
 	var migrations int
 	if err := database.DB().QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations == 0 {
 		t.Fatalf("migration count = %d, error = %v", migrations, err)
+	}
+}
+
+func TestHeartbeatPoolSurvivesBusyReadConnection(t *testing.T) {
+	database, err := Open(context.Background(), filepath.Join(t.TempDir(), "server.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer database.Close()
+	if got := database.DB().Stats().MaxOpenConnections; got != 4 {
+		t.Fatalf("MaxOpenConnections = %d, want 4", got)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	identities := make([]AgentIdentity, 0, 3)
+	for index := 0; index < 3; index++ {
+		node, err := database.CreateNode(t.Context(), NewNode{
+			ID: uuid.NewString(), Name: fmt.Sprintf("heartbeat-node-%d", index),
+			AdapterType: "native_hysteria2", Enabled: true, Now: now,
+		})
+		if err != nil {
+			t.Fatalf("CreateNode(%d) error = %v", index, err)
+		}
+		installationID := uuid.NewString()
+		if _, err := database.DB().ExecContext(t.Context(), `
+			UPDATE nodes SET agent_installation_id = ? WHERE id = ?
+		`, installationID, node.ID); err != nil {
+			t.Fatalf("bind node %d: %v", index, err)
+		}
+		identities = append(identities, AgentIdentity{
+			NodeID: node.ID, InstallationID: installationID, AdapterType: "native_hysteria2", Enabled: true,
+		})
+	}
+	heldRead, err := database.DB().Conn(t.Context())
+	if err != nil {
+		t.Fatalf("reserve read connection: %v", err)
+	}
+	defer heldRead.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	errorsByNode := make(chan error, len(identities))
+	var wait sync.WaitGroup
+	for _, identity := range identities {
+		identity := identity
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := database.RecordHeartbeat(ctx, identity, protocol.HeartbeatRequest{
+				InstallationID: identity.InstallationID,
+				Agent:          protocol.AgentInfo{Version: "pool-test", Protocol: protocol.MajorVersion},
+				Core:           protocol.CoreInfo{Name: "hysteria", Running: true},
+				Host:           protocol.HostMetrics{MemoryTotalBytes: 1, DiskTotalBytes: 1},
+				SampledAt:      now,
+			}, now)
+			errorsByNode <- err
+		}()
+	}
+	wait.Wait()
+	close(errorsByNode)
+	for err := range errorsByNode {
+		if err != nil {
+			t.Fatalf("RecordHeartbeat() while one connection is reserved: %v", err)
+		}
 	}
 }
 

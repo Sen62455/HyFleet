@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"os"
 	"runtime"
 	"time"
 
@@ -19,11 +20,13 @@ func NewCollector() Collector {
 }
 
 func (collector *genericCollector) Facts() HostFacts {
-	return HostFacts{OS: runtime.GOOS, Architecture: runtime.GOARCH}
+	hostname, _ := os.Hostname()
+	return HostFacts{OS: runtime.GOOS, Architecture: runtime.GOARCH, Hostname: hostname, CPUCores: runtime.NumCPU()}
 }
 
 func (collector *genericCollector) Sample(_ context.Context) (protocol.HostMetrics, error) {
 	return protocol.HostMetrics{
+		Hostname: collector.Facts().Hostname, CPUCores: runtime.NumCPU(),
 		UptimeSeconds: int64(time.Since(collector.started).Seconds()),
 	}, nil
 }

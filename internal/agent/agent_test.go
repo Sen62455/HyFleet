@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -126,6 +127,84 @@ func runAgentUntilHeartbeat(t *testing.T, runner *Agent, count func() int, want 
 		cancel()
 		<-done
 		t.Fatalf("heartbeat count did not reach %d", want)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Agent.Run() error = %v", err)
+	}
+}
+
+func TestHeartbeatsContinueWhileNodeOperationIsBlocked(t *testing.T) {
+	nodeID := uuid.NewString()
+	credential := "hya_" + nodeID + ".operation-isolation"
+	operation := protocol.NodeOperation{
+		ID: uuid.NewString(), Sequence: 1, Type: "restart_core", Attempt: 1,
+		CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
+	}
+	var heartbeats atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/agent/v1/enroll":
+			writeAgentJSON(response, protocol.EnrollResponse{
+				NodeID: nodeID, NodeCredential: credential, Protocol: protocol.MajorVersion,
+				Polling:    protocol.PollingPolicy{HeartbeatSeconds: 15, DesiredSeconds: 10},
+				ServerTime: time.Now().UTC(),
+			})
+		case "/agent/v1/heartbeat":
+			heartbeats.Add(1)
+			writeAgentJSON(response, protocol.HeartbeatResponse{ServerTime: time.Now().UTC()})
+		case "/agent/v1/desired":
+			response.WriteHeader(http.StatusNoContent)
+		case "/agent/v1/operations":
+			writeAgentJSON(response, protocol.NodeOperationsResponse{
+				Operations: []protocol.NodeOperation{operation}, ServerTime: time.Now().UTC(),
+			})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	statePath := filepath.Join(t.TempDir(), "agent-state.json")
+	runner, err := New(config.Agent{
+		ServerURL: server.URL, EnrollmentToken: "one-time-token", StatePath: statePath,
+		AdapterType: "native_hysteria2", CoreName: "hysteria",
+		ServiceUnit: "hysteria-server.service", HeartbeatEvery: 20 * time.Millisecond,
+		DesiredEvery: 20 * time.Millisecond, TrafficEvery: time.Hour, AllowHTTP: true,
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	runner.collector = fixedCollector{}
+	operationStarted := make(chan struct{})
+	var started sync.Once
+	runner.operationExecutor = func(ctx context.Context, operation protocol.NodeOperation) protocol.OperationResultRequest {
+		started.Do(func() { close(operationStarted) })
+		<-ctx.Done()
+		return protocol.OperationResultRequest{
+			Sequence: operation.Sequence, Status: "failed", ErrorCode: "operation_cancelled",
+			ErrorMessage: "operation cancelled with Agent shutdown", CompletedAt: time.Now().UTC(),
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runner.Run(ctx) }()
+	select {
+	case <-operationStarted:
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("node operation did not start")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for heartbeats.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := heartbeats.Load(); got < 3 {
+		cancel()
+		<-done
+		t.Fatalf("heartbeats while operation was blocked = %d, want at least 3", got)
 	}
 	cancel()
 	if err := <-done; err != nil {

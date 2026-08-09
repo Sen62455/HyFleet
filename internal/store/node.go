@@ -40,17 +40,26 @@ type Node struct {
 	OSName                   string
 	OSVersion                string
 	Architecture             string
+	Hostname                 string
+	KernelVersion            string
 	CoreName                 string
 	CoreVersion              string
 	CoreRunning              bool
 	UptimeSeconds            int64
+	CPUCores                 int
 	CPUPercent               float64
 	MemoryUsedBytes          int64
 	MemoryTotalBytes         int64
+	SwapUsedBytes            int64
+	SwapTotalBytes           int64
 	DiskUsedBytes            int64
 	DiskTotalBytes           int64
+	DiskReadBytesPerSecond   int64
+	DiskWriteBytesPerSecond  int64
 	NetworkRXBPS             int64
 	NetworkTXBPS             int64
+	NetworkRXBytesTotal      int64
+	NetworkTXBytesTotal      int64
 	Load1                    float64
 	Load5                    float64
 	Load15                   float64
@@ -108,9 +117,12 @@ const nodeColumns = `
 	tls_insecure, enabled, status, status_reason,
 	desired_version, applied_version, COALESCE(agent_installation_id, ''),
 	agent_version, protocol_version, os_name, os_version, architecture,
-	core_name, core_version, core_running, uptime_seconds, cpu_percent,
-	memory_used_bytes, memory_total_bytes, disk_used_bytes, disk_total_bytes,
-	network_rx_bps, network_tx_bps, load_1, load_5, load_15,
+	hostname, kernel_version, core_name, core_version, core_running,
+	uptime_seconds, cpu_cores, cpu_percent, memory_used_bytes, memory_total_bytes,
+	swap_used_bytes, swap_total_bytes, disk_used_bytes, disk_total_bytes,
+	disk_read_bytes_per_second, disk_write_bytes_per_second,
+	network_rx_bps, network_tx_bps, network_rx_bytes_total, network_tx_bytes_total,
+	load_1, load_5, load_15,
 	last_seen_at, last_applied_at, usage_enabled, usage_available,
 	usage_outbox_batches, usage_error_code, usage_sampled_at,
 	traffic_upload_bytes, traffic_download_bytes, traffic_unattributed_bytes,
@@ -138,10 +150,13 @@ func scanNode(row rowScanner) (Node, error) {
 		&enabled, &node.Status, &node.StatusReason, &node.DesiredVersion,
 		&node.AppliedVersion, &node.AgentInstallationID, &node.AgentVersion,
 		&node.ProtocolVersion, &node.OSName, &node.OSVersion, &node.Architecture,
-		&node.CoreName, &node.CoreVersion, &coreRunning, &node.UptimeSeconds,
-		&node.CPUPercent, &node.MemoryUsedBytes, &node.MemoryTotalBytes,
-		&node.DiskUsedBytes, &node.DiskTotalBytes, &node.NetworkRXBPS,
-		&node.NetworkTXBPS, &node.Load1, &node.Load5, &node.Load15,
+		&node.Hostname, &node.KernelVersion, &node.CoreName, &node.CoreVersion,
+		&coreRunning, &node.UptimeSeconds, &node.CPUCores, &node.CPUPercent,
+		&node.MemoryUsedBytes, &node.MemoryTotalBytes, &node.SwapUsedBytes,
+		&node.SwapTotalBytes, &node.DiskUsedBytes, &node.DiskTotalBytes,
+		&node.DiskReadBytesPerSecond, &node.DiskWriteBytesPerSecond,
+		&node.NetworkRXBPS, &node.NetworkTXBPS, &node.NetworkRXBytesTotal,
+		&node.NetworkTXBytesTotal, &node.Load1, &node.Load5, &node.Load15,
 		&lastSeen, &lastApplied, &usageEnabled, &usageAvailable,
 		&node.UsageOutboxBatches, &node.UsageErrorCode, &usageSampled,
 		&node.TrafficUploadBytes, &node.TrafficDownloadBytes,

@@ -125,15 +125,27 @@ func runMaintenance(
 	defer ticker.Stop()
 	for {
 		now := time.Now().UTC()
-		if count, err := database.EnforceExpiredUsers(ctx, now, 100); err != nil {
+		expiryContext, cancelExpiry := context.WithTimeout(ctx, 10*time.Second)
+		count, err := database.EnforceExpiredUsers(expiryContext, now, 100)
+		cancelExpiry()
+		if err != nil {
 			if ctx.Err() == nil {
 				logger.Error("enforce expired users failed", "error", err)
 			}
 		} else if count > 0 {
 			logger.Info("expired users enforced", "count", count)
 		}
-		if err := database.ReconcileAlerts(ctx, now, offlineAfter, 5*time.Minute); err != nil && ctx.Err() == nil {
+		alertContext, cancelAlerts := context.WithTimeout(ctx, 10*time.Second)
+		err = database.ReconcileAlerts(alertContext, now, offlineAfter, 5*time.Minute)
+		cancelAlerts()
+		if err != nil && ctx.Err() == nil {
 			logger.Error("reconcile alerts failed", "error", err)
+		}
+		pruneContext, cancelPrune := context.WithTimeout(ctx, 10*time.Second)
+		_, err = database.PruneNodeMetricSamples(pruneContext, now.Add(-30*24*time.Hour), 5000)
+		cancelPrune()
+		if err != nil && ctx.Err() == nil {
+			logger.Error("prune node metrics failed", "error", err)
 		}
 		select {
 		case <-ctx.Done():

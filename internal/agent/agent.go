@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hyfleet/hyfleet/internal/buildinfo"
@@ -24,19 +26,21 @@ import (
 )
 
 type Agent struct {
-	config            config.Agent
-	logger            *slog.Logger
-	client            *http.Client
-	collector         Collector
-	state             State
-	authCache         *AuthCache
-	localStore        *localStore
-	statsClient       *hysteriaStatsClient
-	suiClient         *suiClient
-	usage             protocol.UsageInfo
-	adapterInfo       protocol.AdapterInfo
-	adapterCore       protocol.CoreInfo
-	operationExecutor func(context.Context, protocol.NodeOperation) protocol.OperationResultRequest
+	config                config.Agent
+	logger                *slog.Logger
+	client                *http.Client
+	collector             Collector
+	state                 State
+	authCache             *AuthCache
+	localStore            *localStore
+	statsClient           *hysteriaStatsClient
+	suiClient             *suiClient
+	usage                 protocol.UsageInfo
+	adapterInfo           protocol.AdapterInfo
+	adapterCore           protocol.CoreInfo
+	operationExecutor     func(context.Context, protocol.NodeOperation) protocol.OperationResultRequest
+	operationCycleRunning atomic.Bool
+	operationWG           sync.WaitGroup
 }
 
 func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
@@ -140,6 +144,7 @@ func (agent *Agent) Close() error {
 
 func (agent *Agent) Run(ctx context.Context) error {
 	defer agent.Close()
+	defer agent.operationWG.Wait()
 	var authServerErrors <-chan error
 	stopAuthServer := func() {}
 	if agent.config.AdapterType == "native_hysteria2" {
@@ -175,9 +180,7 @@ func (agent *Agent) Run(ctx context.Context) error {
 	if err := agent.pollDesired(ctx); err != nil {
 		agent.logger.Warn("initial desired-state poll failed", "error", err)
 	}
-	if err := agent.runOperationCycle(ctx); err != nil {
-		agent.logger.Warn("initial operation cycle failed", "error", err)
-	}
+	agent.startOperationCycle(ctx, "initial")
 	heartbeatTimer := time.NewTimer(jitter(agent.config.HeartbeatEvery))
 	desiredTimer := time.NewTimer(jitter(agent.config.DesiredEvery))
 	trafficTimer := time.NewTimer(jitter(agent.config.TrafficEvery))
@@ -204,9 +207,7 @@ func (agent *Agent) Run(ctx context.Context) error {
 			} else if err := agent.pollDesired(ctx); err != nil {
 				agent.logger.Warn("desired-state poll failed", "error", err)
 			}
-			if err := agent.runOperationCycle(ctx); err != nil {
-				agent.logger.Warn("operation cycle failed", "error", err)
-			}
+			agent.startOperationCycle(ctx, "scheduled")
 			desiredTimer.Reset(jitter(agent.config.DesiredEvery))
 		case <-trafficTimer.C:
 			if err := agent.runUsageCycle(ctx); err != nil {
@@ -215,6 +216,20 @@ func (agent *Agent) Run(ctx context.Context) error {
 			trafficTimer.Reset(jitter(agent.config.TrafficEvery))
 		}
 	}
+}
+
+func (agent *Agent) startOperationCycle(ctx context.Context, source string) {
+	if !agent.operationCycleRunning.CompareAndSwap(false, true) {
+		return
+	}
+	agent.operationWG.Add(1)
+	go func() {
+		defer agent.operationWG.Done()
+		defer agent.operationCycleRunning.Store(false)
+		if err := agent.runOperationCycle(ctx); err != nil && ctx.Err() == nil {
+			agent.logger.Warn("operation cycle failed", "source", source, "error", err)
+		}
+	}()
 }
 
 func (agent *Agent) enrollWithBackoff(ctx context.Context) error {

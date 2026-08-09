@@ -86,17 +86,26 @@ type UsageInfo struct {
 }
 
 type HostMetrics struct {
-	UptimeSeconds    int64   `json:"uptime_seconds"`
-	CPUPercent       float64 `json:"cpu_percent"`
-	MemoryUsedBytes  int64   `json:"memory_used_bytes"`
-	MemoryTotalBytes int64   `json:"memory_total_bytes"`
-	DiskUsedBytes    int64   `json:"disk_used_bytes"`
-	DiskTotalBytes   int64   `json:"disk_total_bytes"`
-	NetworkRXBPS     int64   `json:"network_rx_bps"`
-	NetworkTXBPS     int64   `json:"network_tx_bps"`
-	Load1            float64 `json:"load_1"`
-	Load5            float64 `json:"load_5"`
-	Load15           float64 `json:"load_15"`
+	Hostname                string  `json:"hostname,omitempty"`
+	KernelVersion           string  `json:"kernel_version,omitempty"`
+	UptimeSeconds           int64   `json:"uptime_seconds"`
+	CPUCores                int     `json:"cpu_cores"`
+	CPUPercent              float64 `json:"cpu_percent"`
+	MemoryUsedBytes         int64   `json:"memory_used_bytes"`
+	MemoryTotalBytes        int64   `json:"memory_total_bytes"`
+	SwapUsedBytes           int64   `json:"swap_used_bytes"`
+	SwapTotalBytes          int64   `json:"swap_total_bytes"`
+	DiskUsedBytes           int64   `json:"disk_used_bytes"`
+	DiskTotalBytes          int64   `json:"disk_total_bytes"`
+	DiskReadBytesPerSecond  int64   `json:"disk_read_bytes_per_second"`
+	DiskWriteBytesPerSecond int64   `json:"disk_write_bytes_per_second"`
+	NetworkRXBPS            int64   `json:"network_rx_bps"`
+	NetworkTXBPS            int64   `json:"network_tx_bps"`
+	NetworkRXBytesTotal     int64   `json:"network_rx_bytes_total"`
+	NetworkTXBytesTotal     int64   `json:"network_tx_bytes_total"`
+	Load1                   float64 `json:"load_1"`
+	Load5                   float64 `json:"load_5"`
+	Load15                  float64 `json:"load_15"`
 }
 
 type HeartbeatResponse struct {

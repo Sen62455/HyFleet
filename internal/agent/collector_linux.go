@@ -19,10 +19,11 @@ import (
 )
 
 type linuxCollector struct {
-	mu          sync.Mutex
-	previousCPU [2]uint64
-	previousNet networkSample
-	facts       HostFacts
+	mu           sync.Mutex
+	previousCPU  [2]uint64
+	previousNet  networkSample
+	previousDisk diskSample
+	facts        HostFacts
 }
 
 func NewCollector() Collector {
@@ -36,7 +37,10 @@ func (collector *linuxCollector) Facts() HostFacts {
 func (collector *linuxCollector) Sample(_ context.Context) (protocol.HostMetrics, error) {
 	collector.mu.Lock()
 	defer collector.mu.Unlock()
-	metrics := protocol.HostMetrics{}
+	metrics := protocol.HostMetrics{
+		Hostname: collector.facts.Hostname, KernelVersion: collector.facts.KernelVersion,
+		CPUCores: collector.facts.CPUCores,
+	}
 	totalCPU, idleCPU, err := readCPU()
 	if err != nil {
 		return metrics, err
@@ -47,7 +51,8 @@ func (collector *linuxCollector) Sample(_ context.Context) (protocol.HostMetrics
 		metrics.CPUPercent = float64(totalDelta-idleDelta) / float64(totalDelta) * 100
 	}
 	collector.previousCPU = [2]uint64{totalCPU, idleCPU}
-	metrics.MemoryTotalBytes, metrics.MemoryUsedBytes, err = readMemory()
+	metrics.MemoryTotalBytes, metrics.MemoryUsedBytes,
+		metrics.SwapTotalBytes, metrics.SwapUsedBytes, err = readMemory()
 	if err != nil {
 		return metrics, err
 	}
@@ -65,6 +70,19 @@ func (collector *linuxCollector) Sample(_ context.Context) (protocol.HostMetrics
 	}
 	metrics.DiskTotalBytes = int64(disk.Blocks) * int64(disk.Bsize)
 	metrics.DiskUsedBytes = int64(disk.Blocks-disk.Bavail) * int64(disk.Bsize)
+	diskIO, err := readDiskIO()
+	if err != nil {
+		return metrics, err
+	}
+	if !collector.previousDisk.at.IsZero() {
+		seconds := diskIO.at.Sub(collector.previousDisk.at).Seconds()
+		if seconds > 0 && diskIO.readBytes >= collector.previousDisk.readBytes &&
+			diskIO.writeBytes >= collector.previousDisk.writeBytes {
+			metrics.DiskReadBytesPerSecond = int64(float64(diskIO.readBytes-collector.previousDisk.readBytes) / seconds)
+			metrics.DiskWriteBytesPerSecond = int64(float64(diskIO.writeBytes-collector.previousDisk.writeBytes) / seconds)
+		}
+	}
+	collector.previousDisk = diskIO
 	network, err := readNetwork()
 	if err != nil {
 		return metrics, err
@@ -76,6 +94,8 @@ func (collector *linuxCollector) Sample(_ context.Context) (protocol.HostMetrics
 			metrics.NetworkTXBPS = int64(float64(network.txBytes-collector.previousNet.txBytes) * 8 / seconds)
 		}
 	}
+	metrics.NetworkRXBytesTotal = network.rxBytes
+	metrics.NetworkTXBytesTotal = network.txBytes
 	collector.previousNet = network
 	return metrics, nil
 }
@@ -89,7 +109,11 @@ func (collector *linuxCollector) ServiceRunning(ctx context.Context, unit string
 }
 
 func readLinuxFacts() HostFacts {
-	facts := HostFacts{OS: "linux", Architecture: runtime.GOARCH}
+	facts := HostFacts{OS: "linux", Architecture: runtime.GOARCH, CPUCores: runtime.NumCPU()}
+	facts.Hostname, _ = os.Hostname()
+	if kernel, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
+		facts.KernelVersion = strings.TrimSpace(string(kernel))
+	}
 	data, err := os.ReadFile("/etc/os-release")
 	if err != nil {
 		return facts
@@ -137,12 +161,12 @@ func readCPU() (uint64, uint64, error) {
 	return total, values[3] + values[4], nil
 }
 
-func readMemory() (total int64, used int64, err error) {
+func readMemory() (total int64, used int64, swapTotal int64, swapUsed int64, err error) {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
-		return 0, 0, fmt.Errorf("read /proc/meminfo: %w", err)
+		return 0, 0, 0, 0, fmt.Errorf("read /proc/meminfo: %w", err)
 	}
-	var totalKiB, availableKiB int64
+	var totalKiB, availableKiB, swapTotalKiB, swapFreeKiB int64
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
@@ -157,12 +181,55 @@ func readMemory() (total int64, used int64, err error) {
 			totalKiB = value
 		case "MemAvailable":
 			availableKiB = value
+		case "SwapTotal":
+			swapTotalKiB = value
+		case "SwapFree":
+			swapFreeKiB = value
 		}
 	}
-	if totalKiB == 0 || availableKiB > totalKiB {
-		return 0, 0, fmt.Errorf("unexpected /proc/meminfo values")
+	if totalKiB == 0 || availableKiB > totalKiB || swapFreeKiB > swapTotalKiB {
+		return 0, 0, 0, 0, fmt.Errorf("unexpected /proc/meminfo values")
 	}
-	return totalKiB * 1024, (totalKiB - availableKiB) * 1024, nil
+	return totalKiB * 1024, (totalKiB - availableKiB) * 1024,
+		swapTotalKiB * 1024, (swapTotalKiB - swapFreeKiB) * 1024, nil
+}
+
+func readDiskIO() (diskSample, error) {
+	devices, err := os.ReadDir("/sys/block")
+	if err != nil {
+		return diskSample{}, fmt.Errorf("read /sys/block: %w", err)
+	}
+	physical := make(map[string]struct{}, len(devices))
+	for _, device := range devices {
+		name := device.Name()
+		if strings.HasPrefix(name, "loop") || strings.HasPrefix(name, "ram") ||
+			strings.HasPrefix(name, "zram") || strings.HasPrefix(name, "fd") ||
+			strings.HasPrefix(name, "sr") {
+			continue
+		}
+		physical[name] = struct{}{}
+	}
+	data, err := os.ReadFile("/proc/diskstats")
+	if err != nil {
+		return diskSample{}, fmt.Errorf("read /proc/diskstats: %w", err)
+	}
+	sample := diskSample{at: timeNow()}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 10 {
+			continue
+		}
+		if _, ok := physical[fields[2]]; !ok {
+			continue
+		}
+		readSectors, readErr := strconv.ParseInt(fields[5], 10, 64)
+		writeSectors, writeErr := strconv.ParseInt(fields[9], 10, 64)
+		if readErr == nil && writeErr == nil {
+			sample.readBytes += readSectors * 512
+			sample.writeBytes += writeSectors * 512
+		}
+	}
+	return sample, nil
 }
 
 func readUptime() (int64, error) {

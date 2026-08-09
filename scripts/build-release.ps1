@@ -167,6 +167,7 @@ foreach ($documentName in @(
     "14-phase-5-sui-adapter.md",
     "15-phase-6-operations.md",
     "16-phase-7-public-release.md",
+    "17-native-convergence-and-monitoring.md",
     "compatibility.md"
 )) {
     Copy-Item (Join-Path (Join-Path $repositoryRoot "docs") $documentName) (Join-Path $bundlePath "docs")

@@ -4,11 +4,11 @@ HyFleet is a lightweight control plane for a small fleet of Hysteria2 VPS nodes.
 It provides centralized node, user, traffic, subscription, and health management
 without replacing Hysteria2 or sing-box.
 
-The repository contains the **v1.0 public release** implementation. Native
-Hysteria2 and compatible S-UI nodes share one user, traffic, status, credential,
-and subscription control plane. Standalone sing-box supports bounded operations,
-split-directory backup, and health monitoring, while its user and subscription
-adapter remains out of scope.
+The repository contains the **v1.1 release** with native convergence and host
+monitoring. Native Hysteria2 and compatible S-UI nodes share one user, traffic,
+status, credential, and subscription control plane.
+Standalone sing-box supports bounded operations, split-directory backup, and
+health monitoring, while its user and subscription adapter remains out of scope.
 
 ## Current capabilities
 
@@ -44,6 +44,12 @@ adapter remains out of scope.
   retries, restricted core restart/log/backup actions, and restart rollback.
 - Active alert reconciliation for offline, core, traffic, synchronization, and
   operation failures, with acknowledgement and automatic recovery.
+- Beszel-style fleet overview and per-node CPU, memory, swap, disk I/O, network,
+  load, uptime, host, kernel, and core details with bounded 30-day history.
+- Dedicated filtered and paginated operation history; node details retain only
+  the three most recent results and the operation controls.
+- Heartbeat isolation through a small SQLite WAL connection pool and Agent
+  operation execution that cannot block its heartbeat scheduler.
 - Native Debian/Ubuntu bootstrap, a rootless Server container, consistent SQLite
   backup/restore, SPDX SBOMs, and keyless Sigstore release signatures.
 
@@ -111,19 +117,30 @@ adapter remains out of scope.
 - [Security policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 
+## Post-v1 documents
+
+- [Native convergence, host monitoring, and simultaneous-offline recovery](docs/17-native-convergence-and-monitoring.md)
+
 ## Install on Debian or Ubuntu
 
-Download and inspect the bootstrap from the same tag you intend to install:
+For a public repository, download and inspect the bootstrap from the same tag
+you intend to install:
 
 ```bash
 curl --fail --location --proto '=https' --tlsv1.2 \
   -o install.sh \
-  https://raw.githubusercontent.com/Sen62455/HyFleet/v1.0.0/install.sh
+  https://raw.githubusercontent.com/Sen62455/HyFleet/v1.1.0/install.sh
 less install.sh
 sudo bash install.sh server \
-  --version v1.0.0 \
+  --version v1.1.0 \
   --public-url https://panel.example.com
 ```
+
+While this repository is private, download the Release from an authenticated
+workstation with `gh release download`, then upload the verified bundle to the
+VPS. Existing v1.0 fleets should use `scripts/deploy-fleet.ps1`; the
+[v1.1 upgrade and native convergence guide](docs/17-native-convergence-and-monitoring.md)
+contains the exact private-repository workflow.
 
 The native Server binds to loopback and requires an HTTPS reverse proxy. Agents
 use the same bootstrap with the `agent` component after their node and one-time
@@ -154,7 +171,7 @@ Set `HYFLEET_BOOTSTRAP_TOKEN` before the first server start. Example files are i
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 `
-  -Architecture amd64 -Version v1.0.0
+  -Architecture amd64 -Version v1.1.0
 ```
 
 The archive, external checksum, Linux ELF binaries, idempotent installers, and
@@ -164,11 +181,12 @@ a Windows preview executable to a VPS.
 
 ## Status
 
-v1.0 is release-ready for native Debian/Ubuntu Server and Agent deployment and a
-Docker Server deployment. S-UI read-only imports remain excluded from quotas and
-subscriptions until explicitly adopted and successfully applied. Standalone
-sing-box can be enrolled for health, restart, limited logs, bounded file or
-directory configuration backup, and alerts; its user and subscription membership
-remains gated on a future adapter phase.
+v1.1 is release-ready for native Debian/Ubuntu Server and Agent deployment and a
+Docker Server deployment. Host monitoring, dedicated operation history, and the
+heartbeat-isolation fixes are included. S-UI read-only imports remain excluded
+from quotas and subscriptions until explicitly adopted and successfully applied.
+Standalone sing-box can be enrolled for health, restart, limited logs, bounded
+file or directory configuration backup, and alerts; its user and subscription
+membership remains gated on a future adapter phase.
 Secrets, IP addresses, API tokens, private keys, full subscription URLs, and
 unredacted configurations must not be committed.

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, useId } from "vue";
 
 export interface ChartSeries {
   name: string;
@@ -10,6 +10,7 @@ export interface ChartSeries {
 const props = withDefaults(defineProps<{
   series: ChartSeries[];
   labels: string[];
+  label?: string;
   valueFormatter?: (value: number) => string;
   emptyLabel?: string;
 }>(), {
@@ -17,7 +18,10 @@ const props = withDefaults(defineProps<{
   emptyLabel: "暂无历史数据",
 });
 
-const hoverIndex = ref<number | null>(null);
+const activeIndex = ref<number | null>(null);
+const chartFocused = ref(false);
+const announcement = ref("");
+const summaryId = `${useId()}-summary`;
 const width = 640;
 const height = 190;
 const padding = { top: 14, right: 14, bottom: 28, left: 42 };
@@ -39,6 +43,21 @@ const ticks = computed(() => [1, 0.75, 0.5, 0.25, 0].map((ratio) => ({
   value: maximum.value * ratio,
   y: padding.top + plotHeight * (1 - ratio),
 })));
+const seriesNames = computed(() => props.series.map((item) => item.name).filter(Boolean).join("、"));
+const chartAriaLabel = computed(() => {
+  const metric = props.label || seriesNames.value || "指标";
+  return `${metric}历史折线图${seriesNames.value ? `，序列：${seriesNames.value}` : ""}`;
+});
+const chartSummary = computed(() => {
+  if (pointCount.value === 0) return props.emptyLabel;
+  const summaries = props.series.map((item) => {
+    const values = item.values.filter(Number.isFinite);
+    if (values.length === 0) return `${item.name}暂无有效数据`;
+    const latest = values[values.length - 1];
+    return `${item.name}最低 ${props.valueFormatter(Math.min(...values))}，最高 ${props.valueFormatter(Math.max(...values))}，最新 ${props.valueFormatter(latest)}`;
+  });
+  return `共 ${pointCount.value} 个时间点。${summaries.join("；")}。聚焦图表后可使用左右方向键逐点查看。`;
+});
 
 function x(index: number) {
   return padding.left + (pointCount.value <= 1 ? 0 : (index / (pointCount.value - 1)) * plotWidth);
@@ -48,12 +67,53 @@ function y(value: number) {
   return padding.top + plotHeight - (Math.max(0, value) / maximum.value) * plotHeight;
 }
 
-function move(event: MouseEvent) {
+function describePoint(index: number) {
+  const time = shortTime(props.labels[index]) || `第 ${index + 1} 个时间点`;
+  const values = props.series.flatMap((item) => {
+    const value = item.values[index];
+    return Number.isFinite(value) ? [`${item.name} ${props.valueFormatter(value)}`] : [];
+  });
+  return `${time}，${values.length ? values.join("，") : "暂无有效数据"}`;
+}
+
+function selectIndex(index: number, announce = false) {
+  if (pointCount.value === 0) return;
+  activeIndex.value = Math.max(0, Math.min(pointCount.value - 1, index));
+  if (announce) announcement.value = describePoint(activeIndex.value);
+}
+
+function move(event: MouseEvent | PointerEvent) {
   if (pointCount.value === 0) return;
   const bounds = (event.currentTarget as SVGElement).getBoundingClientRect();
   const relative = ((event.clientX - bounds.left) / bounds.width) * width;
   const ratio = Math.max(0, Math.min(1, (relative - padding.left) / plotWidth));
-  hoverIndex.value = Math.round(ratio * (pointCount.value - 1));
+  selectIndex(Math.round(ratio * (pointCount.value - 1)));
+}
+
+function focusChart() {
+  chartFocused.value = true;
+  selectIndex(activeIndex.value ?? 0, true);
+}
+
+function blurChart() {
+  chartFocused.value = false;
+  activeIndex.value = null;
+}
+
+function clearPointer() {
+  if (!chartFocused.value) activeIndex.value = null;
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  const current = activeIndex.value ?? 0;
+  let next: number | null = null;
+  if (event.key === "ArrowLeft") next = current - 1;
+  if (event.key === "ArrowRight") next = current + 1;
+  if (event.key === "Home") next = 0;
+  if (event.key === "End") next = pointCount.value - 1;
+  if (next === null) return;
+  event.preventDefault();
+  selectIndex(next, true);
 }
 
 function shortTime(value: string | undefined) {
@@ -65,15 +125,22 @@ function shortTime(value: string | undefined) {
 </script>
 
 <template>
-  <div class="metric-chart" @mouseleave="hoverIndex = null">
+  <div class="metric-chart" @mouseleave="clearPointer">
     <div v-if="pointCount === 0" class="metric-chart__empty">{{ emptyLabel }}</div>
     <svg
       v-else
       class="metric-chart__canvas"
       :viewBox="`0 0 ${width} ${height}`"
       role="img"
-      aria-label="历史指标折线图"
-      @mousemove="move"
+      tabindex="0"
+      focusable="true"
+      :aria-label="chartAriaLabel"
+      :aria-describedby="summaryId"
+      @focus="focusChart"
+      @blur="blurChart"
+      @keydown="handleKeydown"
+      @pointerdown="move"
+      @pointermove="move"
     >
       <g v-for="tick in ticks" :key="tick.ratio">
         <line :x1="padding.left" :x2="width - padding.right" :y1="tick.y" :y2="tick.y" class="metric-chart__grid" />
@@ -86,15 +153,16 @@ function shortTime(value: string | undefined) {
         :key="line.name"
         :points="line.points"
         :stroke="line.color"
+        pathLength="1"
         class="metric-chart__line"
       />
-      <g v-if="hoverIndex !== null">
-        <line :x1="x(hoverIndex)" :x2="x(hoverIndex)" :y1="padding.top" :y2="padding.top + plotHeight" class="metric-chart__cursor" />
+      <g v-if="activeIndex !== null">
+        <line :x1="x(activeIndex)" :x2="x(activeIndex)" :y1="padding.top" :y2="padding.top + plotHeight" class="metric-chart__cursor" />
         <circle
           v-for="line in lines"
           :key="line.name"
-          :cx="x(hoverIndex)"
-          :cy="y(line.values[hoverIndex] ?? 0)"
+          :cx="x(activeIndex)"
+          :cy="y(line.values[activeIndex] ?? 0)"
           r="3.5"
           :fill="line.color"
           class="metric-chart__point"
@@ -105,11 +173,13 @@ function shortTime(value: string | undefined) {
         {{ shortTime(labels[labels.length - 1]) }}
       </text>
     </svg>
-    <div v-if="hoverIndex !== null" class="metric-chart__tooltip">
-      <strong>{{ shortTime(labels[hoverIndex]) }}</strong>
+    <div v-if="activeIndex !== null" class="metric-chart__tooltip">
+      <strong>{{ shortTime(labels[activeIndex]) }}</strong>
       <span v-for="line in lines" :key="line.name">
-        <i :style="{ background: line.color }" />{{ line.name }} {{ valueFormatter(line.values[hoverIndex] ?? 0) }}
+        <i :style="{ background: line.color }" />{{ line.name }} {{ valueFormatter(line.values[activeIndex] ?? 0) }}
       </span>
     </div>
+    <p :id="summaryId" class="sr-only">{{ chartSummary }}</p>
+    <p class="sr-only" aria-live="polite">{{ announcement }}</p>
   </div>
 </template>

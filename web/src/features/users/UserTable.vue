@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { h } from "vue";
-import { Archive, MoreHorizontal, Pencil, Settings2, UserRound, Wifi } from "@lucide/vue";
-import { NButton, NDropdown, NIcon, NTag, NTooltip, type DropdownOption } from "naive-ui";
+import { Archive, MoreHorizontal, Pencil, Settings2, Wifi } from "@lucide/vue";
+import { NButton, NDropdown, NIcon, NTooltip, type DropdownOption } from "naive-ui";
 import { formatBytes, formatDateTime } from "../../lib/format";
 import type { UserRecord } from "../../types";
 
-defineProps<{ users: UserRecord[] }>();
+defineProps<{
+  users: UserRecord[];
+  selectedUserId?: string | null;
+}>();
 const emit = defineEmits<{
-  select: [user: UserRecord];
+  select: [user: UserRecord, trigger: HTMLElement];
   action: [action: "edit" | "manage" | "archive", user: UserRecord];
 }>();
 
@@ -23,10 +26,14 @@ const options: DropdownOption[] = [
 ];
 
 const statusLabels = { active: "启用", disabled: "已停用", expired: "已到期" } as const;
-const statusTypes = { active: "success", disabled: "default", expired: "error" } as const;
-
 function choose(key: string | number, user: UserRecord) {
   emit("action", key as "edit" | "manage" | "archive", user);
+}
+
+function selectUser(user: UserRecord, event: MouseEvent | KeyboardEvent) {
+  const trigger = event.currentTarget as HTMLElement;
+  trigger.focus();
+  emit("select", user, trigger);
 }
 
 function syncState(user: UserRecord): { label: string; state: string } {
@@ -59,13 +66,17 @@ function syncState(user: UserRecord): { label: string; state: string } {
         <tr
           v-for="user in users"
           :key="user.id"
+          class="user-table__row"
+          :class="{ 'user-table__row--selected': selectedUserId === user.id }"
           tabindex="0"
-          @click="emit('select', user)"
-          @keydown.enter="emit('select', user)"
+          :aria-selected="selectedUserId === user.id"
+          :aria-controls="selectedUserId === user.id ? 'user-detail-panel' : undefined"
+          @click="selectUser(user, $event)"
+          @keydown.enter="selectUser(user, $event)"
+          @keydown.space.prevent="selectUser(user, $event)"
         >
           <td>
             <div class="user-identity">
-              <span class="user-identity__icon"><user-round :size="18" aria-hidden="true" /></span>
               <span>
                 <strong>{{ user.display_name || user.username }}</strong>
                 <small>@{{ user.username }}</small>
@@ -73,18 +84,18 @@ function syncState(user: UserRecord): { label: string; state: string } {
             </div>
           </td>
           <td>
-            <n-tag :type="statusTypes[user.status]" size="small" :bordered="false">
-              {{ statusLabels[user.status] }}
-            </n-tag>
+            <span class="status-marker" :class="`status-marker--${user.status}`">
+              <i aria-hidden="true" />{{ statusLabels[user.status] }}
+            </span>
             <span class="table-secondary online-inline" :class="{ 'online-inline--active': user.online_connections > 0 }">
               <wifi :size="12" aria-hidden="true" />{{ user.online_connections }}
             </span>
           </td>
           <td>
-            <div v-if="user.assignments.length" class="assignment-tags">
-              <n-tag v-for="assignment in user.assignments.slice(0, 2)" :key="assignment.id" size="small">
+            <div v-if="user.assignments.length" class="assignment-inline">
+              <span v-for="assignment in user.assignments.slice(0, 2)" :key="assignment.id">
                 {{ assignment.node_name }}
-              </n-tag>
+              </span>
               <span v-if="user.assignments.length > 2">+{{ user.assignments.length - 2 }}</span>
             </div>
             <span v-else class="table-muted">未分配</span>
@@ -119,39 +130,53 @@ function syncState(user: UserRecord): { label: string; state: string } {
   </div>
 
   <div class="user-mobile-list">
-    <article v-for="user in users" :key="user.id" class="user-mobile-item" @click="emit('select', user)">
-      <header>
-        <div class="user-identity">
-          <span class="user-identity__icon"><user-round :size="18" aria-hidden="true" /></span>
-          <span>
-            <strong>{{ user.display_name || user.username }}</strong>
-            <small>@{{ user.username }}</small>
+    <article
+      v-for="user in users"
+      :key="user.id"
+      class="user-mobile-item"
+      :class="{ 'user-mobile-item--selected': selectedUserId === user.id }"
+      @click="selectUser(user, $event)"
+    >
+      <button
+        type="button"
+        class="user-mobile-item__select"
+        :aria-label="`管理 ${user.username}`"
+        :aria-current="selectedUserId === user.id ? 'true' : undefined"
+        :aria-controls="selectedUserId === user.id ? 'user-detail-panel' : undefined"
+        @click.stop="selectUser(user, $event)"
+      >
+        <header>
+          <div class="user-identity">
+            <span>
+              <strong>{{ user.display_name || user.username }}</strong>
+              <small>@{{ user.username }}</small>
+            </span>
+          </div>
+        </header>
+        <div class="user-mobile-item__status">
+          <span class="status-marker" :class="`status-marker--${user.status}`">
+            <i aria-hidden="true" />{{ statusLabels[user.status] }}
+          </span>
+          <span>{{ user.assignments.length }} 个节点</span>
+          <span class="online-inline" :class="{ 'online-inline--active': user.online_connections > 0 }">
+            <wifi :size="12" aria-hidden="true" />{{ user.online_connections }}
           </span>
         </div>
-        <div @click.stop>
-          <n-dropdown trigger="click" :options="options" @select="choose($event, user)">
-            <n-button quaternary circle :aria-label="`${user.username} 操作`">
-              <template #icon><n-icon><more-horizontal /></n-icon></template>
-            </n-button>
-          </n-dropdown>
-        </div>
-      </header>
-      <div class="user-mobile-item__status">
-        <n-tag :type="statusTypes[user.status]" size="small" :bordered="false">
-          {{ statusLabels[user.status] }}
-        </n-tag>
-        <span>{{ user.assignments.length }} 个节点</span>
-        <span class="online-inline" :class="{ 'online-inline--active': user.online_connections > 0 }">
-          <wifi :size="12" aria-hidden="true" />{{ user.online_connections }}
-        </span>
+        <footer>
+          <span>{{ formatBytes(user.traffic_used_bytes) }} / {{ user.traffic_limit_bytes ? formatBytes(user.traffic_limit_bytes) : "不限额" }}</span>
+          <span>{{ formatDateTime(user.expires_at) }}</span>
+          <span class="sync-state" :class="`sync-state--${syncState(user).state}`">
+            <i aria-hidden="true" />{{ syncState(user).label }}
+          </span>
+        </footer>
+      </button>
+      <div class="user-mobile-item__menu" @click.stop @keydown.stop>
+        <n-dropdown trigger="click" :options="options" @select="choose($event, user)">
+          <n-button quaternary circle :aria-label="`${user.username} 操作`">
+            <template #icon><n-icon><more-horizontal /></n-icon></template>
+          </n-button>
+        </n-dropdown>
       </div>
-      <footer>
-        <span>{{ formatBytes(user.traffic_used_bytes) }} / {{ user.traffic_limit_bytes ? formatBytes(user.traffic_limit_bytes) : "不限额" }}</span>
-        <span>{{ formatDateTime(user.expires_at) }}</span>
-        <span class="sync-state" :class="`sync-state--${syncState(user).state}`">
-          <i aria-hidden="true" />{{ syncState(user).label }}
-        </span>
-      </footer>
     </article>
   </div>
 </template>

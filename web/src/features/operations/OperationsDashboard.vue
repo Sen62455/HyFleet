@@ -174,6 +174,7 @@ onMounted(() => void load());
           :key="item.value"
           type="button"
           :class="{ active: statusFilter === item.value }"
+          :aria-pressed="statusFilter === item.value"
           @click="statusFilter = item.value"
         >{{ item.label }}</button>
       </div>

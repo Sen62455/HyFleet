@@ -38,12 +38,15 @@ pre {
 
 .sr-only {
   position: absolute;
+  top: 0;
+  left: 0;
   width: 1px;
   height: 1px;
   padding: 0;
   margin: -1px;
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
 }
@@ -1754,18 +1757,38 @@ pre {
   }
 
   .user-mobile-item {
+    position: relative;
     overflow: hidden;
     border: 1px solid #dfe3e1;
     border-radius: 6px;
     background: #fff;
   }
 
-  .user-mobile-item > header {
+  .user-mobile-item__select {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .user-mobile-item__select > header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 14px 12px 10px;
+    padding: 14px 58px 10px 12px;
+  }
+
+  .user-mobile-item__menu {
+    position: absolute;
+    z-index: 1;
+    top: 7px;
+    right: 7px;
   }
 
   .user-mobile-item__status {

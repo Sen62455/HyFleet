@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import {
+  ArrowLeft,
   ChevronDown,
   ChevronUp,
   History,
@@ -17,8 +18,6 @@ import {
 } from "@lucide/vue";
 import {
   NButton,
-  NDrawer,
-  NDrawerContent,
   NIcon,
   NInputNumber,
   NProgress,
@@ -33,6 +32,7 @@ import type { NodeRecord, SubscriptionTokenRecord, UserAssignment, UserRecord } 
 
 const props = defineProps<{
   show: boolean;
+  modal?: boolean;
   user: UserRecord | null;
   assignableNodes: NodeRecord[];
   subscriptionTokens: SubscriptionTokenRecord[];
@@ -62,6 +62,7 @@ const selectedNodeID = ref<string | null>(null);
 const selectedLimitGiB = ref(0);
 const assignmentLimits = ref<Record<string, number>>({});
 const subscriptionHistoryOpen = ref(false);
+const panel = ref<HTMLElement | null>(null);
 const assignedNodeIDs = computed(() => new Set(props.user?.assignments.map((item) => item.node_id) ?? []));
 const availableOptions = computed(() =>
   props.assignableNodes
@@ -104,6 +105,42 @@ watch(
     );
   },
 );
+
+watch(
+  () => [props.show, props.user?.id, props.modal] as const,
+  ([show, , modal]) => {
+    if (show && modal) nextTick(() => panel.value?.focus());
+  },
+  { immediate: true },
+);
+
+function handlePanelKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    emit("update:show", false);
+    return;
+  }
+  if (!props.modal || event.key !== "Tab" || !panel.value) return;
+  const focusable = Array.from(
+    panel.value.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => !element.hidden && element.getClientRects().length > 0);
+  if (focusable.length === 0) {
+    event.preventDefault();
+    panel.value.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
 
 function assign() {
   if (!props.user || !selectedNodeID.value) return;
@@ -154,20 +191,43 @@ function formatLabel(format: string) {
 </script>
 
 <template>
-  <n-drawer
-    :show="show"
-    width="min(520px, 100vw)"
-    placement="right"
-    @update:show="emit('update:show', $event)"
+  <aside
+    v-if="show && user"
+    ref="panel"
+    id="user-detail-panel"
+    class="user-detail-drawer user-detail-panel user-master-detail__detail"
+    :role="modal ? 'dialog' : 'region'"
+    :aria-modal="modal ? 'true' : undefined"
+    :aria-labelledby="`user-detail-${user.id}-title`"
+    tabindex="-1"
+    @keydown="handlePanelKeydown"
   >
-    <n-drawer-content v-if="user" :title="user.display_name || user.username" closable>
-      <div class="user-detail-heading">
+    <header class="user-detail-shell__header user-detail-panel__header">
+      <n-tooltip trigger="hover">
+        <template #trigger>
+          <n-button
+            quaternary
+            circle
+            class="user-detail-panel__back"
+            aria-label="返回用户列表"
+            @click="emit('update:show', false)"
+          >
+            <template #icon><n-icon><arrow-left /></n-icon></template>
+          </n-button>
+        </template>
+        返回用户列表
+      </n-tooltip>
+      <div class="user-detail-header">
         <div>
+          <h2 :id="`user-detail-${user.id}-title`">{{ user.display_name || user.username }}</h2>
           <span>@{{ user.username }}</span>
-          <n-tag v-if="user.status === 'expired'" type="error" size="small" :bordered="false">已到期</n-tag>
-          <n-tag v-else-if="!user.enabled" size="small" :bordered="false">已停用</n-tag>
-          <n-tag v-else type="success" size="small" :bordered="false">启用</n-tag>
         </div>
+        <span
+          class="status-marker"
+          :class="`status-marker--${user.status === 'expired' ? 'expired' : user.enabled ? 'active' : 'disabled'}`"
+        >
+          <i aria-hidden="true" />{{ user.status === "expired" ? "已到期" : user.enabled ? "启用" : "已停用" }}
+        </span>
         <n-switch
           :value="user.enabled"
           :loading="working === `user:${user.id}`"
@@ -175,14 +235,39 @@ function formatLabel(format: string) {
           @update:value="emit('toggle-user', user, $event)"
         />
       </div>
+    </header>
 
-      <section class="detail-section">
-        <h2>账户</h2>
-        <dl class="detail-list">
-          <div><dt>到期时间</dt><dd>{{ formatDateTime(user.expires_at) }}</dd></div>
-          <div><dt>创建时间</dt><dd>{{ formatDateTime(user.created_at, false) }}</dd></div>
-          <div><dt>最后更新</dt><dd>{{ relativeTime(user.updated_at) }}</dd></div>
-        </dl>
+    <div class="user-detail-shell__body user-detail-panel__body">
+
+      <section class="user-overview-ledger" aria-label="账户概览">
+        <div class="user-overview-ledger__cell">
+          <span>账户有效期</span>
+          <strong>{{ formatDateTime(user.expires_at) }}</strong>
+          <small>创建于 {{ formatDateTime(user.created_at, false) }}</small>
+        </div>
+        <div class="user-overview-ledger__cell">
+          <span>在线设备</span>
+          <strong>{{ user.online_connections }}</strong>
+          <small>{{ user.online_nodes }} / {{ user.assignments.length }} 个节点在线</small>
+        </div>
+        <div class="user-overview-ledger__traffic">
+          <header>
+            <span>流量使用</span>
+            <strong>{{ formatBytes(user.traffic_used_bytes) }} / {{ user.traffic_limit_bytes ? formatBytes(user.traffic_limit_bytes) : "不限额" }}</strong>
+          </header>
+          <n-progress
+            v-if="user.traffic_limit_bytes > 0"
+            type="line"
+            :percentage="quotaPercent(user.traffic_used_bytes, user.traffic_limit_bytes)"
+            :show-indicator="false"
+            :status="user.quota_state === 'limited' ? 'error' : 'success'"
+          />
+          <footer>
+            <span>上传 {{ formatBytes(user.traffic_upload_bytes) }}</span>
+            <span>下载 {{ formatBytes(user.traffic_download_bytes) }}</span>
+            <span>更新 {{ relativeTime(user.updated_at) }}</span>
+          </footer>
+        </div>
         <p v-if="user.notes" class="user-notes">{{ user.notes }}</p>
       </section>
 
@@ -202,9 +287,9 @@ function formatLabel(format: string) {
                 <strong>{{ token.name }}</strong>
                 <span>{{ token.token_prefix }}••••</span>
               </div>
-              <n-tag :type="subscriptionState(token).type" size="small" :bordered="false">
-                {{ subscriptionState(token).label }}
-              </n-tag>
+              <span class="status-marker" :class="`status-marker--${token.status}`">
+                <i aria-hidden="true" />{{ subscriptionState(token).label }}
+              </span>
             </header>
             <div class="subscription-token-meta">
               <span>{{ token.allowed_formats.map(formatLabel).join(" · ") }}</span>
@@ -268,30 +353,6 @@ function formatLabel(format: string) {
           </n-button>
         </div>
         <div class="subscription-count">{{ activeSubscriptionTokens.length }} 个有效 Token</div>
-      </section>
-
-      <section class="detail-section">
-        <div class="detail-section__heading">
-          <h2>流量与在线</h2>
-          <n-tag v-if="user.quota_state === 'limited'" type="error" size="small" :bordered="false">
-            额度用尽
-          </n-tag>
-          <span v-else>{{ user.online_connections }} 台设备</span>
-        </div>
-        <n-progress
-          v-if="user.traffic_limit_bytes > 0"
-          type="line"
-          :percentage="quotaPercent(user.traffic_used_bytes, user.traffic_limit_bytes)"
-          :show-indicator="false"
-          :status="user.quota_state === 'limited' ? 'error' : 'success'"
-          processing
-        />
-        <dl class="detail-list detail-list--two traffic-summary">
-          <div><dt>已用 / 额度</dt><dd>{{ formatBytes(user.traffic_used_bytes) }} / {{ user.traffic_limit_bytes ? formatBytes(user.traffic_limit_bytes) : '不限额' }}</dd></div>
-          <div><dt>在线节点</dt><dd>{{ user.online_nodes }} / {{ user.assignments.length }}</dd></div>
-          <div><dt>上传</dt><dd>{{ formatBytes(user.traffic_upload_bytes) }}</dd></div>
-          <div><dt>下载</dt><dd>{{ formatBytes(user.traffic_download_bytes) }}</dd></div>
-        </dl>
       </section>
 
       <section class="detail-section">
@@ -388,6 +449,7 @@ function formatLabel(format: string) {
                 :max="8388607"
                 :precision="2"
                 size="small"
+                placeholder="额度 GiB"
               >
                 <template #suffix>GiB</template>
               </n-input-number>
@@ -487,32 +549,33 @@ function formatLabel(format: string) {
         <div v-else class="assignment-empty">尚未分配节点</div>
       </section>
 
-      <template #footer>
-        <div class="drawer-actions">
-          <n-button @click="emit('edit', user)">
-            <template #icon><n-icon><pencil /></n-icon></template>
-            编辑用户
-          </n-button>
-          <n-button
-            secondary
-            :disabled="kickableAssignments.length === 0"
-            :loading="working === `kick:${user.id}`"
-            @click="emit('kick-user', user)"
-          >
-            <template #icon><n-icon><log-out /></n-icon></template>
-            全部踢下线
-          </n-button>
-          <n-button
-            secondary
-            :disabled="managedAssignments.length === 0"
-            :loading="working === `credential-rotate:${user.id}`"
-            @click="emit('rotate-user-credentials', user)"
-          >
-            <template #icon><n-icon><rotate-cw /></n-icon></template>
-            全部轮换
-          </n-button>
-        </div>
-      </template>
-    </n-drawer-content>
-  </n-drawer>
+    </div>
+
+    <footer class="user-detail-shell__footer user-detail-panel__footer">
+      <div class="drawer-actions">
+        <n-button @click="emit('edit', user)">
+          <template #icon><n-icon><pencil /></n-icon></template>
+          编辑用户
+        </n-button>
+        <n-button
+          secondary
+          :disabled="kickableAssignments.length === 0"
+          :loading="working === `kick:${user.id}`"
+          @click="emit('kick-user', user)"
+        >
+          <template #icon><n-icon><log-out /></n-icon></template>
+          全部踢下线
+        </n-button>
+        <n-button
+          secondary
+          :disabled="managedAssignments.length === 0"
+          :loading="working === `credential-rotate:${user.id}`"
+          @click="emit('rotate-user-credentials', user)"
+        >
+          <template #icon><n-icon><rotate-cw /></n-icon></template>
+          全部轮换
+        </n-button>
+      </div>
+    </footer>
+  </aside>
 </template>

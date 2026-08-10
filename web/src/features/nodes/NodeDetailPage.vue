@@ -4,18 +4,16 @@ import {
   ArrowDown,
   ArrowLeft,
   ArrowUp,
-  Cpu,
-  HardDrive,
+  Globe2,
   KeyRound,
-  MemoryStick,
+  MapPin,
   Pencil,
   RefreshCw,
-  Wifi,
 } from "@lucide/vue";
-import { NButton, NIcon, NSpin, NTag, NTooltip } from "naive-ui";
+import { NButton, NIcon, NSpin, NTooltip } from "naive-ui";
 import { api, APIError } from "../../api";
-import MetricBar from "../../components/MetricBar.vue";
 import MetricChart, { type ChartSeries } from "../../components/MetricChart.vue";
+import NodeSignalRail from "../../components/NodeSignalRail.vue";
 import StatusIndicator from "../../components/StatusIndicator.vue";
 import {
   adapterLabels,
@@ -53,28 +51,35 @@ const ranges: { value: MetricRange; label: string }[] = [
   { value: "7d", label: "7 天" },
   { value: "30d", label: "30 天" },
 ];
+const selectedRangeLabel = computed(() => ranges.find((item) => item.value === metricRange.value)?.label ?? "24 小时");
+const memoryPercent = computed(() => percent(props.node.memory_used_bytes, props.node.memory_total_bytes));
+const diskPercent = computed(() => percent(props.node.disk_used_bytes, props.node.disk_total_bytes));
+
+function meterWidth(value: number) {
+  return `${Math.max(0, Math.min(100, value))}%`;
+}
 
 const labels = computed(() => metrics.value.samples.map((sample) => sample.bucket_at));
 const cpuSeries = computed<ChartSeries[]>(() => [{
-  name: "CPU", color: "#147d64", values: metrics.value.samples.map((sample) => sample.cpu_percent),
+  name: "CPU", color: "var(--hf-chart-primary)", values: metrics.value.samples.map((sample) => sample.cpu_percent),
 }]);
 const memorySeries = computed<ChartSeries[]>(() => [
   {
-    name: "内存", color: "#147d64",
+    name: "内存", color: "var(--hf-chart-primary)",
     values: metrics.value.samples.map((sample) => percent(sample.memory_used_bytes, sample.memory_total_bytes)),
   },
   {
-    name: "Swap", color: "#d97706",
+    name: "Swap", color: "var(--hf-chart-tertiary)",
     values: metrics.value.samples.map((sample) => percent(sample.swap_used_bytes, sample.swap_total_bytes)),
   },
 ]);
 const networkSeries = computed<ChartSeries[]>(() => [
-  { name: "下行", color: "#2563a6", values: metrics.value.samples.map((sample) => sample.network_rx_bps) },
-  { name: "上行", color: "#147d64", values: metrics.value.samples.map((sample) => sample.network_tx_bps) },
+  { name: "下行", color: "var(--hf-chart-primary)", values: metrics.value.samples.map((sample) => sample.network_rx_bps) },
+  { name: "上行", color: "var(--hf-chart-secondary)", values: metrics.value.samples.map((sample) => sample.network_tx_bps) },
 ]);
 const diskSeries = computed<ChartSeries[]>(() => [
-  { name: "读取", color: "#2563a6", values: metrics.value.samples.map((sample) => sample.disk_read_bytes_per_second) },
-  { name: "写入", color: "#d97706", values: metrics.value.samples.map((sample) => sample.disk_write_bytes_per_second) },
+  { name: "读取", color: "var(--hf-chart-primary)", values: metrics.value.samples.map((sample) => sample.disk_read_bytes_per_second) },
+  { name: "写入", color: "var(--hf-chart-tertiary)", values: metrics.value.samples.map((sample) => sample.disk_write_bytes_per_second) },
 ]);
 
 async function loadMetrics(silent = false) {
@@ -125,16 +130,19 @@ watch(() => props.node.id, () => void loadMetrics());
       <span>节点</span><b>/</b><strong>{{ node.name }}</strong>
     </div>
     <header class="node-detail-header">
-      <div>
-        <status-indicator :status="node.status" :show-label="false" />
+      <div class="node-detail-header__identity">
+        <div class="node-detail-header__eyebrow">
+          <status-indicator :status="node.status" />
+          <span>{{ adapterLabels[node.adapter_type] }}</span>
+        </div>
         <h1>{{ node.name }}</h1>
-        <status-indicator :status="node.status" />
-        <span>{{ [node.provider, node.region].filter(Boolean).join(" · ") || "未设置位置" }}</span>
-        <n-tag :type="node.core_running ? 'success' : 'error'" size="small" :bordered="false">
-          {{ node.core_name || "代理核心" }} {{ node.core_running ? "运行中" : "未运行" }}
-        </n-tag>
+        <div class="node-detail-header__meta">
+          <span><map-pin :size="14" aria-hidden="true" />{{ [node.provider, node.region].filter(Boolean).join(" · ") || "未设置位置" }}</span>
+          <span><globe-2 :size="14" aria-hidden="true" />{{ endpointLabel(node) }}</span>
+          <span>Agent {{ node.agent_version || "未注册" }}</span>
+        </div>
       </div>
-      <div>
+      <div class="node-detail-header__actions">
         <n-tooltip trigger="hover">
           <template #trigger>
             <n-button circle secondary aria-label="刷新监控" :loading="metricsLoading" @click="refreshMonitoring">
@@ -150,65 +158,106 @@ watch(() => props.node.id, () => void loadMetrics());
           <template #icon><n-icon><key-round /></n-icon></template>注册 Agent
         </n-button>
       </div>
+      <node-signal-rail :node="node" />
     </header>
 
-    <section class="host-kpis" aria-label="当前资源">
-      <div><cpu :size="20" /><span>CPU</span><strong>{{ formatPercent(node.cpu_percent) }}</strong><small>{{ node.cpu_cores || "-" }} 核 · 负载 {{ node.load_1.toFixed(2) }}</small></div>
-      <div><memory-stick :size="20" /><span>内存</span><strong>{{ formatBytes(node.memory_used_bytes) }}</strong><small>{{ formatBytes(node.memory_total_bytes) }} · Swap {{ formatBytes(node.swap_used_bytes) }}</small></div>
-      <div><hard-drive :size="20" /><span>根分区</span><strong>{{ formatPercent(percent(node.disk_used_bytes, node.disk_total_bytes)) }}</strong><small>{{ formatBytes(node.disk_used_bytes) }} / {{ formatBytes(node.disk_total_bytes) }}</small></div>
-      <div><wifi :size="20" /><span>当前网络</span><strong><arrow-down :size="15" />{{ formatRate(node.network_rx_bps) }}</strong><small><arrow-up :size="14" />{{ formatRate(node.network_tx_bps) }}</small></div>
-      <div><span>运行时间</span><strong>{{ formatUptime(node.uptime_seconds) }}</strong><small>心跳 {{ relativeTime(node.last_seen_at) }}</small></div>
-    </section>
+    <nav class="node-detail-nav" aria-label="节点详情导航">
+      <a href="#node-performance">性能轨迹</a>
+      <a href="#node-runtime">进程与服务</a>
+      <a href="#node-configuration">配置与运维</a>
+    </nav>
 
-    <div class="monitor-toolbar">
-      <div class="range-segment" aria-label="监控时间范围">
-        <button
-          v-for="item in ranges"
-          :key="item.value"
-          type="button"
-          :class="{ active: metricRange === item.value }"
-          @click="metricRange = item.value"
-        >{{ item.label }}</button>
+    <section id="node-performance" class="node-performance-layout" aria-label="节点性能">
+      <div class="monitor-workspace node-performance-main" aria-label="历史监控">
+        <header class="monitor-workspace__heading">
+          <div>
+            <h2>性能轨迹</h2>
+            <span>{{ selectedRangeLabel }}<template v-if="metrics.step_seconds > 60"> · {{ Math.round(metrics.step_seconds / 60) }} 分钟聚合</template></span>
+          </div>
+          <div class="monitor-toolbar">
+            <div class="range-segment" aria-label="监控时间范围">
+              <button
+                v-for="item in ranges"
+                :key="item.value"
+                type="button"
+                :class="{ active: metricRange === item.value }"
+                :aria-pressed="metricRange === item.value"
+                @click="metricRange = item.value"
+              >{{ item.label }}</button>
+            </div>
+          </div>
+        </header>
+        <div v-if="metricsError" class="monitor-error">{{ metricsError }}</div>
+        <div v-if="metricsLoading && metrics.samples.length === 0" class="monitor-loading"><n-spin :size="26" /></div>
+        <section v-else class="monitor-grid monitor-ledger">
+          <article class="monitor-panel monitor-panel--cpu">
+            <header><h2>CPU 使用率</h2><span>{{ formatPercent(node.cpu_percent) }}</span></header>
+            <metric-chart label="CPU 使用率" :series="cpuSeries" :labels="labels" :value-formatter="(value) => `${value.toFixed(0)}%`" />
+          </article>
+          <article class="monitor-panel monitor-panel--memory">
+            <header><h2>内存与 Swap</h2><span>{{ formatBytes(node.memory_used_bytes) }} / {{ formatBytes(node.memory_total_bytes) }}</span></header>
+            <metric-chart label="内存与 Swap" :series="memorySeries" :labels="labels" :value-formatter="(value) => `${value.toFixed(0)}%`" />
+          </article>
+          <article class="monitor-panel monitor-panel--network">
+            <header><h2>网络速率</h2><span>{{ formatRate(node.network_rx_bps + node.network_tx_bps) }}</span></header>
+            <metric-chart label="网络速率" :series="networkSeries" :labels="labels" :value-formatter="formatRate" />
+          </article>
+          <article class="monitor-panel monitor-panel--disk">
+            <header><h2>磁盘 I/O</h2><span>{{ formatBytes(node.disk_read_bytes_per_second + node.disk_write_bytes_per_second) }}/s</span></header>
+            <metric-chart label="磁盘 I/O" :series="diskSeries" :labels="labels" :value-formatter="(value) => `${formatBytes(value)}/s`" />
+          </article>
+        </section>
       </div>
-      <span v-if="metrics.step_seconds > 60">{{ Math.round(metrics.step_seconds / 60) }} 分钟聚合</span>
-    </div>
-    <div v-if="metricsError" class="monitor-error">{{ metricsError }}</div>
-    <div v-if="metricsLoading && metrics.samples.length === 0" class="monitor-loading"><n-spin :size="26" /></div>
-    <section v-else class="monitor-grid" aria-label="历史监控">
-      <article class="monitor-panel">
-        <header><h2>CPU 使用率</h2><span>{{ formatPercent(node.cpu_percent) }}</span></header>
-        <metric-chart :series="cpuSeries" :labels="labels" :value-formatter="(value) => `${value.toFixed(0)}%`" />
-      </article>
-      <article class="monitor-panel">
-        <header><h2>内存与 Swap</h2><span>{{ formatBytes(node.memory_used_bytes) }} / {{ formatBytes(node.memory_total_bytes) }}</span></header>
-        <metric-chart :series="memorySeries" :labels="labels" :value-formatter="(value) => `${value.toFixed(0)}%`" />
-      </article>
-      <article class="monitor-panel">
-        <header><h2>网络速率</h2><span>{{ formatRate(node.network_rx_bps + node.network_tx_bps) }}</span></header>
-        <metric-chart :series="networkSeries" :labels="labels" :value-formatter="formatRate" />
-      </article>
-      <article class="monitor-panel">
-        <header><h2>磁盘 I/O</h2><span>{{ formatBytes(node.disk_read_bytes_per_second + node.disk_write_bytes_per_second) }}/s</span></header>
-        <metric-chart :series="diskSeries" :labels="labels" :value-formatter="(value) => `${formatBytes(value)}/s`" />
-      </article>
+
+      <aside class="node-resource-rail" aria-label="当前资源">
+        <header class="node-resource-rail__heading">
+          <div><h2>当前资源</h2><span>心跳 {{ relativeTime(node.last_seen_at) }}</span></div>
+          <status-indicator :status="node.status" :show-label="false" />
+        </header>
+        <section class="host-kpis">
+          <article class="host-kpi host-kpi--primary">
+            <header><span>CPU 使用率</span><small>{{ node.cpu_cores || "-" }} 核</small></header>
+            <strong>{{ formatPercent(node.cpu_percent) }}</strong>
+            <div class="host-kpi__meter" aria-hidden="true"><i :style="{ width: meterWidth(node.cpu_percent) }" /></div>
+            <small>1 分钟负载 {{ node.load_1.toFixed(2) }}</small>
+          </article>
+          <article class="host-kpi host-kpi--primary">
+            <header><span>内存占用</span><small>{{ formatBytes(node.memory_total_bytes) }}</small></header>
+            <strong>{{ formatPercent(memoryPercent) }}</strong>
+            <div class="host-kpi__meter" aria-hidden="true"><i :style="{ width: meterWidth(memoryPercent) }" /></div>
+            <small>{{ formatBytes(node.memory_used_bytes) }} · Swap {{ formatBytes(node.swap_used_bytes) }}</small>
+          </article>
+          <article class="host-kpi host-kpi--primary">
+            <header><span>根分区</span><small>{{ formatBytes(node.disk_total_bytes) }}</small></header>
+            <strong>{{ formatPercent(diskPercent) }}</strong>
+            <div class="host-kpi__meter" aria-hidden="true"><i :style="{ width: meterWidth(diskPercent) }" /></div>
+            <small>{{ formatBytes(node.disk_used_bytes) }} 已用</small>
+          </article>
+          <article class="host-kpi host-kpi--context">
+            <header><span>当前网络</span><small>接收 / 发送</small></header>
+            <strong><arrow-down :size="14" aria-hidden="true" />{{ formatRate(node.network_rx_bps) }}</strong>
+            <small><arrow-up :size="13" aria-hidden="true" />{{ formatRate(node.network_tx_bps) }}</small>
+          </article>
+          <article class="host-kpi host-kpi--context">
+            <header><span>运行时间</span><small>自上次启动</small></header>
+            <strong>{{ formatUptime(node.uptime_seconds) }}</strong>
+            <small>Agent {{ node.agent_version || "未注册" }}</small>
+          </article>
+        </section>
+      </aside>
     </section>
 
     <host-telemetry-panel
+      id="node-runtime"
       ref="telemetryPanel"
       :node-id="node.id"
       @session-expired="emit('session-expired')"
     />
 
-    <section class="node-detail-lower">
+    <section id="node-configuration" class="node-detail-lower">
       <div class="node-detail-column">
         <section class="detail-band">
-          <h2>资源详情</h2>
-          <div class="detail-metrics">
-            <metric-bar label="CPU" :value="node.cpu_percent" :display="formatPercent(node.cpu_percent)" />
-            <metric-bar label="内存" :value="percent(node.memory_used_bytes, node.memory_total_bytes)" :display="`${formatBytes(node.memory_used_bytes)} / ${formatBytes(node.memory_total_bytes)}`" />
-            <metric-bar label="Swap" :value="percent(node.swap_used_bytes, node.swap_total_bytes)" :display="`${formatBytes(node.swap_used_bytes)} / ${formatBytes(node.swap_total_bytes)}`" />
-            <metric-bar label="根分区" :value="percent(node.disk_used_bytes, node.disk_total_bytes)" :display="`${formatBytes(node.disk_used_bytes)} / ${formatBytes(node.disk_total_bytes)}`" />
-          </div>
+          <h2>底层与累计指标</h2>
           <dl class="detail-list detail-list--two">
             <div><dt>CPU 核心</dt><dd>{{ node.cpu_cores || "-" }}</dd></div>
             <div><dt>负载（1 / 5 / 15 分钟）</dt><dd>{{ node.load_1.toFixed(2) }} / {{ node.load_5.toFixed(2) }} / {{ node.load_15.toFixed(2) }}</dd></div>

@@ -13,6 +13,7 @@ import {
 } from "naive-ui";
 import { ref } from "vue";
 import BrandMark from "../../components/BrandMark.vue";
+import ColorModePicker from "../../components/ColorModePicker.vue";
 
 const props = defineProps<{
   mode: "setup" | "login";
@@ -75,6 +76,7 @@ async function submit() {
   <main class="auth-screen">
     <header class="auth-screen__header">
       <brand-mark />
+      <color-mode-picker />
     </header>
     <section class="auth-panel" :aria-labelledby="isSetup ? 'setup-title' : 'login-title'">
       <div class="auth-panel__icon" aria-hidden="true">

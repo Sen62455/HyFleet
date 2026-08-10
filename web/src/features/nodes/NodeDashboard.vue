@@ -13,6 +13,7 @@ import {
 import { NAlert, NBadge, NButton, NIcon, NSpin, NTooltip, useDialog, useMessage } from "naive-ui";
 import { api, APIError } from "../../api";
 import BrandMark from "../../components/BrandMark.vue";
+import ColorModePicker from "../../components/ColorModePicker.vue";
 import { issueCount } from "../../lib/format";
 import type { AlertRecord, NodeInput, NodeRecord, Session } from "../../types";
 import AlertDrawer from "../alerts/AlertDrawer.vue";
@@ -209,6 +210,7 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
             type="button"
             class="topbar__nav-item"
             :class="{ 'topbar__nav-item--active': activeView === 'overview' }"
+            :aria-current="activeView === 'overview' ? 'page' : undefined"
             aria-label="总览"
             title="总览"
             @click="activeView = 'overview'"
@@ -220,6 +222,7 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
             type="button"
             class="topbar__nav-item"
             :class="{ 'topbar__nav-item--active': activeView === 'nodes' || activeView === 'node-detail' }"
+            :aria-current="activeView === 'nodes' || activeView === 'node-detail' ? 'page' : undefined"
             aria-label="节点"
             title="节点"
             @click="activeView = 'nodes'"
@@ -231,6 +234,7 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
             type="button"
             class="topbar__nav-item"
             :class="{ 'topbar__nav-item--active': activeView === 'users' }"
+            :aria-current="activeView === 'users' ? 'page' : undefined"
             aria-label="用户"
             title="用户"
             @click="activeView = 'users'"
@@ -242,6 +246,7 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
             type="button"
             class="topbar__nav-item"
             :class="{ 'topbar__nav-item--active': activeView === 'operations' }"
+            :aria-current="activeView === 'operations' ? 'page' : undefined"
             aria-label="操作记录"
             title="操作记录"
             @click="openOperations()"
@@ -252,6 +257,7 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
         </nav>
         <div class="topbar__account">
           <span class="topbar__username">{{ props.session.admin.username }}</span>
+          <color-mode-picker />
           <n-tooltip trigger="hover">
             <template #trigger>
               <n-badge :value="alerts.length" :max="99" :show="alerts.length > 0">

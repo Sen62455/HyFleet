@@ -46,7 +46,7 @@ async function copyText(value: string, label: string) {
       <key-round :size="18" aria-hidden="true" />
       <span>完整 Token 与订阅地址仅显示本次；关闭后需通过轮换生成新地址。</span>
     </div>
-    <div v-if="issued" class="subscription-secret">
+    <div v-if="issued" class="subscription-secret subscription-ledger-row subscription-ledger-row--secret">
       <header>
         <strong>Token</strong>
         <n-tooltip trigger="hover">
@@ -60,8 +60,12 @@ async function copyText(value: string, label: string) {
       </header>
       <code>{{ issued.token }}</code>
     </div>
-    <div v-if="issued" class="subscription-link-list">
-      <section v-for="item in links" :key="item.label" class="subscription-link-item">
+    <div v-if="issued" class="subscription-link-list subscription-ledger-list">
+      <section
+        v-for="item in links"
+        :key="item.label"
+        class="subscription-link-item subscription-ledger-row subscription-ledger-row--link"
+      >
         <header>
           <strong>{{ item.label }}</strong>
           <n-tooltip trigger="hover">

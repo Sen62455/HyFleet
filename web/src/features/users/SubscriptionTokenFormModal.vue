@@ -94,6 +94,7 @@ async function submit() {
           v-model:value="form.expires_at"
           type="datetime"
           clearable
+          placeholder="不设置则永不过期"
           :is-date-disabled="dateDisabled"
           style="width: 100%"
         />

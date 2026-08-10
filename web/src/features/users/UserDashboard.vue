@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Plus, RefreshCw, UsersRound } from "@lucide/vue";
-import { NAlert, NButton, NIcon, NSpin, NTooltip, useDialog, useMessage } from "naive-ui";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { Plus, RefreshCw, Search, UsersRound } from "@lucide/vue";
+import { NAlert, NButton, NIcon, NInput, NSpin, NTooltip, useDialog, useMessage } from "naive-ui";
 import { api, APIError } from "../../api";
 import type {
   NodeRecord,
@@ -41,7 +41,6 @@ const working = ref("");
 const credentialOpen = ref(false);
 const credentialTitle = ref("用户凭据");
 const credentials = ref<UserCredential[]>([]);
-const credentialReturnUserID = ref<string | null>(null);
 const subscriptionTokens = ref<SubscriptionTokenRecord[]>([]);
 const subscriptionLoading = ref(false);
 const subscriptionFormOpen = ref(false);
@@ -49,7 +48,11 @@ const subscriptionSaving = ref(false);
 const subscriptionUserID = ref<string | null>(null);
 const issuedSubscription = ref<IssuedSubscriptionToken | null>(null);
 const issuedSubscriptionOpen = ref(false);
-const issuedReturnUserID = ref<string | null>(null);
+type UserFilter = "all" | "active" | "online" | "attention";
+const searchQuery = ref("");
+const userFilter = ref<UserFilter>("all");
+const compactDetail = ref(false);
+const detailReturnTarget = ref<HTMLElement | null>(null);
 
 const assignableNodes = computed(() =>
   props.nodes.filter(
@@ -62,6 +65,34 @@ const onlineConnections = computed(() => users.value.reduce((total, user) => tot
 const limitedCount = computed(() => users.value.filter((user) => user.quota_state === "limited").length);
 const unavailableCount = computed(() => users.value.filter((user) => user.status !== "active").length);
 const detailUser = computed(() => users.value.find((user) => user.id === detailUserID.value) ?? null);
+const userFilters: Array<{ value: UserFilter; label: string }> = [
+  { value: "all", label: "全部" },
+  { value: "active", label: "可用" },
+  { value: "online", label: "在线" },
+  { value: "attention", label: "需关注" },
+];
+const filteredUsers = computed(() => {
+  const query = searchQuery.value.trim().toLocaleLowerCase();
+  return users.value.filter((user) => {
+    const matchesQuery = !query || [user.display_name, user.username, user.notes]
+      .some((value) => value.toLocaleLowerCase().includes(query));
+    if (!matchesQuery) return false;
+    if (userFilter.value === "active") return user.status === "active" && user.quota_state !== "limited";
+    if (userFilter.value === "online") return user.online_connections > 0;
+    if (userFilter.value === "attention") return user.status !== "active" || user.quota_state === "limited";
+    return true;
+  });
+});
+
+function resetUserFilters() {
+  searchQuery.value = "";
+  userFilter.value = "all";
+}
+
+function openDetail(user: UserRecord, trigger: HTMLElement) {
+  detailReturnTarget.value = trigger;
+  detailUserID.value = user.id;
+}
 
 function handleAPIError(error: unknown, fallback: string) {
   if (error instanceof APIError && error.status === 401) {
@@ -125,18 +156,13 @@ function showCredentials(title: string, items: UserCredential[], returnUserID: s
   if (items.length === 0) return false;
   credentialTitle.value = title;
   credentials.value = items;
-  credentialReturnUserID.value = returnUserID;
-  detailUserID.value = null;
+  if (returnUserID) detailUserID.value = returnUserID;
   credentialOpen.value = true;
   return true;
 }
 
 function setCredentialOpen(show: boolean) {
   credentialOpen.value = show;
-  if (!show && credentialReturnUserID.value) {
-    detailUserID.value = credentialReturnUserID.value;
-    credentialReturnUserID.value = null;
-  }
 }
 
 function openSubscriptionForm(user: UserRecord) {
@@ -163,8 +189,7 @@ async function createSubscriptionToken(input: SubscriptionTokenInput) {
 
 function showIssuedSubscription(issued: IssuedSubscriptionToken, returnUserID: string) {
   issuedSubscription.value = issued;
-  issuedReturnUserID.value = returnUserID;
-  detailUserID.value = null;
+  detailUserID.value = returnUserID;
   issuedSubscriptionOpen.value = true;
 }
 
@@ -172,10 +197,6 @@ function setIssuedSubscriptionOpen(show: boolean) {
   issuedSubscriptionOpen.value = show;
   if (!show) {
     issuedSubscription.value = null;
-    if (issuedReturnUserID.value) {
-      detailUserID.value = issuedReturnUserID.value;
-      issuedReturnUserID.value = null;
-    }
   }
 }
 
@@ -467,24 +488,47 @@ function rotateUserCredentials(user: UserRecord) {
 watch(detailUserID, (userID) => {
   if (userID) {
     loadSubscriptionTokens(userID);
-  } else if (!issuedSubscriptionOpen.value && !credentialOpen.value) {
+  } else {
     subscriptionTokens.value = [];
+    const target = detailReturnTarget.value;
+    detailReturnTarget.value = null;
+    if (target?.isConnected) nextTick(() => target.focus());
   }
 });
 
 let refreshTimer: number | undefined;
+let compactDetailQuery: MediaQueryList | undefined;
+function updateCompactDetail(event?: MediaQueryListEvent) {
+  compactDetail.value = event?.matches ?? compactDetailQuery?.matches ?? false;
+}
 onMounted(() => {
+  compactDetailQuery = window.matchMedia("(max-width: 1180px)");
+  updateCompactDetail();
+  compactDetailQuery.addEventListener("change", updateCompactDetail);
   loadUsers();
   refreshTimer = window.setInterval(() => {
     if (document.visibilityState === "visible") loadUsers(true);
   }, 15_000);
 });
-onBeforeUnmount(() => window.clearInterval(refreshTimer));
+onBeforeUnmount(() => {
+  window.clearInterval(refreshTimer);
+  compactDetailQuery?.removeEventListener("change", updateCompactDetail);
+});
 </script>
 
 <template>
-  <main id="users" class="workspace">
-    <div class="page-heading">
+  <main
+    id="users"
+    class="workspace users-workspace"
+    :class="{ 'users-workspace--detail': detailUser !== null }"
+  >
+    <section
+      class="users-master-pane user-master-detail__master"
+      aria-label="用户列表工作区"
+      :aria-hidden="compactDetail && detailUser ? 'true' : undefined"
+      :inert="compactDetail && detailUser ? true : undefined"
+    >
+      <div class="page-heading">
       <div>
         <h1>用户</h1>
         <p>账户状态、到期时间与节点授权</p>
@@ -505,7 +549,7 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
       </div>
     </div>
 
-    <section class="fleet-summary" aria-label="用户摘要">
+    <section class="fleet-summary users-summary" aria-label="用户摘要">
       <div class="fleet-summary__item">
         <span>全部用户</span>
         <strong>{{ users.length }}</strong>
@@ -531,23 +575,92 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
       </div>
     </n-alert>
 
-    <section class="node-surface" aria-label="用户列表">
-      <div v-if="loading" class="surface-state"><n-spin :size="28" /></div>
-      <div v-else-if="users.length === 0" class="surface-state surface-state--empty">
-        <users-round :size="28" :stroke-width="1.7" aria-hidden="true" />
-        <strong>尚未添加用户</strong>
-        <n-button type="primary" size="small" @click="openCreate">
-          <template #icon><n-icon><plus /></n-icon></template>
-          添加用户
-        </n-button>
+    <section v-if="!loading && users.length" class="user-ledger-toolbar" aria-label="筛选用户">
+      <n-input
+        v-model:value="searchQuery"
+        clearable
+        class="user-ledger-search"
+        aria-label="搜索用户"
+        placeholder="搜索姓名、用户名或备注"
+      >
+        <template #prefix><n-icon><search /></n-icon></template>
+      </n-input>
+      <div class="user-filter-segment" role="group" aria-label="用户状态">
+        <button
+          v-for="filter in userFilters"
+          :key="filter.value"
+          type="button"
+          :class="{ active: userFilter === filter.value }"
+          :aria-pressed="userFilter === filter.value"
+          @click="userFilter = filter.value"
+        >
+          {{ filter.label }}
+        </button>
       </div>
-      <user-table
-        v-else
-        :users="users"
-        @select="detailUserID = $event.id"
-        @action="handleAction"
-      />
+      <span class="user-filter-result">{{ filteredUsers.length }} / {{ users.length }}</span>
     </section>
+
+      <section class="node-surface users-surface" aria-label="用户列表">
+        <div v-if="loading" class="surface-state"><n-spin :size="28" /></div>
+        <div v-else-if="users.length === 0" class="surface-state surface-state--empty">
+          <users-round :size="28" :stroke-width="1.7" aria-hidden="true" />
+          <strong>尚未添加用户</strong>
+          <n-button type="primary" size="small" @click="openCreate">
+            <template #icon><n-icon><plus /></n-icon></template>
+            添加用户
+          </n-button>
+        </div>
+        <div v-else-if="filteredUsers.length === 0" class="surface-state surface-state--empty surface-state--filtered">
+          <strong>没有符合条件的用户</strong>
+          <n-button secondary size="small" @click="resetUserFilters">清除筛选</n-button>
+        </div>
+        <user-table
+          v-else
+          :users="filteredUsers"
+          :selected-user-id="detailUserID"
+          @select="openDetail"
+          @action="handleAction"
+        />
+      </section>
+    </section>
+
+    <button
+      v-if="detailUser"
+      type="button"
+      class="user-detail-backdrop"
+      aria-label="关闭用户详情"
+      tabindex="-1"
+      @click="detailUserID = null"
+    />
+    <div v-if="detailUser" class="user-master-detail__divider" aria-hidden="true" />
+    <transition name="user-detail-panel">
+      <user-detail-drawer
+        v-if="detailUser"
+        :show="true"
+        :modal="compactDetail"
+        :user="detailUser"
+        :assignable-nodes="assignableNodes"
+        :subscription-tokens="subscriptionTokens"
+        :subscription-loading="subscriptionLoading"
+        :working="working"
+        @update:show="!$event && (detailUserID = null)"
+        @edit="openEdit"
+        @toggle-user="toggleUser"
+        @assign="assignUser"
+        @toggle-assignment="toggleAssignment"
+        @update-assignment-limit="updateAssignmentLimit"
+        @kick-user="kickUser"
+        @kick-assignment="kickUser"
+        @unassign="unassignUser"
+        @reveal="revealCredential"
+        @create-subscription="openSubscriptionForm"
+        @rotate-subscription="rotateSubscriptionToken"
+        @revoke-subscription="revokeSubscriptionToken"
+        @rotate-assignment-credential="rotateAssignmentCredential"
+        @rotate-user-credentials="rotateUserCredentials"
+        @open-node="emit('open-node', $event)"
+      />
+    </transition>
   </main>
 
   <user-form-modal
@@ -556,30 +669,6 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer));
     :assignable-nodes="assignableNodes"
     :saving="saving"
     @submit="saveUser"
-  />
-  <user-detail-drawer
-    :show="detailUser !== null"
-    :user="detailUser"
-    :assignable-nodes="assignableNodes"
-    :subscription-tokens="subscriptionTokens"
-    :subscription-loading="subscriptionLoading"
-    :working="working"
-    @update:show="!$event && (detailUserID = null)"
-    @edit="openEdit"
-    @toggle-user="toggleUser"
-    @assign="assignUser"
-    @toggle-assignment="toggleAssignment"
-    @update-assignment-limit="updateAssignmentLimit"
-    @kick-user="kickUser"
-    @kick-assignment="kickUser"
-    @unassign="unassignUser"
-    @reveal="revealCredential"
-    @create-subscription="openSubscriptionForm"
-    @rotate-subscription="rotateSubscriptionToken"
-    @revoke-subscription="revokeSubscriptionToken"
-    @rotate-assignment-credential="rotateAssignmentCredential"
-    @rotate-user-credentials="rotateUserCredentials"
-    @open-node="emit('open-node', $event)"
   />
   <credential-dialog
     :show="credentialOpen"

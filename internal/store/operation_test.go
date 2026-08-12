@@ -81,6 +81,22 @@ func TestEmptyNodeHistoryReleasesSingleConnection(t *testing.T) {
 	}
 }
 
+func TestRealityNodeOperationRejectsLogTail(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	database, admin, _, _ := newOperationTestStore(t, "native_hysteria2", now)
+	node := createVLESSRealityTestNode(t, database, "Reality operations", now)
+	if _, err := database.DB().ExecContext(t.Context(), `
+		UPDATE nodes SET agent_installation_id = ? WHERE id = ?
+	`, uuid.NewString(), node.ID); err != nil {
+		t.Fatalf("bind Reality Agent: %v", err)
+	}
+	if _, err := database.CreateNodeOperation(
+		t.Context(), node.ID, "tail_core_log", 20, admin.ID, now,
+	); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("Reality tail_core_log error = %v", err)
+	}
+}
+
 func newOperationTestStore(t *testing.T, adapter string, now time.Time) (*Store, Admin, Node, AgentIdentity) {
 	t.Helper()
 	database, err := Open(context.Background(), filepath.Join(t.TempDir(), "operations.db"))
@@ -192,6 +208,26 @@ func TestNodeOperationsSequenceResultRetryAndBackupMetadata(t *testing.T) {
 		WHERE name IN ('body', 'content', 'config')
 	`).Scan(&schemaContainsBody); err != nil || schemaContainsBody != 0 {
 		t.Fatalf("config backup schema stores body: count=%d error=%v", schemaContainsBody, err)
+	}
+}
+
+func TestValidConfigBackupPathAllowsOnlyManagedRoots(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{path: "/var/lib/hyfleet-backups/config-test.bak", want: true},
+		{path: "/var/lib/hyfleet-backups-lab/config-test.bak", want: true},
+		{path: "/var/lib/hyfleet-backups"},
+		{path: "/var/lib/hyfleet-backups-lab"},
+		{path: "/var/lib/hyfleet-backups-lab-escape/config-test.bak"},
+		{path: "/var/lib/hyfleet-backups/../hyfleet-backups-lab/config-test.bak"},
+		{path: "/tmp/config-test.bak"},
+	}
+	for _, test := range tests {
+		if got := validConfigBackupPath(test.path); got != test.want {
+			t.Errorf("validConfigBackupPath(%q) = %v, want %v", test.path, got, test.want)
+		}
 	}
 }
 

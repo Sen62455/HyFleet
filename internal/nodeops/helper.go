@@ -2,6 +2,7 @@ package nodeops
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -16,7 +17,7 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"runtime"
 	"strings"
 	"time"
 
@@ -29,19 +30,73 @@ const (
 	maxConfigBackupArchiveBytes int64 = maxConfigBackupBytes + 1024*1024
 	maxConfigBackupEntries            = 512
 	maxConfigBackupDepth              = 16
+	maxHelperResponseBytes      int   = 64 * 1024
 )
 
 var helperUnitPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,127}$`)
 
 type CommandFunc func(context.Context, string, ...string) ([]byte, error)
+type ListenerCheckFunc func(context.Context, int) error
 
 type Helper struct {
-	ServiceUnit    string
-	CoreConfigPath string
-	BackupDir      string
-	LedgerDir      string
-	RunCommand     CommandFunc
-	Now            func() time.Time
+	ServiceUnit            string
+	CoreConfigPath         string
+	SingBoxBinaryPath      string
+	RealityIdentityPath    string
+	RealityAppliedPath     string
+	BackupDir              string
+	LedgerDir              string
+	RunCommand             CommandFunc
+	CheckTCPListener       ListenerCheckFunc
+	ProcRoot               string
+	Now                    func() time.Time
+	afterRealityConfigLink func(candidatePath, targetPath string)
+}
+
+func NewRealityHelper(
+	serviceUnit, coreConfigPath, binaryPath, identityPath, operationsStateDir, backupDir string,
+) (*Helper, error) {
+	if !validRealityHelperTuple(
+		serviceUnit, coreConfigPath, identityPath, operationsStateDir, backupDir,
+	) {
+		return nil, errors.New("invalid helper Reality deployment tuple")
+	}
+	helper, err := NewHelper(serviceUnit, coreConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	if binaryPath != "/usr/bin/sing-box" {
+		return nil, errors.New("invalid helper sing-box binary path")
+	}
+	if !validRealityHelperDir(operationsStateDir, "/var/lib/hyfleet-agent-ops") {
+		return nil, errors.New("invalid helper operations state directory")
+	}
+	if !validRealityHelperDir(backupDir, "/var/lib/hyfleet-backups") {
+		return nil, errors.New("invalid helper backup directory")
+	}
+	if !pathpkg.IsAbs(identityPath) || pathpkg.Clean(identityPath) != identityPath ||
+		pathpkg.Dir(identityPath) != operationsStateDir || pathpkg.Ext(identityPath) != ".json" ||
+		len(identityPath) > 256 {
+		return nil, errors.New("invalid helper Reality identity path")
+	}
+	helper.SingBoxBinaryPath = binaryPath
+	helper.RealityIdentityPath = identityPath
+	helper.RealityAppliedPath = strings.TrimSuffix(identityPath, ".json") + "-applied.json"
+	helper.LedgerDir = operationsStateDir
+	helper.BackupDir = backupDir
+	return helper, nil
+}
+
+func validRealityHelperTuple(serviceUnit, coreConfigPath, identityPath, stateDir, backupDir string) bool {
+	return serviceUnit == "hyfleet-sing-box-reality.service" &&
+		coreConfigPath == "/etc/sing-box/hyfleet-reality.json" &&
+		identityPath == "/var/lib/hyfleet-agent-ops/reality-hyfleet-sing-box-reality.json" &&
+		stateDir == "/var/lib/hyfleet-agent-ops" &&
+		backupDir == "/var/lib/hyfleet-backups"
+}
+
+func validRealityHelperDir(value, productionPath string) bool {
+	return pathpkg.IsAbs(value) && pathpkg.Clean(value) == value && value == productionPath
 }
 
 func NewHelper(serviceUnit, coreConfigPath string) (*Helper, error) {
@@ -65,21 +120,85 @@ func NewHelper(serviceUnit, coreConfigPath string) (*Helper, error) {
 }
 
 func (helper *Helper) Serve(ctx context.Context, reader io.Reader, writer io.Writer) error {
+	request, err := DecodeHelperRequest(reader)
+	if err != nil {
+		return err
+	}
+	return EncodeHelperResponse(writer, helper.Handle(ctx, request))
+}
+
+func DecodeHelperRequest(reader io.Reader) (HelperRequest, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maxHelperRequestBytes+1))
+	if err != nil {
+		return HelperRequest{}, fmt.Errorf("read helper request: %w", err)
+	}
+	if len(data) > maxHelperRequestBytes {
+		return HelperRequest{}, errors.New("helper request exceeds size limit")
+	}
 	var request HelperRequest
-	decoder := json.NewDecoder(io.LimitReader(reader, 64*1024))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		return fmt.Errorf("decode helper request: %w", err)
+		return HelperRequest{}, fmt.Errorf("decode helper request: %w", err)
 	}
-	response := helper.Handle(ctx, request)
-	if err := json.NewEncoder(writer).Encode(response); err != nil {
+	if err := ensureJSONEOF(decoder); err != nil {
+		return HelperRequest{}, err
+	}
+	if err := ValidateHelperRequest(request); err != nil {
+		return HelperRequest{}, err
+	}
+	return request, nil
+}
+
+func ValidateHelperRequest(request HelperRequest) error {
+	actions := 0
+	if request.Operation != nil {
+		actions++
+	}
+	if request.RealityApply != nil {
+		actions++
+	}
+	if request.RealityProbe != nil {
+		actions++
+	}
+	if actions != 1 {
+		return errors.New("helper request must contain exactly one action")
+	}
+	return nil
+}
+
+func EncodeHelperResponse(writer io.Writer, response HelperResponse) error {
+	var encoded bytes.Buffer
+	if err := json.NewEncoder(&encoded).Encode(response); err != nil {
 		return fmt.Errorf("encode helper response: %w", err)
+	}
+	if encoded.Len() > maxHelperResponseBytes {
+		return errors.New("helper response exceeds size limit")
+	}
+	written, err := writer.Write(encoded.Bytes())
+	if err != nil {
+		return fmt.Errorf("write helper response: %w", err)
+	}
+	if written != encoded.Len() {
+		return io.ErrShortWrite
 	}
 	return nil
 }
 
 func (helper *Helper) Handle(ctx context.Context, request HelperRequest) HelperResponse {
-	operation := request.Operation
+	if err := ValidateHelperRequest(request); err != nil {
+		return HelperResponse{
+			Status: "failed", ErrorCode: "helper_request_invalid",
+			ErrorMessage: err.Error(), CompletedAt: helper.now(),
+		}
+	}
+	if request.RealityApply != nil {
+		return helper.applyReality(ctx, *request.RealityApply)
+	}
+	if request.RealityProbe != nil {
+		return helper.probeReality(ctx)
+	}
+	operation := *request.Operation
 	if cached, ok := helper.loadResult(operation); ok {
 		return cached
 	}
@@ -113,6 +232,30 @@ func (helper *Helper) Handle(ctx context.Context, request HelperRequest) HelperR
 			ErrorCode:    "operation_result_persist_failed",
 			ErrorMessage: SanitizeMessage(err.Error(), 512), CompletedAt: helper.now(),
 		}
+	}
+	return response
+}
+
+func (helper *Helper) probeReality(ctx context.Context) HelperResponse {
+	probedAt := helper.now()
+	result := &RealityProbeResult{
+		AdapterStatus: "incompatible", AdapterErrorCode: "reality_binary_incompatible",
+		ProbedAt: probedAt,
+	}
+	response := HelperResponse{
+		Status: "succeeded", RealityProbe: result, CompletedAt: probedAt,
+	}
+	if err := helper.validateRealityBinary(ctx); err != nil {
+		return response
+	}
+	result.AdapterStatus = "compatible"
+	result.AdapterVersion = supportedRealitySingBoxVersion
+	result.AdapterErrorCode = ""
+	result.CoreVersion = supportedRealitySingBoxVersion
+	output, err := helper.command(ctx, "systemctl", "is-active", helper.ServiceUnit)
+	if err == nil && strings.TrimSpace(string(output)) == "active" {
+		listenPort := helper.managedRealityListenPort()
+		result.CoreRunning = listenPort != 0 && helper.waitTCPListener(ctx, listenPort) == nil
 	}
 	return response
 }
@@ -199,8 +342,8 @@ func (helper *Helper) backupConfig(operation protocol.NodeOperation) HelperRespo
 
 func (helper *Helper) restartCore(ctx context.Context, operation protocol.NodeOperation) HelperResponse {
 	response := HelperResponse{Sequence: operation.Sequence, CompletedAt: helper.now()}
-	rollbackSource, _ := helper.latestBackup("")
 	var preRestartBackup *protocol.Backup
+	realityListenPort := 0
 	if helper.CoreConfigPath != "" {
 		backup, err := helper.createBackup(operation.ID)
 		if err != nil {
@@ -212,34 +355,64 @@ func (helper *Helper) restartCore(ctx context.Context, operation protocol.NodeOp
 		preRestartBackup = backup
 		response.Backup = backup
 	}
+	if helper.managesVLESSReality() {
+		realityListenPort = helper.backupRealityListenPort(preRestartBackup)
+		if realityListenPort == 0 {
+			response.Status = "failed"
+			response.ErrorCode = "core_restart_failed"
+			response.ErrorMessage = "managed Reality listen port is invalid"
+			return response
+		}
+	}
 	restartOutput, restartErr := helper.command(ctx, "systemctl", "restart", helper.ServiceUnit)
 	activeOutput, activeErr := helper.command(ctx, "systemctl", "is-active", helper.ServiceUnit)
 	response.Output = string(restartOutput) + "\n" + string(activeOutput)
-	if restartErr == nil && activeErr == nil && strings.TrimSpace(string(activeOutput)) == "active" {
+	healthErr := error(nil)
+	if restartErr == nil && activeErr == nil && strings.TrimSpace(string(activeOutput)) == "active" &&
+		realityListenPort != 0 {
+		healthErr = helper.waitTCPListener(ctx, realityListenPort)
+	}
+	if restartErr == nil && activeErr == nil && healthErr == nil &&
+		strings.TrimSpace(string(activeOutput)) == "active" {
 		response.Status = "succeeded"
 		response.CompletedAt = helper.now()
 		return response
 	}
-	if rollbackSource == "" && preRestartBackup != nil {
+	rollbackSource := ""
+	if preRestartBackup != nil {
 		rollbackSource = preRestartBackup.LocalPath
 	}
 	if rollbackSource != "" && helper.CoreConfigPath != "" {
 		if err := helper.restoreBackup(rollbackSource); err == nil {
 			_, _ = helper.command(ctx, "systemctl", "restart", helper.ServiceUnit)
 			rollbackActive, rollbackErr := helper.command(ctx, "systemctl", "is-active", helper.ServiceUnit)
-			if rollbackErr == nil && strings.TrimSpace(string(rollbackActive)) == "active" {
+			rollbackHealthErr := error(nil)
+			if rollbackErr == nil && strings.TrimSpace(string(rollbackActive)) == "active" &&
+				realityListenPort != 0 {
+				rollbackHealthErr = helper.waitTCPListener(ctx, realityListenPort)
+			}
+			if rollbackErr == nil && rollbackHealthErr == nil &&
+				strings.TrimSpace(string(rollbackActive)) == "active" {
 				response.RolledBack = true
 			}
 		}
 	}
 	response.Status = "failed"
 	response.ErrorCode = "core_restart_failed"
-	response.ErrorMessage = commandErrorMessage(errors.Join(restartErr, activeErr), "core restart failed")
+	response.ErrorMessage = commandErrorMessage(errors.Join(restartErr, activeErr, healthErr), "core restart failed")
 	response.CompletedAt = helper.now()
 	return response
 }
 
+func (helper *Helper) managesVLESSReality() bool {
+	return helper.SingBoxBinaryPath != "" && helper.RealityIdentityPath != "" &&
+		helper.RealityAppliedPath != ""
+}
+
 func (helper *Helper) createBackup(operationID string) (*protocol.Backup, error) {
+	if err := helper.prepareBackupDir(); err != nil {
+		return nil, err
+	}
 	if existing, ok := helper.existingOperationBackup(operationID); ok {
 		return helper.backupMetadata(existing)
 	}
@@ -249,9 +422,6 @@ func (helper *Helper) createBackup(operationID string) (*protocol.Backup, error)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New("core configuration cannot be a symbolic link")
-	}
-	if err := helper.prepareBackupDir(); err != nil {
-		return nil, err
 	}
 	switch {
 	case info.Mode().IsRegular():
@@ -264,11 +434,55 @@ func (helper *Helper) createBackup(operationID string) (*protocol.Backup, error)
 }
 
 func (helper *Helper) prepareBackupDir() error {
-	if err := os.MkdirAll(helper.BackupDir, 0o700); err != nil {
-		return fmt.Errorf("create backup directory: %w", err)
+	before, err := os.Lstat(helper.BackupDir)
+	created := false
+	switch {
+	case err == nil:
+		if !validBackupDirectoryInfo(helper.BackupDir, before) {
+			return errors.New("backup path is not a secure directory")
+		}
+	case errors.Is(err, os.ErrNotExist):
+		if err := os.Mkdir(helper.BackupDir, 0o700); err != nil {
+			return fmt.Errorf("create backup directory: %w", err)
+		}
+		created = true
+	default:
+		return fmt.Errorf("inspect backup directory: %w", err)
 	}
-	if err := os.Chmod(helper.BackupDir, 0o700); err != nil {
-		return fmt.Errorf("secure backup directory: %w", err)
+	pathInfo, err := os.Lstat(helper.BackupDir)
+	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.IsDir() {
+		return errors.New("backup path is not a secure directory")
+	}
+	directory, err := os.Open(helper.BackupDir)
+	if err != nil {
+		return fmt.Errorf("open backup directory: %w", err)
+	}
+	openedInfo, statErr := directory.Stat()
+	if statErr != nil || !openedInfo.IsDir() || !os.SameFile(pathInfo, openedInfo) {
+		_ = directory.Close()
+		return errors.New("backup directory changed while opening")
+	}
+	if created {
+		if err := directory.Chmod(0o700); err != nil {
+			_ = directory.Close()
+			return fmt.Errorf("secure backup directory: %w", err)
+		}
+		if requiresBackupRootOwner(helper.BackupDir) {
+			if err := directory.Chown(0, 0); err != nil {
+				_ = directory.Close()
+				return fmt.Errorf("secure backup directory ownership: %w", err)
+			}
+		}
+	}
+	securedInfo, statErr := directory.Stat()
+	closeErr := directory.Close()
+	after, inspectErr := os.Lstat(helper.BackupDir)
+	if statErr != nil || closeErr != nil || inspectErr != nil ||
+		!validBackupDirectoryInfo(helper.BackupDir, securedInfo) ||
+		!validBackupDirectoryInfo(helper.BackupDir, after) ||
+		!os.SameFile(pathInfo, securedInfo) || !os.SameFile(securedInfo, after) ||
+		!sameFileOwnership(securedInfo, after) {
+		return errors.New("backup directory metadata could not be verified")
 	}
 	return nil
 }
@@ -301,6 +515,10 @@ func (helper *Helper) createFileBackup(operationID string, info os.FileInfo) (*p
 		_ = temporary.Close()
 		return nil, fmt.Errorf("secure temporary backup: %w", err)
 	}
+	if err := helper.secureBackupFile(temporary); err != nil {
+		_ = temporary.Close()
+		return nil, err
+	}
 	hash := sha256.New()
 	written, err := io.Copy(io.MultiWriter(temporary, hash), io.LimitReader(source, maxConfigBackupBytes+1))
 	if err != nil || written > maxConfigBackupBytes {
@@ -311,14 +529,16 @@ func (helper *Helper) createFileBackup(operationID string, info os.FileInfo) (*p
 		_ = temporary.Close()
 		return nil, fmt.Errorf("sync configuration backup: %w", err)
 	}
+	temporaryInfo, statErr := temporary.Stat()
+	if statErr != nil || !validBackupFileInfo(helper.BackupDir, temporaryInfo) {
+		_ = temporary.Close()
+		return nil, errors.New("temporary configuration backup metadata is invalid")
+	}
 	if err := temporary.Close(); err != nil {
 		return nil, fmt.Errorf("close configuration backup: %w", err)
 	}
-	if err := os.Rename(temporaryPath, destinationPath); err != nil {
-		return nil, fmt.Errorf("publish configuration backup: %w", err)
-	}
-	if err := os.Chmod(destinationPath, 0o600); err != nil {
-		return nil, fmt.Errorf("secure configuration backup: %w", err)
+	if err := helper.publishBackup(temporaryPath, destinationPath, temporaryInfo, written); err != nil {
+		return nil, err
 	}
 	return &protocol.Backup{
 		LocalPath: destinationPath, SHA256: hex.EncodeToString(hash.Sum(nil)), SizeBytes: written,
@@ -340,6 +560,10 @@ func (helper *Helper) createDirectoryBackup(operationID string, rootInfo os.File
 	if err := temporary.Chmod(0o600); err != nil {
 		_ = temporary.Close()
 		return nil, fmt.Errorf("secure temporary backup: %w", err)
+	}
+	if err := helper.secureBackupFile(temporary); err != nil {
+		_ = temporary.Close()
+		return nil, err
 	}
 	hash := sha256.New()
 	gzipWriter := gzip.NewWriter(io.MultiWriter(temporary, hash))
@@ -445,14 +669,18 @@ func (helper *Helper) createDirectoryBackup(operationID string, rootInfo os.File
 		_ = temporary.Close()
 		return nil, errors.New("configuration archive exceeds backup size limit")
 	}
+	temporaryInfo, statErr := temporary.Stat()
+	if statErr != nil || !validBackupFileInfo(helper.BackupDir, temporaryInfo) {
+		_ = temporary.Close()
+		return nil, errors.New("temporary configuration backup metadata is invalid")
+	}
 	if err := temporary.Close(); err != nil {
 		return nil, fmt.Errorf("close configuration backup: %w", err)
 	}
-	if err := os.Rename(temporaryPath, destinationPath); err != nil {
-		return nil, fmt.Errorf("publish configuration backup: %w", err)
-	}
-	if err := os.Chmod(destinationPath, 0o600); err != nil {
-		return nil, fmt.Errorf("secure configuration backup: %w", err)
+	if err := helper.publishBackup(
+		temporaryPath, destinationPath, temporaryInfo, archiveInfo.Size(),
+	); err != nil {
+		return nil, err
 	}
 	return &protocol.Backup{
 		LocalPath: destinationPath, SHA256: hex.EncodeToString(hash.Sum(nil)),
@@ -480,19 +708,22 @@ func (helper *Helper) existingOperationBackup(operationID string) (string, bool)
 }
 
 func (helper *Helper) backupMetadata(backupPath string) (*protocol.Backup, error) {
-	info, err := os.Lstat(backupPath)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
-		info.Size() > maxConfigBackupArchiveBytes {
-		return nil, errors.New("existing configuration backup is invalid")
-	}
-	file, err := os.Open(backupPath)
-	if err != nil {
+	if err := helper.validateBackupDir(); err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	if !helper.isBackupPath(backupPath) {
+		return nil, errors.New("existing configuration backup is invalid")
+	}
+	file, info, err := helper.openVerifiedBackup(backupPath, maxConfigBackupArchiveBytes)
+	if err != nil {
+		return nil, errors.New("existing configuration backup is invalid")
+	}
 	hash := sha256.New()
 	written, err := io.Copy(hash, io.LimitReader(file, maxConfigBackupArchiveBytes+1))
-	if err != nil || written > maxConfigBackupArchiveBytes {
+	verifiedInfo, verifyErr := helper.verifyOpenBackup(backupPath, file, info)
+	closeErr := file.Close()
+	if err != nil || verifyErr != nil || closeErr != nil || written > maxConfigBackupArchiveBytes ||
+		written != info.Size() || verifiedInfo.Size() != written {
 		return nil, errors.New("read existing configuration backup failed")
 	}
 	return &protocol.Backup{
@@ -500,47 +731,12 @@ func (helper *Helper) backupMetadata(backupPath string) (*protocol.Backup, error
 	}, nil
 }
 
-func (helper *Helper) latestBackup(exclude string) (string, error) {
-	entries, err := os.ReadDir(helper.BackupDir)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	suffix, err := helper.configBackupSuffix()
-	if err != nil {
-		return "", err
-	}
-	type candidate struct {
-		path     string
-		modified time.Time
-	}
-	candidates := make([]candidate, 0)
-	for _, entry := range entries {
-		candidatePath := filepath.Join(helper.BackupDir, entry.Name())
-		if candidatePath == exclude || entry.Type()&os.ModeSymlink != 0 ||
-			!strings.HasSuffix(entry.Name(), "-"+suffix) {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		candidates = append(candidates, candidate{path: candidatePath, modified: info.ModTime()})
-	}
-	sort.Slice(candidates, func(left, right int) bool {
-		return candidates[left].modified.After(candidates[right].modified)
-	})
-	if len(candidates) == 0 {
-		return "", nil
-	}
-	return candidates[0].path, nil
-}
-
 func (helper *Helper) restoreBackup(backupPath string) error {
+	if err := helper.validateBackupDir(); err != nil {
+		return err
+	}
 	backupInfo, err := os.Lstat(backupPath)
-	if err != nil || !backupInfo.Mode().IsRegular() || backupInfo.Mode()&os.ModeSymlink != 0 ||
+	if err != nil || !validBackupFileInfo(helper.BackupDir, backupInfo) ||
 		backupInfo.Size() > maxConfigBackupArchiveBytes || !helper.isBackupPath(backupPath) {
 		return errors.New("rollback backup is invalid")
 	}
@@ -559,27 +755,32 @@ func (helper *Helper) restoreBackup(backupPath string) error {
 }
 
 func (helper *Helper) restoreFileBackup(backupPath string, destinationInfo os.FileInfo) error {
-	backupInfo, err := os.Lstat(backupPath)
-	if err != nil || backupInfo.Size() > maxConfigBackupBytes {
-		return errors.New("rollback file backup exceeds size limit")
-	}
-	source, err := os.Open(backupPath)
+	source, backupInfo, err := helper.openVerifiedBackup(backupPath, maxConfigBackupBytes)
 	if err != nil {
-		return err
+		return errors.New("rollback file backup is invalid")
 	}
-	defer source.Close()
 	temporary, err := os.CreateTemp(filepath.Dir(helper.CoreConfigPath), ".hyfleet-rollback-*")
 	if err != nil {
+		_ = source.Close()
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
 	if err := temporary.Chmod(destinationInfo.Mode().Perm()); err != nil {
+		_ = source.Close()
+		_ = temporary.Close()
+		return err
+	}
+	if err := inheritFileOwnership(temporary, destinationInfo); err != nil {
+		_ = source.Close()
 		_ = temporary.Close()
 		return err
 	}
 	written, err := io.Copy(temporary, io.LimitReader(source, maxConfigBackupBytes+1))
-	if err != nil || written > maxConfigBackupBytes {
+	_, verifyErr := helper.verifyOpenBackup(backupPath, source, backupInfo)
+	closeSourceErr := source.Close()
+	if err != nil || verifyErr != nil || closeSourceErr != nil ||
+		written > maxConfigBackupBytes || written != backupInfo.Size() {
 		_ = temporary.Close()
 		return errors.New("rollback backup exceeds size limit or could not be copied")
 	}
@@ -590,22 +791,59 @@ func (helper *Helper) restoreFileBackup(backupPath string, destinationInfo os.Fi
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return replaceHelperFile(temporaryPath, helper.CoreConfigPath)
+	if err := replaceHelperFile(temporaryPath, helper.CoreConfigPath); err != nil {
+		return err
+	}
+	restoredInfo, err := os.Lstat(helper.CoreConfigPath)
+	if err != nil || !restoredInfo.Mode().IsRegular() || restoredInfo.Mode()&os.ModeSymlink != 0 ||
+		!samePermissions(restoredInfo.Mode(), destinationInfo.Mode()) ||
+		!sameFileOwnership(restoredInfo, destinationInfo) || restoredInfo.Size() != backupInfo.Size() {
+		return errors.New("restored configuration metadata is invalid")
+	}
+	return nil
 }
 
 func (helper *Helper) restoreDirectoryBackup(backupPath string, destinationInfo os.FileInfo) error {
+	archive, backupInfo, err := helper.openVerifiedBackup(backupPath, maxConfigBackupArchiveBytes)
+	if err != nil {
+		return errors.New("rollback directory backup is invalid")
+	}
 	temporaryRoot, err := os.MkdirTemp(filepath.Dir(helper.CoreConfigPath), ".hyfleet-rollback-*")
 	if err != nil {
+		_ = archive.Close()
 		return fmt.Errorf("create rollback directory: %w", err)
 	}
 	defer os.RemoveAll(temporaryRoot)
 	if err := os.Chmod(temporaryRoot, destinationInfo.Mode().Perm()); err != nil {
+		_ = archive.Close()
 		return fmt.Errorf("prepare rollback directory: %w", err)
 	}
-	if err := extractDirectoryBackup(backupPath, temporaryRoot); err != nil {
+	if runtime.GOOS != "windows" {
+		owner, ok := ownershipOf(destinationInfo)
+		if !ok || os.Chown(temporaryRoot, int(owner.uid), int(owner.gid)) != nil {
+			_ = archive.Close()
+			return errors.New("preserve rollback directory ownership")
+		}
+	}
+	if err := extractDirectoryBackup(archive, temporaryRoot); err != nil {
+		_ = archive.Close()
 		return err
 	}
-	return replaceHelperDirectory(temporaryRoot, helper.CoreConfigPath)
+	_, verifyErr := helper.verifyOpenBackup(backupPath, archive, backupInfo)
+	closeArchiveErr := archive.Close()
+	if verifyErr != nil || closeArchiveErr != nil {
+		return errors.New("rollback directory backup changed while reading")
+	}
+	if err := replaceHelperDirectory(temporaryRoot, helper.CoreConfigPath); err != nil {
+		return err
+	}
+	restoredInfo, err := os.Lstat(helper.CoreConfigPath)
+	if err != nil || !restoredInfo.IsDir() || restoredInfo.Mode()&os.ModeSymlink != 0 ||
+		!samePermissions(restoredInfo.Mode(), destinationInfo.Mode()) ||
+		!sameFileOwnership(restoredInfo, destinationInfo) {
+		return errors.New("restored configuration directory metadata is invalid")
+	}
+	return nil
 }
 
 func (helper *Helper) configBackupSuffix() (string, error) {
@@ -640,12 +878,7 @@ func validateArchiveName(name string) error {
 	return nil
 }
 
-func extractDirectoryBackup(backupPath, destinationRoot string) error {
-	archive, err := os.Open(backupPath)
-	if err != nil {
-		return fmt.Errorf("open configuration archive: %w", err)
-	}
-	defer archive.Close()
+func extractDirectoryBackup(archive *os.File, destinationRoot string) error {
 	gzipReader, err := gzip.NewReader(io.LimitReader(archive, maxConfigBackupArchiveBytes+1))
 	if err != nil {
 		return errors.New("configuration archive is not valid gzip data")
@@ -722,6 +955,138 @@ func extractDirectoryBackup(backupPath, destinationRoot string) error {
 		}
 	}
 	return nil
+}
+
+func (helper *Helper) secureBackupFile(file *os.File) error {
+	if requiresBackupRootOwner(helper.BackupDir) {
+		if err := file.Chown(0, 0); err != nil {
+			return fmt.Errorf("secure configuration backup ownership: %w", err)
+		}
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return fmt.Errorf("secure configuration backup mode: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil || !validBackupFileInfo(helper.BackupDir, info) {
+		return errors.New("configuration backup metadata could not be verified")
+	}
+	return nil
+}
+
+func (helper *Helper) verifyPublishedBackup(
+	path string, expected os.FileInfo, expectedSize int64,
+) (os.FileInfo, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !validBackupFileInfo(helper.BackupDir, info) ||
+		!os.SameFile(expected, info) || !sameFileOwnership(expected, info) ||
+		!samePermissions(expected.Mode(), info.Mode()) || info.Size() != expectedSize {
+		return nil, errors.New("published configuration backup metadata is invalid")
+	}
+	return info, nil
+}
+
+func (helper *Helper) publishBackup(
+	temporaryPath, destinationPath string,
+	temporaryInfo os.FileInfo,
+	expectedSize int64,
+) error {
+	if err := os.Link(temporaryPath, destinationPath); err != nil {
+		return fmt.Errorf("publish configuration backup: %w", err)
+	}
+	cleanup := func() {
+		info, err := os.Lstat(destinationPath)
+		if err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 &&
+			os.SameFile(temporaryInfo, info) {
+			_ = os.Remove(destinationPath)
+			_ = syncDirectory(helper.BackupDir)
+		}
+	}
+	if _, err := helper.verifyPublishedBackup(destinationPath, temporaryInfo, expectedSize); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Remove(temporaryPath); err != nil {
+		cleanup()
+		return fmt.Errorf("finalize configuration backup: %w", err)
+	}
+	if err := syncDirectory(helper.BackupDir); err != nil {
+		cleanup()
+		return fmt.Errorf("sync configuration backup directory: %w", err)
+	}
+	if _, err := helper.verifyPublishedBackup(destinationPath, temporaryInfo, expectedSize); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
+}
+
+func (helper *Helper) validateBackupDir() error {
+	info, err := os.Lstat(helper.BackupDir)
+	if err != nil || !validBackupDirectoryInfo(helper.BackupDir, info) {
+		return errors.New("backup directory metadata is invalid")
+	}
+	return nil
+}
+
+func (helper *Helper) openVerifiedBackup(path string, limit int64) (*os.File, os.FileInfo, error) {
+	before, err := os.Lstat(path)
+	if err != nil || !validBackupFileInfo(helper.BackupDir, before) ||
+		before.Size() < 0 || before.Size() > limit {
+		return nil, nil, errors.New("configuration backup metadata is invalid")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	opened, statErr := file.Stat()
+	after, inspectErr := os.Lstat(path)
+	if statErr != nil || inspectErr != nil || !validBackupFileInfo(helper.BackupDir, opened) ||
+		!validBackupFileInfo(helper.BackupDir, after) || !os.SameFile(before, opened) ||
+		!os.SameFile(opened, after) || !sameFileOwnership(before, opened) ||
+		!sameFileOwnership(opened, after) || !samePermissions(before.Mode(), opened.Mode()) ||
+		!samePermissions(opened.Mode(), after.Mode()) || before.Size() != opened.Size() ||
+		opened.Size() != after.Size() || !before.ModTime().Equal(opened.ModTime()) ||
+		!opened.ModTime().Equal(after.ModTime()) {
+		_ = file.Close()
+		return nil, nil, errors.New("configuration backup changed while opening")
+	}
+	return file, opened, nil
+}
+
+func (helper *Helper) verifyOpenBackup(
+	path string, file *os.File, expected os.FileInfo,
+) (os.FileInfo, error) {
+	opened, statErr := file.Stat()
+	after, inspectErr := os.Lstat(path)
+	if expected == nil {
+		expected = opened
+	}
+	if statErr != nil || inspectErr != nil || !validBackupFileInfo(helper.BackupDir, opened) ||
+		!validBackupFileInfo(helper.BackupDir, after) || !os.SameFile(expected, opened) ||
+		!os.SameFile(opened, after) || !sameFileOwnership(expected, opened) ||
+		!sameFileOwnership(opened, after) || !samePermissions(expected.Mode(), opened.Mode()) ||
+		!samePermissions(opened.Mode(), after.Mode()) || expected.Size() != opened.Size() ||
+		opened.Size() != after.Size() || !expected.ModTime().Equal(opened.ModTime()) ||
+		!opened.ModTime().Equal(after.ModTime()) {
+		return nil, errors.New("configuration backup changed while reading")
+	}
+	return opened, nil
+}
+
+func validBackupDirectoryInfo(path string, info os.FileInfo) bool {
+	if info == nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 ||
+		!exactPermissions(info.Mode(), 0o700) {
+		return false
+	}
+	return !requiresBackupRootOwner(path) || fileOwnedByRoot(info)
+}
+
+func validBackupFileInfo(backupDir string, info os.FileInfo) bool {
+	if info == nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
+		!exactPermissions(info.Mode(), 0o600) {
+		return false
+	}
+	return !requiresBackupRootOwner(backupDir) || fileOwnedByRoot(info)
 }
 
 func (helper *Helper) loadResult(operation protocol.NodeOperation) (HelperResponse, bool) {

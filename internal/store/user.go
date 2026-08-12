@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hyfleet/hyfleet/internal/cryptoutil"
 )
 
@@ -54,6 +55,7 @@ type UserAssignment struct {
 	DesiredCredentialID   string
 	AppliedCredentialID   string
 	CredentialFingerprint string
+	CredentialProtocol    string
 	ManagementMode        string
 	RemoteClientID        int64
 	SubscriptionEligible  bool
@@ -203,6 +205,21 @@ func (s *Store) CreateUser(
 		return User{}, nil, fmt.Errorf("begin create user: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if input.TrafficLimitBytes > 0 {
+		for _, nodeID := range input.NodeIDs {
+			var adapter string
+			if err := tx.QueryRowContext(ctx, `
+				SELECT adapter_type FROM nodes WHERE id = ? AND archived_at IS NULL
+			`, nodeID).Scan(&adapter); errors.Is(err, sql.ErrNoRows) {
+				return User{}, nil, ErrNotFound
+			} else if err != nil {
+				return User{}, nil, fmt.Errorf("check assignment quota support: %w", err)
+			}
+			if adapter == AdapterSingBoxVLESSReality {
+				return User{}, nil, ErrQuotaUnsupported
+			}
+		}
+	}
 	expiresAt := nullableUnixMilli(input.ExpiresAt)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO users(
@@ -253,6 +270,20 @@ func (s *Store) UpdateUser(ctx context.Context, id string, input UpdateUser) (Us
 			return User{}, ErrNotFound
 		}
 		return User{}, fmt.Errorf("read current user state: %w", err)
+	}
+	if input.TrafficLimitBytes > 0 {
+		var realityAssignments int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM node_user_assignments a
+			JOIN nodes n ON n.id = a.node_id AND n.archived_at IS NULL
+			WHERE a.user_id = ? AND n.adapter_type = ?
+		`, id, AdapterSingBoxVLESSReality).Scan(&realityAssignments); err != nil {
+			return User{}, fmt.Errorf("check Reality quota support: %w", err)
+		}
+		if realityAssignments > 0 {
+			return User{}, ErrQuotaUnsupported
+		}
 	}
 	nodeIDs, err := assignmentNodeIDs(ctx, tx, id)
 	if err != nil {
@@ -335,11 +366,13 @@ func (s *Store) UpdateAssignment(
 	defer func() { _ = tx.Rollback() }()
 	var currentEnabled int
 	var trafficUsed int64
-	var managementMode string
+	var managementMode, adapter string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT enabled, traffic_used_bytes, management_mode FROM node_user_assignments
-		WHERE user_id = ? AND node_id = ?
-	`, userID, nodeID).Scan(&currentEnabled, &trafficUsed, &managementMode); err != nil {
+		SELECT a.enabled, a.traffic_used_bytes, a.management_mode, n.adapter_type
+		FROM node_user_assignments a
+		JOIN nodes n ON n.id = a.node_id AND n.archived_at IS NULL
+		WHERE a.user_id = ? AND a.node_id = ?
+	`, userID, nodeID).Scan(&currentEnabled, &trafficUsed, &managementMode, &adapter); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrNotFound
 		}
@@ -347,6 +380,9 @@ func (s *Store) UpdateAssignment(
 	}
 	if managementMode == "read_only" {
 		return User{}, ErrReadOnly
+	}
+	if adapter == AdapterSingBoxVLESSReality && input.TrafficLimitBytes != 0 {
+		return User{}, ErrQuotaUnsupported
 	}
 	beforeQuota, err := effectiveQuotaStatesTx(ctx, tx, []string{userID})
 	if err != nil {
@@ -652,7 +688,7 @@ func (s *Store) RevealAssignmentCredential(
 	var assignment UserAssignment
 	var ciphertext []byte
 	var keyVersion int
-	var state string
+	var state, credentialProtocol string
 	var createdAt, updatedAt int64
 	var enabled int
 	err := s.db.QueryRowContext(ctx, `
@@ -664,7 +700,8 @@ func (s *Store) RevealAssignmentCredential(
 		       a.traffic_limit_bytes, a.traffic_upload_bytes, a.traffic_download_bytes,
 		       a.traffic_used_bytes, a.quota_state, a.last_traffic_at,
 		       COALESCE(o.connections, 0), o.sampled_at, COALESCE(k.generation, 0),
-		       a.created_at, a.updated_at, c.secret_ciphertext, c.key_version, c.state
+		       a.created_at, a.updated_at, c.secret_ciphertext, c.key_version, c.state,
+		       c.protocol
 		FROM node_user_assignments a
 		JOIN users u ON u.id = a.user_id AND u.archived_at IS NULL
 		JOIN nodes n ON n.id = a.node_id AND n.archived_at IS NULL
@@ -685,7 +722,7 @@ func (s *Store) RevealAssignmentCredential(
 		&assignment.QuotaState, newNullableTimeScanner(&assignment.LastTrafficAt),
 		&assignment.OnlineConnections, newNullableTimeScanner(&assignment.OnlineSampledAt),
 		&assignment.KickGeneration,
-		&createdAt, &updatedAt, &ciphertext, &keyVersion, &state,
+		&createdAt, &updatedAt, &ciphertext, &keyVersion, &state, &credentialProtocol,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CreatedCredential{}, ErrNotFound
@@ -700,12 +737,13 @@ func (s *Store) RevealAssignmentCredential(
 		return CreatedCredential{}, ErrConflict
 	}
 	secret, err := cryptoutil.Open(masterKey, ciphertext, credentialAAD(
-		assignment.DesiredCredentialID, userID, nodeID, "hysteria2", keyVersion,
+		assignment.DesiredCredentialID, userID, nodeID, credentialProtocol, keyVersion,
 	))
 	if err != nil {
 		return CreatedCredential{}, fmt.Errorf("open assignment credential: %w", err)
 	}
 	assignment.Enabled = enabled == 1
+	assignment.CredentialProtocol = credentialProtocol
 	assignment.CreatedAt = unixTime(createdAt)
 	assignment.UpdatedAt = unixTime(updatedAt)
 	return CreatedCredential{Assignment: assignment, Secret: string(secret)}, nil
@@ -744,14 +782,34 @@ func assignUserTxWithMode(
 		}
 		return CreatedCredential{}, fmt.Errorf("find assignment node: %w", err)
 	}
-	if adapter != "native_hysteria2" && adapter != "s_ui" {
+	if !supportsManagedUsers(adapter) {
 		return CreatedCredential{}, ErrUnsupported
+	}
+	if adapter == AdapterSingBoxVLESSReality && trafficLimitBytes != 0 {
+		return CreatedCredential{}, ErrQuotaUnsupported
 	}
 	if managementMode != "managed" && managementMode != "read_only" {
 		return CreatedCredential{}, ErrUnsupported
 	}
 	if adapter == "native_hysteria2" && (managementMode != "managed" || remoteClientID != 0) {
 		return CreatedCredential{}, ErrUnsupported
+	}
+	if adapter == AdapterSingBoxVLESSReality &&
+		(managementMode != "managed" || remoteClientID != 0) {
+		return CreatedCredential{}, ErrUnsupported
+	}
+	if adapter == AdapterSingBoxVLESSReality {
+		var globalTrafficLimit int64
+		if err := tx.QueryRowContext(ctx, `
+			SELECT traffic_limit_bytes FROM users WHERE id = ? AND archived_at IS NULL
+		`, userID).Scan(&globalTrafficLimit); errors.Is(err, sql.ErrNoRows) {
+			return CreatedCredential{}, ErrNotFound
+		} else if err != nil {
+			return CreatedCredential{}, fmt.Errorf("check Reality user quota support: %w", err)
+		}
+		if globalTrafficLimit != 0 {
+			return CreatedCredential{}, ErrQuotaUnsupported
+		}
 	}
 	if adapter == "s_ui" && managementMode == "managed" && remoteClientID == 0 {
 		var targetInboundIDs []int64
@@ -762,8 +820,12 @@ func assignUserTxWithMode(
 			return CreatedCredential{}, ErrConflict
 		}
 	}
+	credentialProtocol, err := credentialProtocolForAdapter(adapter)
+	if err != nil {
+		return CreatedCredential{}, err
+	}
 	credentialID, secret, fingerprint, err := createUserCredentialTx(
-		ctx, tx, userID, nodeID, now, masterKey,
+		ctx, tx, userID, nodeID, credentialProtocol, now, masterKey,
 	)
 	if err != nil {
 		return CreatedCredential{}, err
@@ -812,7 +874,8 @@ func assignUserTxWithMode(
 			TrafficUsedBytes: priorUsed, QuotaState: quotaState(trafficLimitBytes, priorUsed),
 			DesiredCredentialID:   credentialID,
 			CredentialFingerprint: fingerprint, DesiredVersion: version, State: "pending",
-			ManagementMode: managementMode, RemoteClientID: remoteClientID,
+			CredentialProtocol: credentialProtocol,
+			ManagementMode:     managementMode, RemoteClientID: remoteClientID,
 			CreatedAt: now, UpdatedAt: now,
 		},
 		Secret: secret,
@@ -850,15 +913,19 @@ func rotateAssignmentCredentialTx(
 	if managementMode == "read_only" {
 		return CreatedCredential{}, ErrReadOnly
 	}
-	if (adapter != "native_hysteria2" && adapter != "s_ui") || managementMode != "managed" {
+	if !supportsManagedUsers(adapter) || managementMode != "managed" {
 		return CreatedCredential{}, ErrUnsupported
 	}
 	if state != "applied" || appliedVersion < desiredVersion ||
 		desiredCredentialID == "" || desiredCredentialID != appliedCredentialID {
 		return CreatedCredential{}, ErrPending
 	}
+	credentialProtocol, err := credentialProtocolForAdapter(adapter)
+	if err != nil {
+		return CreatedCredential{}, err
+	}
 	credentialID, secret, fingerprint, err := createUserCredentialTx(
-		ctx, tx, userID, nodeID, now, masterKey,
+		ctx, tx, userID, nodeID, credentialProtocol, now, masterKey,
 	)
 	if err != nil {
 		return CreatedCredential{}, err
@@ -882,8 +949,9 @@ func rotateAssignmentCredentialTx(
 		ID: assignmentID, UserID: userID, NodeID: nodeID, NodeName: nodeName,
 		NodeAdapter: adapter, DesiredCredentialID: credentialID,
 		AppliedCredentialID: appliedCredentialID, CredentialFingerprint: fingerprint,
-		ManagementMode: managementMode,
-		DesiredVersion: version, AppliedVersion: appliedVersion, State: "pending",
+		CredentialProtocol: credentialProtocol,
+		ManagementMode:     managementMode,
+		DesiredVersion:     version, AppliedVersion: appliedVersion, State: "pending",
 		UpdatedAt: now,
 	}, Secret: secret}, nil
 }
@@ -891,18 +959,29 @@ func rotateAssignmentCredentialTx(
 func createUserCredentialTx(
 	ctx context.Context,
 	tx *sql.Tx,
-	userID, nodeID string,
+	userID, nodeID, credentialProtocol string,
 	now time.Time,
 	masterKey []byte,
 ) (string, string, string, error) {
-	secret, err := cryptoutil.RandomToken(32)
+	var secret string
+	var err error
+	switch credentialProtocol {
+	case CredentialProtocolHY2:
+		secret, err = cryptoutil.RandomToken(32)
+	case CredentialProtocolVLESS:
+		var generated uuid.UUID
+		generated, err = uuid.NewRandom()
+		secret = generated.String()
+	default:
+		return "", "", "", ErrUnsupported
+	}
 	if err != nil {
 		return "", "", "", err
 	}
 	verifier := sha256.Sum256([]byte(secret))
 	credentialID := cryptoutil.NewID()
 	ciphertext, err := cryptoutil.Seal(masterKey, []byte(secret), credentialAAD(
-		credentialID, userID, nodeID, "hysteria2", credentialKeyVersion,
+		credentialID, userID, nodeID, credentialProtocol, credentialKeyVersion,
 	))
 	if err != nil {
 		return "", "", "", err
@@ -912,8 +991,8 @@ func createUserCredentialTx(
 		INSERT INTO user_credentials(
 			id, user_id, node_id, protocol, secret_ciphertext, verifier_sha256,
 			secret_fingerprint, key_version, state, created_at
-		) VALUES (?, ?, ?, 'hysteria2', ?, ?, ?, ?, 'staged', ?)
-	`, credentialID, userID, nodeID, ciphertext, verifier[:], fingerprint,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'staged', ?)
+	`, credentialID, userID, nodeID, credentialProtocol, ciphertext, verifier[:], fingerprint,
 		credentialKeyVersion, now.UnixMilli()); err != nil {
 		return "", "", "", fmt.Errorf("insert user credential: %w", err)
 	}
@@ -924,13 +1003,22 @@ func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssig
 	query := `
 		SELECT a.id, a.user_id, a.node_id, n.name, n.adapter_type, a.enabled,
 		       a.desired_credential_id, COALESCE(a.applied_credential_id, ''),
-		       c.secret_fingerprint, a.management_mode, COALESCE(a.remote_client_id, 0),
+		       c.secret_fingerprint, c.protocol, a.management_mode,
+		       COALESCE(a.remote_client_id, 0),
 		       a.desired_version, a.applied_version, a.state,
 		       a.last_error_code, a.last_error_message, a.last_attempt_at, a.applied_at,
 		       a.traffic_limit_bytes, a.traffic_upload_bytes, a.traffic_download_bytes,
 		       a.traffic_used_bytes, a.quota_state, a.last_traffic_at,
 		       COALESCE(o.connections, 0), o.sampled_at, COALESCE(k.generation, 0),
 		       n.enabled, n.status, n.public_host, COALESCE(ac.state, ''),
+		       n.adapter_status, n.core_running, n.applied_version,
+		       CASE
+		         WHEN n.adapter_type <> 'sing_box_vless_reality' THEN 1
+		         WHEN r.public_key <> '' AND r.short_id <> ''
+		          AND r.applied_key_generation = r.desired_key_generation
+		          AND r.material_applied_version = a.applied_version THEN 1
+		         ELSE 0
+		       END,
 		       a.created_at, a.updated_at
 		FROM node_user_assignments a
 		JOIN nodes n ON n.id = a.node_id
@@ -938,6 +1026,7 @@ func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssig
 		LEFT JOIN user_credentials ac ON ac.id = a.applied_credential_id
 		LEFT JOIN node_online_users o ON o.node_id = a.node_id AND o.user_id = a.user_id
 		LEFT JOIN node_kick_targets k ON k.node_id = a.node_id AND k.user_id = a.user_id
+		LEFT JOIN node_vless_reality r ON r.node_id = a.node_id
 	`
 	arguments := []any{}
 	if userID != "" {
@@ -955,14 +1044,18 @@ func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssig
 		var assignment UserAssignment
 		var enabled int
 		var nodeEnabled int
-		var nodeStatus, publicHost, appliedCredentialState string
+		var coreRunning int
+		var nodeAppliedVersion int64
+		var realityReady int
+		var nodeStatus, publicHost, appliedCredentialState, adapterStatus string
 		var createdAt, updatedAt int64
 		var lastAttemptAt, appliedAt, lastTrafficAt, onlineSampledAt sql.NullInt64
 		if err := rows.Scan(
 			&assignment.ID, &assignment.UserID, &assignment.NodeID, &assignment.NodeName,
 			&assignment.NodeAdapter, &enabled, &assignment.DesiredCredentialID,
 			&assignment.AppliedCredentialID, &assignment.CredentialFingerprint,
-			&assignment.ManagementMode, &assignment.RemoteClientID,
+			&assignment.CredentialProtocol, &assignment.ManagementMode,
+			&assignment.RemoteClientID,
 			&assignment.DesiredVersion, &assignment.AppliedVersion, &assignment.State,
 			&assignment.LastErrorCode, &assignment.LastErrorMessage,
 			&lastAttemptAt, &appliedAt, &assignment.TrafficLimitBytes,
@@ -970,6 +1063,8 @@ func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssig
 			&assignment.TrafficUsedBytes, &assignment.QuotaState, &lastTrafficAt,
 			&assignment.OnlineConnections, &onlineSampledAt, &assignment.KickGeneration,
 			&nodeEnabled, &nodeStatus, &publicHost, &appliedCredentialState,
+			&adapterStatus, &coreRunning, &nodeAppliedVersion,
+			&realityReady,
 			&createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan user assignment: %w", err)
@@ -980,7 +1075,8 @@ func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssig
 		assignment.LastTrafficAt = nullableTime(lastTrafficAt)
 		assignment.OnlineSampledAt = nullableTime(onlineSampledAt)
 		assignment.SubscriptionReason = subscriptionEligibilityReason(
-			assignment, nodeEnabled == 1, nodeStatus, publicHost, appliedCredentialState,
+			assignment, nodeEnabled == 1, realityReady == 1, coreRunning == 1,
+			nodeAppliedVersion, nodeStatus, publicHost, appliedCredentialState, adapterStatus,
 		)
 		assignment.SubscriptionEligible = assignment.SubscriptionReason == ""
 		assignment.CreatedAt = unixTime(createdAt)
@@ -995,20 +1091,33 @@ func (s *Store) listAssignments(ctx context.Context, userID string) ([]UserAssig
 
 func subscriptionEligibilityReason(
 	assignment UserAssignment,
-	nodeEnabled bool,
-	nodeStatus, publicHost, appliedCredentialState string,
+	nodeEnabled, realityReady, coreRunning bool,
+	nodeAppliedVersion int64,
+	nodeStatus, publicHost, appliedCredentialState, adapterStatus string,
 ) string {
 	switch {
 	case assignment.ManagementMode != "managed":
 		return "read_only_requires_adoption"
-	case assignment.NodeAdapter != "native_hysteria2" && assignment.NodeAdapter != "s_ui":
+	case !supportsManagedUsers(assignment.NodeAdapter):
 		return "adapter_not_supported"
 	case !nodeEnabled:
 		return "node_disabled"
+	case assignment.NodeAdapter == AdapterSingBoxVLESSReality && adapterStatus != "compatible":
+		return "adapter_not_compatible"
 	case nodeStatus == "pending" || nodeStatus == "degraded" || nodeStatus == "disabled":
 		return "node_not_ready"
 	case publicHost == "":
 		return "endpoint_missing"
+	case assignment.NodeAdapter == AdapterSingBoxVLESSReality && !coreRunning:
+		return "core_not_running"
+	case assignment.NodeAdapter == AdapterSingBoxVLESSReality &&
+		(assignment.CredentialProtocol != CredentialProtocolVLESS ||
+			assignment.AppliedCredentialID == "" ||
+			assignment.AppliedCredentialID != assignment.DesiredCredentialID ||
+			assignment.AppliedVersion != nodeAppliedVersion):
+		return "applied_state_mismatch"
+	case assignment.NodeAdapter == AdapterSingBoxVLESSReality && !realityReady:
+		return "reality_material_missing"
 	case !assignment.Enabled:
 		return "assignment_disabled"
 	case assignment.QuotaState == "limited":

@@ -25,6 +25,7 @@ type Node struct {
 	AdapterLastProbedAt      *time.Time
 	AdapterLastDiscoveredAt  *time.Time
 	SUITargetInboundIDs      []int64
+	VLESSReality             *VLESSRealitySettings
 	PublicHost               string
 	PublicPort               int
 	SNI                      string
@@ -98,6 +99,7 @@ type NewNode struct {
 	TLSCertFingerprint string
 	TLSPublicKeySHA256 string
 	Enabled            bool
+	VLESSReality       *VLESSRealitySettings
 	Now                time.Time
 }
 
@@ -113,6 +115,7 @@ type UpdateNode struct {
 	TLSCertFingerprint string
 	TLSPublicKeySHA256 string
 	Enabled            bool
+	VLESSReality       *VLESSRealitySettings
 	Now                time.Time
 }
 
@@ -223,6 +226,18 @@ func (s *Store) CreateNode(ctx context.Context, input NewNode) (Node, error) {
 		_ = tx.Rollback()
 		return Node{}, fmt.Errorf("insert node: %w", err)
 	}
+	if input.AdapterType == AdapterSingBoxVLESSReality {
+		if input.VLESSReality == nil {
+			_ = tx.Rollback()
+			return Node{}, ErrConflict
+		}
+		if err := upsertVLESSRealitySettings(
+			ctx, tx, input.ID, *input.VLESSReality, input.Now,
+		); err != nil {
+			_ = tx.Rollback()
+			return Node{}, err
+		}
+	}
 	if err := insertSnapshot(ctx, tx, input.ID, input.AdapterType, 1, input.Now); err != nil {
 		_ = tx.Rollback()
 		return Node{}, err
@@ -238,17 +253,30 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
-	defer rows.Close()
 	nodes := make([]Node, 0)
 	for rows.Next() {
 		node, err := scanNode(rows)
 		if err != nil {
+			_ = rows.Close()
 			return nil, fmt.Errorf("scan node: %w", err)
 		}
 		nodes = append(nodes, node)
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
 		return nil, fmt.Errorf("iterate nodes: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close nodes: %w", err)
+	}
+	for index := range nodes {
+		if nodes[index].AdapterType != AdapterSingBoxVLESSReality {
+			continue
+		}
+		nodes[index].VLESSReality, err = s.getVLESSRealitySettings(ctx, nodes[index].ID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return nodes, nil
 }
@@ -262,6 +290,12 @@ func (s *Store) GetNode(ctx context.Context, id string) (Node, error) {
 			return Node{}, ErrNotFound
 		}
 		return Node{}, fmt.Errorf("get node: %w", err)
+	}
+	if node.AdapterType == AdapterSingBoxVLESSReality {
+		node.VLESSReality, err = s.getVLESSRealitySettings(ctx, node.ID)
+		if err != nil {
+			return Node{}, err
+		}
 	}
 	return node, nil
 }
@@ -288,9 +322,24 @@ func (s *Store) UpdateNode(ctx context.Context, id string, input UpdateNode) (No
 		_ = tx.Rollback()
 		return Node{}, fmt.Errorf("read node version: %w", err)
 	}
-	if installationID != "" && input.AdapterType != currentAdapter {
-		_ = tx.Rollback()
-		return Node{}, ErrConflict
+	if input.AdapterType != currentAdapter {
+		var dependentState int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM node_user_assignments WHERE node_id = ?
+				UNION ALL
+				SELECT 1 FROM user_credentials WHERE node_id = ?
+				UNION ALL
+				SELECT 1 FROM node_enrollment_tokens WHERE node_id = ?
+			)
+		`, id, id, id).Scan(&dependentState); err != nil {
+			_ = tx.Rollback()
+			return Node{}, fmt.Errorf("check node adapter dependencies: %w", err)
+		}
+		if installationID != "" || dependentState != 0 {
+			_ = tx.Rollback()
+			return Node{}, ErrConflict
+		}
 	}
 	version++
 	status := "pending"
@@ -310,6 +359,37 @@ func (s *Store) UpdateNode(ctx context.Context, id string, input UpdateNode) (No
 	if err != nil {
 		_ = tx.Rollback()
 		return Node{}, fmt.Errorf("update node: %w", err)
+	}
+	if input.AdapterType == AdapterSingBoxVLESSReality {
+		settings := input.VLESSReality
+		if settings == nil && currentAdapter == AdapterSingBoxVLESSReality {
+			var existing VLESSRealitySettings
+			err := tx.QueryRowContext(ctx, `
+				SELECT handshake_server, handshake_server_port, desired_key_generation
+				FROM node_vless_reality WHERE node_id = ?
+			`, id).Scan(
+				&existing.HandshakeServer, &existing.HandshakeServerPort,
+				&existing.DesiredKeyGeneration,
+			)
+			if err != nil {
+				_ = tx.Rollback()
+				return Node{}, fmt.Errorf("read current VLESS Reality settings: %w", err)
+			}
+			settings = &existing
+		}
+		if settings == nil {
+			_ = tx.Rollback()
+			return Node{}, ErrConflict
+		}
+		if err := upsertVLESSRealitySettings(ctx, tx, id, *settings, input.Now); err != nil {
+			_ = tx.Rollback()
+			return Node{}, err
+		}
+	} else if currentAdapter == AdapterSingBoxVLESSReality {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM node_vless_reality WHERE node_id = ?", id); err != nil {
+			_ = tx.Rollback()
+			return Node{}, fmt.Errorf("delete VLESS Reality settings: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE node_snapshots SET superseded_at = ? WHERE node_id = ? AND superseded_at IS NULL",
@@ -357,19 +437,18 @@ func (s *Store) ArchiveNode(ctx context.Context, id string, now time.Time) error
 	if assignments != 0 {
 		return ErrConflict
 	}
-	var pendingKickSnapshot int
+	var pendingAppliedSnapshot int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1
 			FROM nodes n
-			JOIN node_kick_targets k ON k.node_id = n.id
 			WHERE n.id = ? AND COALESCE(n.agent_installation_id, '') <> ''
 			  AND n.applied_version < n.desired_version
 		)
-	`, id).Scan(&pendingKickSnapshot); err != nil {
+	`, id).Scan(&pendingAppliedSnapshot); err != nil {
 		return fmt.Errorf("check pending node removals: %w", err)
 	}
-	if pendingKickSnapshot != 0 {
+	if pendingAppliedSnapshot != 0 {
 		return ErrConflict
 	}
 	result, err := tx.ExecContext(ctx, `
@@ -396,9 +475,11 @@ func insertSnapshot(ctx context.Context, tx *sql.Tx, nodeID, adapter string, ver
 	users := make([]protocol.DesiredUser, 0)
 	kicks := make([]protocol.DesiredKick, 0)
 	var sui *protocol.DesiredSUI
-	if adapter == "native_hysteria2" || adapter == "s_ui" {
+	var vlessReality *protocol.DesiredVLESSReality
+	if supportsManagedUsers(adapter) {
 		rows, err := tx.QueryContext(ctx, `
-			SELECT u.id, u.username, c.id, c.secret_fingerprint, c.verifier_sha256,
+			SELECT u.id, u.username, c.id, c.secret_fingerprint, c.protocol,
+			       c.verifier_sha256,
 			       (u.enabled AND a.enabled AND n.enabled), u.expires_at,
 			       CASE
 			         WHEN u.quota_state = 'limited' OR a.quota_state = 'limited' THEN 'limited'
@@ -418,6 +499,7 @@ func insertSnapshot(ctx context.Context, tx *sql.Tx, nodeID, adapter string, ver
 		}
 		for rows.Next() {
 			var user protocol.DesiredUser
+			var credentialProtocol string
 			var verifier []byte
 			var enabled int
 			var expiresAt sql.NullInt64
@@ -425,7 +507,8 @@ func insertSnapshot(ctx context.Context, tx *sql.Tx, nodeID, adapter string, ver
 			var remoteClientID int64
 			if err := rows.Scan(
 				&user.ID, &user.Username, &user.Credential.Ref,
-				&user.Credential.Fingerprint, &verifier, &enabled, &expiresAt,
+				&user.Credential.Fingerprint, &credentialProtocol,
+				&verifier, &enabled, &expiresAt,
 				&user.QuotaState, &managementMode, &remoteClientID,
 			); err != nil {
 				return fmt.Errorf("scan desired user: %w", err)
@@ -435,12 +518,19 @@ func insertSnapshot(ctx context.Context, tx *sql.Tx, nodeID, adapter string, ver
 					return errors.New("desired credential verifier has invalid length")
 				}
 				user.Credential.VerifierSHA256 = base64.RawURLEncoding.EncodeToString(verifier)
-			} else {
+			} else if adapter == "s_ui" {
 				user.ManagementMode = managementMode
 				user.RemoteClientID = remoteClientID
+			} else if adapter == AdapterSingBoxVLESSReality {
+				user.Credential.Protocol = credentialProtocol
+				user.QuotaState = "unlimited"
 			}
 			user.Enabled = enabled == 1
 			user.ExpiresAt = nullableTime(expiresAt)
+			if adapter == AdapterSingBoxVLESSReality && user.ExpiresAt != nil &&
+				!now.UTC().Before(user.ExpiresAt.UTC()) {
+				user.Enabled = false
+			}
 			users = append(users, user)
 		}
 		if err := rows.Err(); err != nil {
@@ -473,7 +563,7 @@ func insertSnapshot(ctx context.Context, tx *sql.Tx, nodeID, adapter string, ver
 			if err := kickRows.Close(); err != nil {
 				return fmt.Errorf("close desired kicks: %w", err)
 			}
-		} else {
+		} else if adapter == "s_ui" {
 			var targetInboundJSON string
 			if err := tx.QueryRowContext(ctx, `
 				SELECT sui_target_inbound_ids FROM nodes WHERE id = ?
@@ -485,16 +575,37 @@ func insertSnapshot(ctx context.Context, tx *sql.Tx, nodeID, adapter string, ver
 				return fmt.Errorf("decode S-UI target inbounds: %w", err)
 			}
 			sui = &protocol.DesiredSUI{TargetInboundIDs: targets}
+		} else if adapter == AdapterSingBoxVLESSReality {
+			var desired protocol.DesiredVLESSReality
+			if err := tx.QueryRowContext(ctx, `
+				SELECT n.public_port, n.sni, r.handshake_server,
+				       r.handshake_server_port, r.desired_key_generation
+				FROM nodes n JOIN node_vless_reality r ON r.node_id = n.id
+				WHERE n.id = ?
+			`, nodeID).Scan(
+				&desired.ListenPort, &desired.ServerName, &desired.HandshakeServer,
+				&desired.HandshakeServerPort, &desired.KeyGeneration,
+			); err != nil {
+				return fmt.Errorf("read desired VLESS Reality settings: %w", err)
+			}
+			desired.Flow = "xtls-rprx-vision"
+			desired.Network = "tcp"
+			vlessReality = &desired
 		}
 	}
+	schemaVersion := 1
+	if adapter == AdapterSingBoxVLESSReality {
+		schemaVersion = 2
+	}
 	snapshot := protocol.DesiredSnapshot{
-		SchemaVersion: 1,
+		SchemaVersion: schemaVersion,
 		NodeID:        nodeID,
 		Version:       version,
 		Adapter:       adapter,
 		Users:         users,
 		Kicks:         kicks,
 		SUI:           sui,
+		VLESSReality:  vlessReality,
 		GeneratedAt:   now.UTC(),
 	}
 	canonical, err := json.Marshal(snapshot)

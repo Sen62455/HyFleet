@@ -1,4 +1,8 @@
-export type AdapterType = "native_hysteria2" | "standalone_sing_box" | "s_ui";
+export type AdapterType =
+  | "native_hysteria2"
+  | "sing_box_vless_reality"
+  | "standalone_sing_box"
+  | "s_ui";
 export type AdapterProbeStatus =
   | "unknown"
   | "compatible"
@@ -25,6 +29,20 @@ export interface SetupStatus {
   bootstrap_token_configured: boolean;
 }
 
+export interface NodeRealityInput {
+  handshake_server: string;
+  handshake_port: number;
+}
+
+export interface NodeRealityRecord extends NodeRealityInput {
+  key_generation: number;
+  applied_key_generation: number;
+  public_key: string;
+  short_id: string;
+  material_applied_version: number;
+  material_reported_at: string | null;
+}
+
 export interface NodeRecord {
   id: string;
   name: string;
@@ -43,6 +61,7 @@ export interface NodeRecord {
   tls_insecure: boolean;
   tls_cert_fingerprint: string;
   tls_public_key_sha256: string;
+  reality: NodeRealityRecord | null;
   enabled: boolean;
   status: NodeStatus;
   status_reason: string;
@@ -175,6 +194,7 @@ export interface NodeInput {
   tls_insecure: boolean;
   tls_cert_fingerprint: string;
   tls_public_key_sha256: string;
+  reality?: NodeRealityInput | null;
   enabled?: boolean;
 }
 

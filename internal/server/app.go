@@ -78,6 +78,9 @@ func (a *App) Handler() (http.Handler, error) {
 			authenticated.Put("/nodes/{nodeID}", a.handleUpdateNode)
 			authenticated.Delete("/nodes/{nodeID}", a.handleArchiveNode)
 			authenticated.Post("/nodes/{nodeID}/enrollment-token", a.handleEnrollmentToken)
+			authenticated.Post(
+				"/nodes/{nodeID}/reality/rotate-identity", a.handleRotateRealityIdentity,
+			)
 			authenticated.Get("/nodes/{nodeID}/operations", a.handleListNodeOperations)
 			authenticated.Post("/nodes/{nodeID}/operations", a.handleCreateNodeOperation)
 			authenticated.Post(

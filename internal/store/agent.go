@@ -39,6 +39,7 @@ type EnrollmentFacts struct {
 	Architecture   string
 	AdapterType    string
 	CoreName       string
+	Capabilities   []string
 }
 
 func (s *Store) CreateEnrollmentToken(
@@ -150,6 +151,15 @@ func (s *Store) EnrollAgent(
 	if adapterType != facts.AdapterType {
 		return protocol.EnrollResponse{}, ErrConflict
 	}
+	capabilities := normalizeAgentCapabilities(facts.Capabilities)
+	if adapterType == AdapterSingBoxVLESSReality && !containsAllCapabilities(
+		capabilities,
+		"desired_state_v2",
+		"credential_material_v1",
+		"sing_box_vless_reality",
+	) {
+		return protocol.EnrollResponse{}, ErrUnsupported
+	}
 	secret, err := cryptoutil.RandomToken(32)
 	if err != nil {
 		return protocol.EnrollResponse{}, err
@@ -177,12 +187,71 @@ func (s *Store) EnrollAgent(
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE nodes SET agent_installation_id = ?, agent_credential_hash = ?,
 			agent_version = ?, protocol_version = ?, os_name = ?, os_version = ?,
-			architecture = ?, core_name = ?, status = 'pending', updated_at = ?
+			architecture = ?, core_name = ?, core_version = '', core_running = 0,
+			status = 'pending', status_reason = '', applied_version = 0,
+			last_seen_at = NULL, last_applied_at = NULL,
+			adapter_status = 'unknown', adapter_version = '', adapter_error_code = '',
+			adapter_last_probed_at = NULL, adapter_last_discovered_at = NULL,
+			updated_at = ?
 		WHERE id = ?
 	`, facts.InstallationID, cryptoutil.TokenHash(credential), facts.AgentVersion,
 		protocol.MajorVersion, facts.OSName, facts.OSVersion, facts.Architecture,
 		facts.CoreName, now.UnixMilli(), nodeID); err != nil {
 		return protocol.EnrollResponse{}, fmt.Errorf("bind agent to node: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE user_credentials
+		SET state = CASE
+		        WHEN id IN (
+		            SELECT desired_credential_id FROM node_user_assignments WHERE node_id = ?
+		        ) THEN 'staged'
+		        ELSE 'retired'
+		    END,
+		    applied_at = CASE
+		        WHEN id IN (
+		            SELECT desired_credential_id FROM node_user_assignments WHERE node_id = ?
+		        ) THEN NULL
+		        ELSE applied_at
+		    END,
+		    retired_at = CASE
+		        WHEN id IN (
+		            SELECT desired_credential_id FROM node_user_assignments WHERE node_id = ?
+		        ) THEN NULL
+		        ELSE COALESCE(retired_at, ?)
+		    END
+		WHERE node_id = ? AND state = 'applied'
+	`, nodeID, nodeID, nodeID, now.UnixMilli(), nodeID); err != nil {
+		return protocol.EnrollResponse{}, fmt.Errorf("invalidate applied credentials: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE node_user_assignments
+		SET applied_credential_id = NULL, applied_version = 0, state = 'pending',
+		    last_error_code = '', last_error_message = '', last_attempt_at = NULL,
+		    applied_at = NULL, updated_at = ?
+		WHERE node_id = ?
+	`, now.UnixMilli(), nodeID); err != nil {
+		return protocol.EnrollResponse{}, fmt.Errorf("invalidate applied assignments: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE node_vless_reality
+		SET applied_key_generation = 0, material_applied_version = 0,
+		    material_reported_at = NULL, updated_at = ?
+		WHERE node_id = ?
+	`, now.UnixMilli(), nodeID); err != nil {
+		return protocol.EnrollResponse{}, fmt.Errorf("invalidate applied Reality material: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM node_agent_capabilities WHERE node_id = ?", nodeID,
+	); err != nil {
+		return protocol.EnrollResponse{}, fmt.Errorf("replace Agent capabilities: %w", err)
+	}
+	for _, capability := range capabilities {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO node_agent_capabilities(node_id, capability, reported_at)
+			VALUES (?, ?, ?)
+		`, nodeID, capability, now.UnixMilli()); err != nil {
+			return protocol.EnrollResponse{}, fmt.Errorf("store Agent capability: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE node_enrollment_tokens SET consumed_at = ?, bound_installation_id = ?,
@@ -385,6 +454,20 @@ func (s *Store) AcknowledgeDesired(
 	status, errorCode, message string,
 	now time.Time,
 ) error {
+	return s.AcknowledgeDesiredWithMaterial(
+		ctx, identity, version, hash, status, errorCode, message, nil, now,
+	)
+}
+
+func (s *Store) AcknowledgeDesiredWithMaterial(
+	ctx context.Context,
+	identity AgentIdentity,
+	version int64,
+	hash []byte,
+	status, errorCode, message string,
+	reality *protocol.AppliedRealityMaterial,
+	now time.Time,
+) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin desired acknowledgement: %w", err)
@@ -392,11 +475,15 @@ func (s *Store) AcknowledgeDesired(
 	defer func() { _ = tx.Rollback() }()
 	var expected []byte
 	var desiredVersion int64
+	var adapter, installationID string
 	err = tx.QueryRowContext(ctx, `
-		SELECT s.sha256, n.desired_version
+		SELECT s.sha256, n.desired_version, n.adapter_type,
+		       COALESCE(n.agent_installation_id, '')
 		FROM node_snapshots s JOIN nodes n ON n.id = s.node_id
 		WHERE s.node_id = ? AND s.version = ? AND n.archived_at IS NULL
-	`, identity.NodeID, version).Scan(&expected, &desiredVersion)
+	`, identity.NodeID, version).Scan(
+		&expected, &desiredVersion, &adapter, &installationID,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrVersionConflict
 	}
@@ -405,6 +492,57 @@ func (s *Store) AcknowledgeDesired(
 	}
 	if version != desiredVersion || subtle.ConstantTimeCompare(hash, expected) != 1 {
 		return ErrVersionConflict
+	}
+	if identity.AdapterType != adapter {
+		return ErrVersionConflict
+	}
+	if identity.InstallationID != "" && identity.InstallationID != installationID {
+		return ErrVersionConflict
+	}
+	if adapter != AdapterSingBoxVLESSReality && reality != nil {
+		return ErrConflict
+	}
+	if adapter == AdapterSingBoxVLESSReality && status == "applied" {
+		if !validAppliedRealityMaterial(reality) {
+			return ErrConflict
+		}
+		var desiredKeyGeneration, appliedKeyGeneration int64
+		var appliedPublicKey, appliedShortID string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT desired_key_generation, applied_key_generation, public_key, short_id
+			FROM node_vless_reality WHERE node_id = ?
+		`, identity.NodeID).Scan(
+			&desiredKeyGeneration, &appliedKeyGeneration, &appliedPublicKey,
+			&appliedShortID,
+		); err != nil {
+			return fmt.Errorf("read desired Reality key generation: %w", err)
+		}
+		if reality.KeyGeneration != desiredKeyGeneration {
+			return ErrVersionConflict
+		}
+		if appliedKeyGeneration == reality.KeyGeneration &&
+			(appliedPublicKey != "" || appliedShortID != "") &&
+			(appliedPublicKey != reality.PublicKey || appliedShortID != reality.ShortID) {
+			return ErrConflict
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE node_vless_reality
+			SET applied_key_generation = ?, public_key = ?, short_id = ?,
+			    material_applied_version = ?, material_reported_at = ?, updated_at = ?
+			WHERE node_id = ? AND desired_key_generation = ?
+		`, reality.KeyGeneration, reality.PublicKey, reality.ShortID, version,
+			now.UnixMilli(), now.UnixMilli(), identity.NodeID,
+			reality.KeyGeneration)
+		if err != nil {
+			return fmt.Errorf("store applied Reality material: %w", err)
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read applied Reality material result: %w", err)
+		}
+		if rowsAffected != 1 {
+			return ErrVersionConflict
+		}
 	}
 	if status == "applied" {
 		resultStatus := "online"

@@ -46,3 +46,19 @@ func TestSanitizeOutputRedactsSubscriptionTokens(t *testing.T) {
 		t.Fatalf("SanitizeOutput() did not redact subscription tokens: %q", got)
 	}
 }
+
+func TestSanitizeOutputRedactsRealitySecrets(t *testing.T) {
+	const credential = "9bdf6227-4a42-4c7f-b8b0-cf56c8562341"
+	const privateKey = "private-key-material"
+	got := SanitizeOutput(
+		"private_key="+privateKey+"\nclient="+credential+
+			"\nlink=vless://"+credential+"@reality.example.test:443",
+		10,
+		1024,
+	)
+	for _, forbidden := range []string{credential, privateKey} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("SanitizeOutput() retained Reality secret %q in %q", forbidden, got)
+		}
+	}
+}

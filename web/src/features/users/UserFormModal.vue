@@ -14,6 +14,7 @@ import {
   type FormRules,
 } from "naive-ui";
 import type { NodeRecord, UserInput, UserRecord } from "../../types";
+import { adapterLabels } from "../../lib/format";
 
 const props = defineProps<{
   show: boolean;
@@ -49,9 +50,17 @@ const form = reactive<UserFormModel>({
 });
 
 const title = computed(() => (props.user ? "编辑用户" : "添加用户"));
+const selectedRealityNode = computed(() => {
+  const selected = props.user
+    ? props.user.assignments.map((assignment) => assignment.node_id)
+    : form.nodeIds;
+  return props.assignableNodes.some(
+    (node) => selected.includes(node.id) && node.adapter_type === "sing_box_vless_reality",
+  ) || Boolean(props.user?.assignments.some((assignment) => assignment.node_adapter === "sing_box_vless_reality"));
+});
 const nodeOptions = computed(() =>
   props.assignableNodes.map((node) => ({
-    label: `${node.name}${node.adapter_type === "s_ui" ? " · S-UI" : ""}`,
+    label: `${node.name} · ${adapterLabels[node.adapter_type]}`,
     value: node.id,
     disabled: !node.enabled,
   })),
@@ -82,6 +91,10 @@ watch(
   },
   { immediate: true },
 );
+
+watch(selectedRealityNode, (selected) => {
+  if (selected) form.trafficLimitGiB = 0;
+});
 
 async function submit() {
   try {
@@ -138,9 +151,13 @@ async function submit() {
             :max="8388607"
             :precision="2"
             :step="10"
+            :disabled="selectedRealityNode"
             style="width: 100%"
             placeholder="0（不限额）"
           />
+          <template v-if="selectedRealityNode" #feedback>
+            Reality 节点暂不支持流量统计与额度。
+          </template>
         </n-form-item>
       </div>
       <n-form-item v-if="!user" label="初始节点" path="nodeIds">
@@ -152,7 +169,7 @@ async function submit() {
           placeholder="可稍后分配"
         />
         <template v-if="assignableNodes.length === 0" #feedback>
-          当前没有可分配的 Hysteria2 节点。
+          当前没有可分配的受管节点。
         </template>
       </n-form-item>
       <n-form-item label="备注" path="notes">

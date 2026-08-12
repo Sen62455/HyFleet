@@ -22,26 +22,44 @@ import (
 	"github.com/hyfleet/hyfleet/internal/buildinfo"
 	"github.com/hyfleet/hyfleet/internal/config"
 	"github.com/hyfleet/hyfleet/internal/cryptoutil"
+	"github.com/hyfleet/hyfleet/internal/nodeops"
 	"github.com/hyfleet/hyfleet/internal/protocol"
 )
 
 type Agent struct {
-	config                config.Agent
-	logger                *slog.Logger
-	client                *http.Client
-	collector             Collector
-	telemetryCollector    TelemetryCollector
-	state                 State
-	authCache             *AuthCache
-	localStore            *localStore
-	statsClient           *hysteriaStatsClient
-	suiClient             *suiClient
-	usage                 protocol.UsageInfo
-	adapterInfo           protocol.AdapterInfo
-	adapterCore           protocol.CoreInfo
-	operationExecutor     func(context.Context, protocol.NodeOperation) protocol.OperationResultRequest
+	config               config.Agent
+	logger               *slog.Logger
+	client               *http.Client
+	collector            Collector
+	telemetryCollector   TelemetryCollector
+	state                State
+	authCache            *AuthCache
+	localStore           *localStore
+	statsClient          *hysteriaStatsClient
+	suiClient            *suiClient
+	usage                protocol.UsageInfo
+	adapterInfo          protocol.AdapterInfo
+	adapterCore          protocol.CoreInfo
+	operationExecutor    func(context.Context, protocol.NodeOperation) protocol.OperationResultRequest
+	realityApplyExecutor func(context.Context, nodeops.RealityApplyRequest) (nodeops.HelperResponse, error)
+	realityProbeExecutor func(context.Context, nodeops.RealityProbeRequest) (nodeops.HelperResponse, error)
+	dataPlaneMu          sync.Mutex
+	// Protected by dataPlaneMu; invalidates an earlier Reality health observation.
+	dataPlaneRevision     uint64
 	operationCycleRunning atomic.Bool
 	operationWG           sync.WaitGroup
+}
+
+type serverRejectionError struct {
+	status int
+	code   string
+}
+
+func (err serverRejectionError) Error() string {
+	if err.code != "" {
+		return "server rejected request: " + err.code
+	}
+	return fmt.Sprintf("server rejected request with status %d", err.status)
 }
 
 func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
@@ -104,6 +122,10 @@ func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
 		return nil, err
 	}
 	result.localStore = local
+	if err := result.validatePendingRealityAck(); err != nil {
+		_ = local.Close()
+		return nil, err
+	}
 	if cfg.AdapterType == "native_hysteria2" {
 		cache, err := LoadAuthCache(cfg.AuthCachePath)
 		if err != nil {
@@ -174,14 +196,23 @@ func (agent *Agent) Run(ctx context.Context) error {
 		"installation_id", agent.state.InstallationID,
 		"adapter", agent.config.AdapterType,
 	)
-	if err := agent.sendPendingAck(ctx); err != nil {
-		agent.logger.Warn("pending desired acknowledgement failed", "error", err)
+	realityAdapter := agent.config.AdapterType == "sing_box_vless_reality"
+	if !realityAdapter {
+		if err := agent.sendPendingAck(ctx); err != nil {
+			agent.logger.Warn("pending desired acknowledgement failed", "error", err)
+		}
 	}
 	if err := agent.runUsageCycle(ctx); err != nil {
 		agent.logger.Warn("initial usage cycle failed", "error", err)
 	}
-	if _, err := agent.heartbeat(ctx); err != nil {
+	if _, revision, err := agent.heartbeat(ctx); err != nil {
 		agent.logger.Warn("initial heartbeat failed", "error", err)
+	} else if realityAdapter {
+		// Refresh the controller's core state before a persisted Reality ACK can
+		// make the endpoint subscription-eligible again after an Agent restart.
+		if err := agent.sendPendingRealityAck(ctx, revision); err != nil {
+			agent.logger.Warn("pending desired acknowledgement failed", "error", err)
+		}
 	}
 	if err := agent.reportTelemetry(ctx); err != nil {
 		agent.logger.Warn("initial telemetry report failed", "error", err)
@@ -208,8 +239,12 @@ func (agent *Agent) Run(ctx context.Context) error {
 			}
 			authServerErrors = nil
 		case <-heartbeatTimer.C:
-			if _, err := agent.heartbeat(ctx); err != nil {
+			if _, revision, err := agent.heartbeat(ctx); err != nil {
 				agent.logger.Warn("heartbeat failed", "error", err)
+			} else if realityAdapter {
+				if err := agent.sendPendingRealityAck(ctx, revision); err != nil {
+					agent.logger.Warn("desired acknowledgement retry failed", "error", err)
+				}
 			}
 			heartbeatTimer.Reset(jitter(agent.config.HeartbeatEvery))
 		case <-telemetryTimer.C:
@@ -218,10 +253,16 @@ func (agent *Agent) Run(ctx context.Context) error {
 			}
 			telemetryTimer.Reset(jitter(agent.config.TelemetryEvery))
 		case <-desiredTimer.C:
-			if err := agent.sendPendingAck(ctx); err != nil {
-				agent.logger.Warn("desired acknowledgement retry failed", "error", err)
-			} else if err := agent.pollDesired(ctx); err != nil {
-				agent.logger.Warn("desired-state poll failed", "error", err)
+			if realityAdapter {
+				if err := agent.pollDesired(ctx); err != nil {
+					agent.logger.Warn("desired-state poll failed", "error", err)
+				}
+			} else {
+				if err := agent.sendPendingAck(ctx); err != nil {
+					agent.logger.Warn("desired acknowledgement retry failed", "error", err)
+				} else if err := agent.pollDesired(ctx); err != nil {
+					agent.logger.Warn("desired-state poll failed", "error", err)
+				}
 			}
 			agent.startOperationCycle(ctx, "scheduled")
 			desiredTimer.Reset(jitter(agent.config.DesiredEvery))
@@ -315,7 +356,7 @@ func (agent *Agent) enroll(ctx context.Context) error {
 	return SaveState(agent.config.StatePath, agent.state)
 }
 
-func (agent *Agent) heartbeat(ctx context.Context) (int64, error) {
+func (agent *Agent) heartbeat(ctx context.Context) (int64, uint64, error) {
 	metrics, sampleErr := agent.collector.Sample(ctx)
 	if sampleErr != nil {
 		facts := agent.collector.Facts()
@@ -330,7 +371,7 @@ func (agent *Agent) heartbeat(ctx context.Context) (int64, error) {
 	if agent.localStore != nil {
 		count, countErr := agent.localStore.trafficOutboxCount(ctx)
 		if countErr != nil {
-			return 0, countErr
+			return 0, 0, countErr
 		}
 		usage.OutboxBatches = count
 	}
@@ -339,11 +380,16 @@ func (agent *Agent) heartbeat(ctx context.Context) (int64, error) {
 		Running: agent.collector.ServiceRunning(ctx, agent.config.ServiceUnit),
 	}
 	adapterInfo := agent.adapterInfo
+	var dataPlaneRevision uint64
 	if agent.config.AdapterType == "native_hysteria2" {
 		adapterInfo.Status = "compatible"
 		adapterInfo.ErrorCode = ""
 	} else if agent.config.AdapterType == "s_ui" {
 		core = agent.adapterCore
+	} else if agent.config.AdapterType == "sing_box_vless_reality" {
+		adapterInfo, core, dataPlaneRevision = agent.probeVLESSReality(ctx, time.Now().UTC())
+		agent.adapterInfo = adapterInfo
+		agent.adapterCore = core
 	}
 	request := protocol.HeartbeatRequest{
 		InstallationID: agent.state.InstallationID,
@@ -362,12 +408,12 @@ func (agent *Agent) heartbeat(ctx context.Context) (int64, error) {
 	status, err := agent.doJSON(ctx, http.MethodPost, "/agent/v1/heartbeat", request,
 		cryptoutil.NewID(), true, &result)
 	if err != nil {
-		return 0, err
+		return 0, dataPlaneRevision, err
 	}
 	if status != http.StatusOK {
-		return 0, fmt.Errorf("heartbeat returned status %d", status)
+		return 0, dataPlaneRevision, fmt.Errorf("heartbeat returned status %d", status)
 	}
-	return result.DesiredVersion, nil
+	return result.DesiredVersion, dataPlaneRevision, nil
 }
 
 func (agent *Agent) reportTelemetry(ctx context.Context) error {
@@ -415,8 +461,13 @@ func (agent *Agent) pollDesired(ctx context.Context) error {
 	if status != http.StatusOK {
 		return fmt.Errorf("desired-state poll returned status %d", status)
 	}
+	expectedSchema := 1
+	if agent.config.AdapterType == "sing_box_vless_reality" {
+		expectedSchema = 2
+	}
 	if result.Snapshot.NodeID != agent.state.NodeID || result.Snapshot.Adapter != agent.config.AdapterType ||
-		result.Snapshot.Version <= agent.state.AppliedVersion || result.Snapshot.SchemaVersion != 1 {
+		result.Snapshot.Version <= agent.state.AppliedVersion ||
+		result.Snapshot.SchemaVersion != expectedSchema {
 		return errors.New("desired snapshot identity or version is invalid")
 	}
 	canonical, err := json.Marshal(result.Snapshot)
@@ -452,6 +503,15 @@ func (agent *Agent) pollDesired(ctx context.Context) error {
 			agent.logger.Error("apply S-UI desired state failed", "version", result.Snapshot.Version, "error_code", code)
 			return agent.ackFailed(ctx, result, code, "S-UI reconciliation rejected desired state")
 		}
+	} else if agent.config.AdapterType == "sing_box_vless_reality" {
+		revision, err := agent.applyAndPersistVLESSRealityDesired(ctx, result)
+		if err != nil {
+			code := realityApplyErrorCode(err)
+			agent.logger.Error("apply VLESS Reality desired state failed",
+				"version", result.Snapshot.Version, "error_code", code)
+			return agent.ackFailed(ctx, result, code, "VLESS Reality reconciliation rejected desired state")
+		}
+		return agent.sendPendingRealityAck(ctx, revision)
 	} else if len(result.Snapshot.Users) != 0 {
 		return agent.ackFailed(
 			ctx, result, "adapter_users_unsupported", "this adapter cannot apply users in Phase 2",
@@ -481,11 +541,18 @@ func (agent *Agent) capabilities() []string {
 			"sui_ownership_v1", "credential_material_v1", "traffic_stats_v1",
 			"traffic_outbox_v1", "online_snapshot_v1")
 	}
+	if agent.config.AdapterType == "sing_box_vless_reality" {
+		return append(capabilities, "desired_state_v2", "credential_material_v1",
+			"sing_box_vless_reality")
+	}
 	return append(capabilities, "read_only_adapter")
 }
 
 func (agent *Agent) runUsageCycle(ctx context.Context) error {
 	if agent.localStore == nil {
+		return nil
+	}
+	if agent.config.AdapterType == "sing_box_vless_reality" {
 		return nil
 	}
 	if agent.config.AdapterType == "s_ui" {
@@ -615,23 +682,67 @@ func (agent *Agent) sendPendingAck(ctx context.Context) error {
 	if agent.state.PendingAckVersion == 0 {
 		return nil
 	}
+	pendingVersion := agent.state.PendingAckVersion
 	request := protocol.DesiredAckRequest{
 		Status:       "applied",
 		SnapshotHash: agent.state.PendingAckHash,
 		Adapter:      agent.config.AdapterType,
+		Reality:      agent.state.PendingAckReality,
 	}
 	status, err := agent.doJSON(ctx, http.MethodPost,
-		"/agent/v1/desired/"+strconv.FormatInt(agent.state.PendingAckVersion, 10)+"/ack",
+		"/agent/v1/desired/"+strconv.FormatInt(pendingVersion, 10)+"/ack",
 		request, cryptoutil.NewID(), true, nil)
+	var rejection serverRejectionError
+	if status == http.StatusConflict && errors.As(err, &rejection) &&
+		rejection.code == "desired_version_conflict" {
+		superseded, confirmationErr := agent.pendingAckIsSuperseded(ctx, pendingVersion)
+		if confirmationErr != nil {
+			return fmt.Errorf("confirm pending acknowledgement is stale: %w", confirmationErr)
+		}
+		if !superseded {
+			return err
+		}
+		return agent.clearPendingAck()
+	}
 	if err != nil {
 		return err
 	}
 	if status != http.StatusNoContent {
 		return fmt.Errorf("desired acknowledgement returned status %d", status)
 	}
+	return agent.clearPendingAck()
+}
+
+func (agent *Agent) pendingAckIsSuperseded(ctx context.Context, pendingVersion int64) (bool, error) {
+	endpoint := "/agent/v1/desired?after=" + strconv.FormatInt(pendingVersion, 10)
+	var result protocol.DesiredEnvelope
+	status, err := agent.doJSON(ctx, http.MethodGet, endpoint, nil, cryptoutil.NewID(), true, &result)
+	if err != nil {
+		return false, err
+	}
+	if status == http.StatusNoContent {
+		return false, nil
+	}
+	if status != http.StatusOK {
+		return false, fmt.Errorf("desired-state confirmation returned status %d", status)
+	}
+	if result.Snapshot.NodeID != agent.state.NodeID ||
+		result.Snapshot.Adapter != agent.config.AdapterType {
+		return false, errors.New("desired-state confirmation identity is invalid")
+	}
+	return result.Snapshot.Version > pendingVersion, nil
+}
+
+func (agent *Agent) clearPendingAck() error {
+	previousState := agent.state
 	agent.state.PendingAckVersion = 0
 	agent.state.PendingAckHash = ""
-	return SaveState(agent.config.StatePath, agent.state)
+	agent.state.PendingAckReality = nil
+	if err := SaveState(agent.config.StatePath, agent.state); err != nil {
+		agent.state = previousState
+		return err
+	}
+	return nil
 }
 
 func (agent *Agent) doJSON(
@@ -682,9 +793,12 @@ func (agent *Agent) doJSON(
 	if response.StatusCode >= 400 {
 		var apiError protocol.ErrorResponse
 		if err := json.NewDecoder(limited).Decode(&apiError); err == nil && apiError.Error.Code != "" {
-			return response.StatusCode, fmt.Errorf("server rejected request: %s", apiError.Error.Code)
+			return response.StatusCode, serverRejectionError{
+				status: response.StatusCode,
+				code:   apiError.Error.Code,
+			}
 		}
-		return response.StatusCode, fmt.Errorf("server rejected request with status %d", response.StatusCode)
+		return response.StatusCode, serverRejectionError{status: response.StatusCode}
 	}
 	if destination != nil && response.StatusCode != http.StatusNoContent {
 		if err := json.NewDecoder(limited).Decode(destination); err != nil {

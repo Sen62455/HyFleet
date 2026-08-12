@@ -12,7 +12,7 @@ import {
   type FormInst,
   type FormRules,
 } from "naive-ui";
-import type { AdapterType, NodeInput, NodeRecord } from "../../types";
+import type { AdapterType, NodeInput, NodeRealityInput, NodeRecord } from "../../types";
 
 const props = defineProps<{
   show: boolean;
@@ -26,7 +26,9 @@ const emit = defineEmits<{
 }>();
 
 const formRef = ref<FormInst | null>(null);
-const form = reactive<Required<NodeInput>>({
+type NodeFormModel = Omit<Required<NodeInput>, "reality"> & { reality: NodeRealityInput };
+
+const form = reactive<NodeFormModel>({
   name: "",
   provider: "",
   region: "",
@@ -37,13 +39,19 @@ const form = reactive<Required<NodeInput>>({
   tls_insecure: false,
   tls_cert_fingerprint: "",
   tls_public_key_sha256: "",
+  reality: {
+    handshake_server: "",
+    handshake_port: 443,
+  },
   enabled: true,
 });
 
 const title = computed(() => (props.node ? "编辑节点" : "添加节点"));
 const adapterLocked = computed(() => Boolean(props.node?.agent_installation_id));
+const isReality = computed(() => form.adapter_type === "sing_box_vless_reality");
 const adapterOptions = [
   { label: "原生 Hysteria2（推荐）", value: "native_hysteria2" },
+  { label: "VLESS + Reality（sing-box · 实验）", value: "sing_box_vless_reality" },
   { label: "独立 sing-box（迁移兼容）", value: "standalone_sing_box" },
   { label: "S-UI（迁移兼容）", value: "s_ui" },
 ];
@@ -53,6 +61,21 @@ const rules: FormRules = {
     { min: 2, max: 64, message: "名称长度为 2 到 64 个字符", trigger: "blur" },
   ],
   adapter_type: [{ required: true, message: "请选择适配器", trigger: "change" }],
+  public_host: [{
+    validator: (_rule, value: string) => !isReality.value || Boolean(value?.trim()),
+    message: "请输入 Reality 公网域名或 IP",
+    trigger: ["blur", "input"],
+  }],
+  sni: [{
+    validator: (_rule, value: string) => !isReality.value || Boolean(value?.trim()),
+    message: "请输入 Reality SNI / 伪装域名",
+    trigger: ["blur", "input"],
+  }],
+  "reality.handshake_server": [{
+    validator: (_rule, value: string) => !isReality.value || Boolean(value?.trim()),
+    message: "请输入 Reality 握手服务器",
+    trigger: ["blur", "input"],
+  }],
 };
 
 watch(
@@ -69,6 +92,8 @@ watch(
     form.tls_insecure = node?.tls_insecure ?? false;
     form.tls_cert_fingerprint = node?.tls_cert_fingerprint ?? "";
     form.tls_public_key_sha256 = node?.tls_public_key_sha256 ?? "";
+    form.reality.handshake_server = node?.reality?.handshake_server ?? "";
+    form.reality.handshake_port = node?.reality?.handshake_port ?? 443;
     form.enabled = node?.enabled ?? true;
     formRef.value?.restoreValidation();
   },
@@ -89,9 +114,15 @@ async function submit() {
     public_host: form.public_host.trim(),
     public_port: form.public_port,
     sni: form.sni.trim(),
-    tls_insecure: form.tls_insecure,
-    tls_cert_fingerprint: form.tls_cert_fingerprint.trim(),
-    tls_public_key_sha256: form.tls_public_key_sha256.trim(),
+    tls_insecure: isReality.value ? false : form.tls_insecure,
+    tls_cert_fingerprint: isReality.value ? "" : form.tls_cert_fingerprint.trim(),
+    tls_public_key_sha256: isReality.value ? "" : form.tls_public_key_sha256.trim(),
+    reality: isReality.value
+      ? {
+          handshake_server: form.reality.handshake_server.trim(),
+          handshake_port: 443,
+        }
+      : null,
     enabled: form.enabled,
   });
 }
@@ -133,25 +164,43 @@ async function submit() {
         <n-form-item label="公网域名或 IP" path="public_host">
           <n-input v-model:value="form.public_host" maxlength="253" placeholder="hy2.example.com" />
         </n-form-item>
-        <n-form-item label="UDP 端口" path="public_port">
+        <n-form-item :label="isReality ? 'TCP 端口' : 'UDP 端口'" path="public_port">
           <n-input-number v-model:value="form.public_port" :min="1" :max="65535" :precision="0" />
         </n-form-item>
       </div>
-      <n-form-item label="TLS SNI" path="sni">
-        <n-input v-model:value="form.sni" maxlength="253" placeholder="留空时使用公网域名" />
+      <n-form-item :label="isReality ? 'Reality SNI / 伪装域名' : 'TLS SNI'" path="sni">
+        <n-input
+          v-model:value="form.sni"
+          maxlength="253"
+          :placeholder="isReality ? '例如：www.cloudflare.com' : '留空时使用公网域名'"
+        />
       </n-form-item>
-      <div class="switch-row switch-row--compact">
+      <template v-if="isReality">
+        <div class="form-grid form-grid--endpoint">
+          <n-form-item label="Reality 握手服务器" path="reality.handshake_server">
+            <n-input
+              v-model:value="form.reality.handshake_server"
+              maxlength="253"
+              placeholder="用于 Reality 握手的公网 DNS 域名"
+            />
+          </n-form-item>
+          <n-form-item label="握手端口" path="reality.handshake_port">
+            <n-input-number :value="443" :min="443" :max="443" :precision="0" disabled />
+          </n-form-item>
+        </div>
+      </template>
+      <div v-if="!isReality" class="switch-row switch-row--compact">
         <div><strong>跳过证书验证</strong></div>
         <n-switch v-model:value="form.tls_insecure" aria-label="跳过证书验证" />
       </div>
-      <n-form-item label="证书 SHA-256 指纹" path="tls_cert_fingerprint">
+      <n-form-item v-if="!isReality" label="证书 SHA-256 指纹" path="tls_cert_fingerprint">
         <n-input
           v-model:value="form.tls_cert_fingerprint"
           maxlength="95"
           placeholder="AA:BB:CC:..."
         />
       </n-form-item>
-      <n-form-item label="公钥 SHA-256（Base64）" path="tls_public_key_sha256">
+      <n-form-item v-if="!isReality" label="公钥 SHA-256（Base64）" path="tls_public_key_sha256">
         <n-input
           v-model:value="form.tls_public_key_sha256"
           maxlength="44"

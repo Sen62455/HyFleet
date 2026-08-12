@@ -8,6 +8,15 @@ source_ops_binary="${bundle_dir}/bin/hyfleet-agent-ops"
 source_unit="${script_dir}/systemd/hyfleet-agent.service"
 source_ops_socket="${script_dir}/systemd/hyfleet-agent-ops.socket"
 source_ops_service="${script_dir}/systemd/hyfleet-agent-ops@.service"
+source_reality_unit="${script_dir}/systemd/hyfleet-sing-box-reality.service"
+source_reality_checksums="${script_dir}/sing-box-reality.sha256"
+
+reality_service_unit="hyfleet-sing-box-reality.service"
+reality_core_config="/etc/sing-box/hyfleet-reality.json"
+reality_binary="/usr/bin/sing-box"
+reality_identity="/var/lib/hyfleet-agent-ops/reality-hyfleet-sing-box-reality.json"
+reality_applied="/var/lib/hyfleet-agent-ops/reality-hyfleet-sing-box-reality-applied.json"
+reality_sing_box_version="1.13.18-hyfleet-utls1.8.7"
 
 server_url=""
 node_name=""
@@ -31,6 +40,7 @@ Adapters:
   native-hysteria2    Hysteria2 systemd service
   standalone-sing-box
   s-ui
+  vless-reality       Experimental VLESS/TCP/Reality managed by the HyFleet sing-box build
 
 Options:
   --server-url URL    HyFleet HTTPS origin (required initially)
@@ -42,6 +52,11 @@ Options:
   --s-ui-api-url URL  Local S-UI HTTP API ending in /apiv2 (S-UI only)
   --replace-config    Replace /etc/hyfleet/agent.yaml with generated settings
   -h, --help          Show this help
+
+The vless-reality adapter uses fixed service, config, binary, and identity
+paths. --service-unit and --core-config-path may only repeat those fixed values.
+The installer never downloads sing-box. It accepts only the pinned HyFleet
+1.13.18-hyfleet-utls1.8.7 build whose checksum is bundled with this release.
 EOF
 }
 
@@ -107,8 +122,8 @@ done
 [[ "${EUID}" -eq 0 ]] || fail "run this installer with sudo"
 
 for command_name in \
-  awk curl getent grep groupadd install journalctl mktemp od runuser sed systemctl \
-  systemd-analyze tr uname useradd; do
+  awk chmod chown curl find getent grep groupadd install journalctl mkdir mktemp od runuser sed sha256sum stat \
+  systemctl systemd-analyze tr uname useradd; do
   command -v "${command_name}" >/dev/null 2>&1 || fail "required command is missing: ${command_name}"
 done
 
@@ -122,8 +137,14 @@ elf_magic="$(od -An -t x1 -N 4 "${source_binary}" | tr -d '[:space:]')"
 [[ "${elf_magic}" == "7f454c46" ]] || fail "hyfleet-agent is not a Linux ELF binary"
 elf_machine="$(od -An -t x1 -j 18 -N 2 "${source_binary}" | tr -d '[:space:]')"
 case "$(uname -m)" in
-  x86_64) expected_machine="3e00" ;;
-  aarch64|arm64) expected_machine="b700" ;;
+  x86_64)
+    architecture="amd64"
+    expected_machine="3e00"
+    ;;
+  aarch64|arm64)
+    architecture="arm64"
+    expected_machine="b700"
+    ;;
   *) fail "unsupported host architecture: $(uname -m)" ;;
 esac
 [[ "${elf_machine}" == "${expected_machine}" ]] ||
@@ -134,10 +155,57 @@ ops_elf_machine="$(od -An -t x1 -j 18 -N 2 "${source_ops_binary}" | tr -d '[:spa
 [[ "${ops_elf_machine}" == "${expected_machine}" ]] ||
   fail "hyfleet-agent-ops architecture does not match host $(uname -m)"
 
+validate_reality_binary() {
+  local actual_hash expected_hash first_line manifest_matches reality_artifact
+  reality_artifact="sing-box-${reality_sing_box_version}-linux-${architecture}"
+  [[ -f "${source_reality_checksums}" && ! -L "${source_reality_checksums}" ]] ||
+    fail "missing checksum manifest ${source_reality_checksums}; extract the complete release archive"
+  [[ -f "${reality_binary}" && -x "${reality_binary}" && ! -L "${reality_binary}" ]] ||
+    fail "vless-reality requires the regular executable ${reality_binary}; install the pinned HyFleet build first"
+  [[ "$(stat -c '%u:%g' "${reality_binary}")" == "0:0" ]] ||
+    fail "${reality_binary} must be owned by root:root"
+  [[ -z "$(find "${reality_binary}" -maxdepth 0 -perm /022 -print -quit)" ]] ||
+    fail "${reality_binary} must not be writable by group or other"
+  [[ "$(od -An -t x1 -N 4 "${reality_binary}" | tr -d '[:space:]')" == "7f454c46" ]] ||
+    fail "${reality_binary} is not a Linux ELF binary"
+  [[ "$(od -An -t x1 -j 18 -N 2 "${reality_binary}" | tr -d '[:space:]')" == "${expected_machine}" ]] ||
+    fail "${reality_binary} architecture does not match host $(uname -m)"
+  manifest_matches="$(awk -v artifact="${reality_artifact}" '
+    length($1) == 64 && $1 ~ /^[0-9a-f]+$/ && $2 == artifact && NF == 2 {
+      hash=$1
+      matches++
+    }
+    END {
+      if (matches == 1) print hash
+    }
+  ' "${source_reality_checksums}")"
+  expected_hash="${manifest_matches}"
+  [[ -n "${expected_hash}" ]] ||
+    fail "checksum manifest has no unique entry for ${reality_artifact}"
+  actual_hash="$(sha256sum "${reality_binary}" | awk '{print $1}')"
+  [[ "${actual_hash}" == "${expected_hash}" ]] ||
+    fail "${reality_binary} checksum does not match the pinned HyFleet ${architecture} build"
+  first_line="$("${reality_binary}" version | sed -n '1p')"
+  [[ "${first_line}" == "sing-box version ${reality_sing_box_version}" ]] ||
+    fail "vless-reality requires sing-box ${reality_sing_box_version}; found ${first_line:-no version output}"
+}
+
+if [[ "${adapter_type}" == "vless-reality" ]]; then
+  [[ -z "${service_unit}" || "${service_unit}" == "${reality_service_unit}" ]] ||
+    fail "vless-reality requires service unit ${reality_service_unit}"
+  [[ -z "${core_config_path}" || "${core_config_path}" == "${reality_core_config}" ]] ||
+    fail "vless-reality requires core config ${reality_core_config}"
+  [[ -z "${s_ui_api_url}" ]] || fail "--s-ui-api-url is not supported for vless-reality"
+fi
+
 config_path="/etc/hyfleet/agent.yaml"
 state_path="/var/lib/hyfleet-agent/agent-state.json"
-if [[ "${replace_config}" == true && -f "${state_path}" ]] &&
+agent_already_enrolled=false
+if [[ -f "${state_path}" && ! -L "${state_path}" ]] &&
   grep -Eq '"node_credential"[[:space:]]*:[[:space:]]*"[^\"]+' "${state_path}"; then
+  agent_already_enrolled=true
+fi
+if [[ "${replace_config}" == true && "${agent_already_enrolled}" == true ]]; then
   fail "Agent is already enrolled; refusing to replace its identity configuration"
 fi
 if [[ ! -f "${config_path}" || "${replace_config}" == true ]]; then
@@ -168,6 +236,17 @@ if [[ ! -f "${config_path}" || "${replace_config}" == true ]]; then
       [[ "${s_ui_api_url}" =~ ^http://127\.0\.0\.1:[0-9]{1,5}(/[A-Za-z0-9._~-]+)*/apiv2/?$ ]] ||
         fail "--s-ui-api-url must use 127.0.0.1, include a port, and end with /apiv2"
       ;;
+    vless-reality)
+      adapter_type="sing_box_vless_reality"
+      core_name="sing-box"
+      [[ -z "${s_ui_api_url}" ]] || fail "--s-ui-api-url is not supported for vless-reality"
+      [[ -z "${service_unit}" || "${service_unit}" == "${reality_service_unit}" ]] ||
+        fail "vless-reality requires service unit ${reality_service_unit}"
+      [[ -z "${core_config_path}" || "${core_config_path}" == "${reality_core_config}" ]] ||
+        fail "vless-reality requires core config ${reality_core_config}"
+      service_unit="${reality_service_unit}"
+      core_config_path="${reality_core_config}"
+      ;;
     *)
       fail "unsupported --adapter value: ${adapter_type}"
       ;;
@@ -186,8 +265,18 @@ if [[ ! -f "${config_path}" || "${replace_config}" == true ]]; then
       [[ "${core_config_path}" == /etc/sing-box/* ]] ||
         fail "standalone sing-box config must be below /etc/sing-box"
     fi
-    [[ ! -L "${core_config_path}" && ( -f "${core_config_path}" || -d "${core_config_path}" ) ]] ||
-      fail "--core-config-path must identify an existing regular file or directory, not a symlink"
+    if [[ "${adapter_type}" == "sing_box_vless_reality" ]]; then
+      [[ "${core_config_path}" == "${reality_core_config}" ]] ||
+        fail "vless-reality requires core config ${reality_core_config}"
+      [[ ! -L /etc/sing-box ]] || fail "/etc/sing-box must not be a symbolic link"
+      if [[ -e "${core_config_path}" || -L "${core_config_path}" ]]; then
+        [[ ! -L "${core_config_path}" && -f "${core_config_path}" ]] ||
+          fail "${core_config_path} must be a regular file, not a symbolic link"
+      fi
+    else
+      [[ ! -L "${core_config_path}" && ( -f "${core_config_path}" || -d "${core_config_path}" ) ]] ||
+        fail "--core-config-path must identify an existing regular file or directory, not a symlink"
+    fi
   fi
 elif [[ -n "${server_url}${node_name}${adapter_type}${service_unit}${core_config_path}${s_ui_api_url}" ]]; then
   printf 'Keeping existing %s; supplied configuration options were not applied.\n' "${config_path}"
@@ -239,11 +328,89 @@ s_ui_api_url: ${s_ui_api_url}
 s_ui_token_env: HYFLEET_SUI_TOKEN
 EOF
   fi
+  if [[ "${adapter_type}" == "sing_box_vless_reality" ]]; then
+    cat >> "${temporary_dir}/agent.yaml" <<EOF
+sing_box_binary_path: ${reality_binary}
+reality_identity_path: ${reality_identity}
+EOF
+  fi
   install -o root -g hyfleet-agent -m 0640 "${temporary_dir}/agent.yaml" "${config_path}"
 fi
 
 if grep -q 'hyfleet\.example\.com' "${config_path}"; then
   fail "${config_path} still contains the example hostname; rerun with --replace-config"
+fi
+
+configured_adapter="$(awk '$1 == "adapter_type:" { print $2; exit }' "${config_path}")"
+[[ "${configured_adapter}" =~ ^(native_hysteria2|standalone_sing_box|s_ui|sing_box_vless_reality)$ ]] ||
+  fail "agent adapter_type is invalid"
+if [[ "${configured_adapter}" == "sing_box_vless_reality" ]]; then
+  [[ -f "${source_reality_unit}" ]] ||
+    fail "missing ${source_reality_unit}; extract the complete release archive"
+  [[ "$(awk '$1 == "service_unit:" { print $2; exit }' "${config_path}")" == "${reality_service_unit}" ]] ||
+    fail "vless-reality requires service unit ${reality_service_unit}"
+  [[ "$(awk '$1 == "core_config_path:" { print $2; exit }' "${config_path}")" == "${reality_core_config}" ]] ||
+    fail "vless-reality requires core config ${reality_core_config}"
+  [[ "$(awk '$1 == "sing_box_binary_path:" { print $2; exit }' "${config_path}")" == "${reality_binary}" ]] ||
+    fail "vless-reality requires binary ${reality_binary}"
+  [[ "$(awk '$1 == "reality_identity_path:" { print $2; exit }' "${config_path}")" == "${reality_identity}" ]] ||
+    fail "vless-reality requires identity path ${reality_identity}"
+  validate_reality_binary
+  getent group hyfleet-singbox >/dev/null 2>&1 || groupadd --system hyfleet-singbox
+  if ! id -u hyfleet-singbox >/dev/null 2>&1; then
+    useradd --system --gid hyfleet-singbox --home-dir /var/lib/hyfleet-singbox \
+      --shell /usr/sbin/nologin hyfleet-singbox
+  fi
+  reality_user_id="$(id -u hyfleet-singbox)"
+  reality_group_id="$(getent group hyfleet-singbox | awk -F: '{ print $3; exit }')"
+  [[ -n "${reality_user_id}" && -n "${reality_group_id}" ]] ||
+    fail "could not resolve the hyfleet-singbox service identity"
+  if [[ "${agent_already_enrolled}" == true ]]; then
+    agent_user_id="$(id -u hyfleet-agent)"
+    agent_group_id="$(getent group hyfleet-agent | awk -F: '{ print $3; exit }')"
+    [[ -n "${agent_user_id}" && -n "${agent_group_id}" &&
+      "$(stat -c '%u:%g %a' "${state_path}")" == "${agent_user_id}:${agent_group_id} 600" ]] ||
+      fail "enrolled Agent state has invalid ownership or permissions"
+  fi
+  if mkdir -m 0750 /etc/sing-box 2>/dev/null; then
+    reality_config_dir_identity="$(stat -c '%d:%i' /etc/sing-box)"
+    chown root:hyfleet-singbox /etc/sing-box
+    chmod 0750 /etc/sing-box
+    [[ "$(stat -c '%d:%i' /etc/sing-box)" == "${reality_config_dir_identity}" ]] ||
+      fail "/etc/sing-box changed while securing the newly created directory"
+  else
+    [[ -d /etc/sing-box && ! -L /etc/sing-box ]] ||
+      fail "/etc/sing-box must be a directory, not a symbolic link"
+  fi
+  [[ "$(stat -c '%u:%g' /etc/sing-box)" == "0:${reality_group_id}" ]] ||
+    fail "existing /etc/sing-box must already be owned by root:hyfleet-singbox"
+  [[ -z "$(find /etc/sing-box -maxdepth 0 -perm /022 -print -quit)" ]] ||
+    fail "existing /etc/sing-box must not be writable by group or other"
+  runuser -u hyfleet-singbox -- test -x /etc/sing-box ||
+    fail "existing /etc/sing-box is not traversable by hyfleet-singbox"
+  if [[ -e /var/lib/hyfleet-singbox || -L /var/lib/hyfleet-singbox ]]; then
+    [[ -d /var/lib/hyfleet-singbox && ! -L /var/lib/hyfleet-singbox ]] ||
+      fail "/var/lib/hyfleet-singbox must be a directory, not a symbolic link"
+    [[ "$(stat -c '%u:%g %a' /var/lib/hyfleet-singbox)" == \
+      "${reality_user_id}:${reality_group_id} 750" ]] ||
+      fail "existing /var/lib/hyfleet-singbox has invalid ownership or permissions"
+  else
+    install -d -o hyfleet-singbox -g hyfleet-singbox -m 0750 /var/lib/hyfleet-singbox
+  fi
+  if [[ -e "${reality_core_config}" || -L "${reality_core_config}" ]]; then
+    [[ -f "${reality_core_config}" && ! -L "${reality_core_config}" ]] ||
+      fail "${reality_core_config} must be a regular file, not a symbolic link"
+    [[ "${agent_already_enrolled}" == true ]] ||
+      fail "refusing to adopt existing unmanaged Reality configuration ${reality_core_config}"
+    for managed_state in "${reality_identity}" "${reality_applied}"; do
+      [[ -f "${managed_state}" && ! -L "${managed_state}" ]] ||
+        fail "refusing to adopt Reality configuration without managed local state"
+      [[ "$(stat -c '%u:%g %a' "${managed_state}")" == "0:0 600" ]] ||
+        fail "managed Reality state has invalid ownership or permissions"
+    done
+    [[ "$(stat -c '%u:%g %a' "${reality_core_config}")" == "0:${reality_group_id} 640" ]] ||
+      fail "managed Reality configuration has invalid ownership or permissions"
+  fi
 fi
 
 install -o root -g root -m 0644 "${source_unit}" \
@@ -252,6 +419,10 @@ install -o root -g root -m 0644 "${source_ops_socket}" \
   /etc/systemd/system/hyfleet-agent-ops.socket
 install -o root -g root -m 0644 "${source_ops_service}" \
   /etc/systemd/system/hyfleet-agent-ops@.service
+if [[ "${configured_adapter}" == "sing_box_vless_reality" ]]; then
+  install -o root -g root -m 0644 "${source_reality_unit}" \
+    "/etc/systemd/system/${reality_service_unit}"
+fi
 
 runuser -u hyfleet-agent -g hyfleet-agent -- /usr/local/bin/hyfleet-agent \
   -config "${config_path}" -check-config
@@ -264,9 +435,9 @@ curl --fail --silent --show-error "${configured_server}/healthz" >/dev/null ||
   fail "cannot reach ${configured_server}/healthz with trusted TLS"
 
 environment_path="/etc/hyfleet/agent.env"
-configured_adapter="$(awk '$1 == "adapter_type:" { print $2; exit }' "${config_path}")"
-[[ "${configured_adapter}" =~ ^(native_hysteria2|standalone_sing_box|s_ui)$ ]] ||
-  fail "agent adapter_type is invalid"
+if [[ "${configured_adapter}" == "sing_box_vless_reality" ]]; then
+  validate_reality_binary
+fi
 
 sui_token=""
 if [[ "${configured_adapter}" == "s_ui" ]]; then
@@ -300,8 +471,7 @@ write_agent_environment() {
 }
 
 has_credential=false
-if [[ -f "${state_path}" ]] &&
-  grep -Eq '"node_credential"[[:space:]]*:[[:space:]]*"[^\"]+' "${state_path}"; then
+if [[ "${agent_already_enrolled}" == true ]]; then
   has_credential=true
 fi
 
@@ -317,10 +487,19 @@ else
 fi
 
 systemctl daemon-reload
-systemd-analyze verify /etc/systemd/system/hyfleet-agent.service \
-  /etc/systemd/system/hyfleet-agent-ops.socket \
+units_to_verify=(
+  /etc/systemd/system/hyfleet-agent.service
+  /etc/systemd/system/hyfleet-agent-ops.socket
   /etc/systemd/system/hyfleet-agent-ops@.service
+)
+if [[ "${configured_adapter}" == "sing_box_vless_reality" ]]; then
+  units_to_verify+=("/etc/systemd/system/${reality_service_unit}")
+fi
+systemd-analyze verify "${units_to_verify[@]}"
 systemctl enable --now hyfleet-agent-ops.socket
+if [[ "${configured_adapter}" == "sing_box_vless_reality" ]]; then
+  systemctl enable "${reality_service_unit}"
+fi
 systemctl enable hyfleet-agent
 systemctl restart hyfleet-agent
 
@@ -358,5 +537,9 @@ systemctl is-active --quiet hyfleet-agent || {
 printf 'HyFleet Agent is enrolled and active. The one-time enrollment token was removed.\n'
 if [[ "${configured_adapter}" == "s_ui" ]]; then
   printf 'The local S-UI API token remains in %s with restricted permissions.\n' "${environment_path}"
+fi
+if [[ "${configured_adapter}" == "sing_box_vless_reality" ]]; then
+  printf '%s is enabled and will start after the first valid Reality desired state.\n' \
+    "${reality_service_unit}"
 fi
 printf 'Confirm that the node becomes online in the HyFleet dashboard.\n'

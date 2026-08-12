@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"time"
@@ -11,6 +13,11 @@ import (
 	"github.com/hyfleet/hyfleet/internal/buildinfo"
 	"github.com/hyfleet/hyfleet/internal/config"
 	"github.com/hyfleet/hyfleet/internal/nodeops"
+)
+
+const (
+	helperRequestTimeout = 40 * time.Second
+	helperLockTimeout    = 5 * time.Second
 )
 
 func main() {
@@ -28,7 +35,15 @@ func main() {
 		logger.Error("load configuration failed", "error", err)
 		os.Exit(1)
 	}
-	helper, err := nodeops.NewHelper(cfg.ServiceUnit, cfg.CoreConfigPath)
+	var helper *nodeops.Helper
+	if cfg.AdapterType == "sing_box_vless_reality" {
+		helper, err = nodeops.NewRealityHelper(
+			cfg.ServiceUnit, cfg.CoreConfigPath, cfg.SingBoxBinaryPath, cfg.RealityIdentityPath,
+			cfg.OperationsStateDir, cfg.BackupDir,
+		)
+	} else {
+		helper, err = nodeops.NewHelper(cfg.ServiceUnit, cfg.CoreConfigPath)
+	}
 	if err != nil {
 		logger.Error("initialize operations helper failed", "error", err)
 		os.Exit(1)
@@ -37,10 +52,52 @@ func main() {
 		fmt.Println("operations helper configuration is valid")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), helperRequestTimeout)
 	defer cancel()
-	if err := helper.Serve(ctx, os.Stdin, os.Stdout); err != nil {
+	connection, err := openHelperConnection(ctx, os.Stdin)
+	if err != nil {
+		logger.Error("initialize operations helper connection failed", "error", err)
+		os.Exit(1)
+	}
+	defer connection.Close()
+	if err := serveHelper(ctx, helper, connection, connection); err != nil {
 		logger.Error("operations helper request failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+func serveHelper(
+	ctx context.Context,
+	helper *nodeops.Helper,
+	reader io.Reader,
+	writer io.Writer,
+) (returnErr error) {
+	return serveHelperWithLock(ctx, helper, reader, writer, acquireHelperLock)
+}
+
+type helperLockAcquirer func(context.Context, string) (func() error, error)
+
+func serveHelperWithLock(
+	ctx context.Context,
+	helper *nodeops.Helper,
+	reader io.Reader,
+	writer io.Writer,
+	acquireLock helperLockAcquirer,
+) (returnErr error) {
+	request, err := nodeops.DecodeHelperRequest(reader)
+	if err != nil {
+		return err
+	}
+	lockContext, cancelLock := context.WithTimeout(ctx, helperLockTimeout)
+	releaseLock, err := acquireLock(lockContext, helper.LedgerDir)
+	cancelLock()
+	if err != nil {
+		return fmt.Errorf("acquire operations helper lock: %w", err)
+	}
+	defer func() {
+		if err := releaseLock(); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("release operations helper lock: %w", err))
+		}
+	}()
+	return nodeops.EncodeHelperResponse(writer, helper.Handle(ctx, request))
 }

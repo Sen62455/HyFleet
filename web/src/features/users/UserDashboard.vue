@@ -58,6 +58,7 @@ const assignableNodes = computed(() =>
   props.nodes.filter(
     (node) =>
       node.adapter_type === "native_hysteria2" ||
+      node.adapter_type === "sing_box_vless_reality" ||
       (node.adapter_type === "s_ui" && node.s_ui_target_inbound_ids.length > 0),
   ),
 );
@@ -436,7 +437,7 @@ async function revealCredential(user: UserRecord, assignment: UserAssignment) {
 function rotateAssignmentCredential(user: UserRecord, assignment: UserAssignment) {
   dialog.warning({
     title: "轮换节点凭据",
-    content: `确认轮换“${assignment.node_name}”的 Hysteria2 凭据？节点同步完成前不会出现在新拉取的订阅中。`,
+    content: `确认轮换“${assignment.node_name}”的节点凭据？节点同步完成前不会出现在新拉取的订阅中。`,
     positiveText: "轮换",
     negativeText: "取消",
     async onPositiveClick() {
@@ -461,7 +462,7 @@ function rotateAssignmentCredential(user: UserRecord, assignment: UserAssignment
 function rotateUserCredentials(user: UserRecord) {
   dialog.warning({
     title: "轮换全部凭据",
-    content: `确认轮换“${user.display_name || user.username}”在全部节点上的 Hysteria2 凭据？`,
+    content: `确认轮换“${user.display_name || user.username}”在全部节点上的受管凭据？`,
     positiveText: "全部轮换",
     negativeText: "取消",
     async onPositiveClick() {

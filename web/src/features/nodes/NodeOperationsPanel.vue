@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   Activity,
   Archive,
+  KeyRound,
   RefreshCw,
   RotateCw,
   ScrollText,
@@ -33,6 +34,15 @@ const working = ref("");
 const hasPending = computed(() =>
   operations.value.some((operation) => operation.status === "queued" || operation.status === "running"),
 );
+const canRotateRealityIdentity = computed(() => {
+  const reality = props.node.reality;
+  return props.node.adapter_type === "sing_box_vless_reality" && Boolean(
+    props.node.agent_installation_id && reality?.public_key && reality.short_id &&
+    props.node.desired_version === props.node.applied_version &&
+    reality.key_generation === reality.applied_key_generation &&
+    reality.material_applied_version === props.node.applied_version,
+  );
+});
 
 const operationLabels: Record<NodeOperationType, string> = {
   probe_core: "探测核心",
@@ -50,6 +60,9 @@ function readableError(error: unknown, fallback: string) {
     node_not_enrolled: "节点 Agent 尚未注册。",
     operation_conflict: "当前操作不能重试。",
     operation_unsupported: "该节点不支持此操作。",
+    reality_identity_rotation_pending: "当前身份或配置尚未完成应用。",
+    reality_identity_rotation_conflict: "节点状态已经变化，请刷新后重试。",
+    reality_identity_rotation_unsupported: "该节点不支持 Reality 身份轮换。",
   };
   return error instanceof APIError ? (messages[error.code] ?? error.message) : fallback;
 }
@@ -92,6 +105,29 @@ function restartCore() {
     negativeText: "取消",
     async onPositiveClick() {
       await createOperation("restart_core");
+    },
+  });
+}
+
+function rotateRealityIdentity() {
+  const generation = props.node.reality?.key_generation;
+  if (!generation || !canRotateRealityIdentity.value) return;
+  dialog.warning({
+    title: "轮换 Reality 身份",
+    content: `确认将“${props.node.name}”轮换到第 ${generation + 1} 代身份？订阅会暂停发布该节点，直到 Agent 应用新身份。`,
+    positiveText: "轮换",
+    negativeText: "取消",
+    async onPositiveClick() {
+      working.value = "reality-identity";
+      try {
+        await api.rotateRealityIdentity(props.node.id, generation, props.node.desired_version);
+        emit("changed");
+        message.success("Reality 身份轮换已提交，等待 Agent 应用");
+      } catch (error) {
+        message.error(readableError(error, "Reality 身份轮换失败。"));
+      } finally {
+        working.value = "";
+      }
     },
   });
 }
@@ -192,11 +228,18 @@ watch(
       </n-tooltip>
       <n-tooltip trigger="hover">
         <template #trigger>
-          <n-button circle secondary :loading="working === 'tail_core_log'" aria-label="获取有限日志" @click="createOperation('tail_core_log')">
+          <n-button
+            circle
+            secondary
+            :disabled="node.adapter_type === 'sing_box_vless_reality'"
+            :loading="working === 'tail_core_log'"
+            aria-label="获取有限日志"
+            @click="createOperation('tail_core_log')"
+          >
             <template #icon><n-icon><scroll-text /></n-icon></template>
           </n-button>
         </template>
-        最近 100 行日志
+        {{ node.adapter_type === "sing_box_vless_reality" ? "Reality 日志读取已禁用" : "最近 100 行日志" }}
       </n-tooltip>
       <n-tooltip trigger="hover">
         <template #trigger>
@@ -212,6 +255,21 @@ watch(
           </n-button>
         </template>
         {{ node.adapter_type === "s_ui" ? "S-UI 数据库不做在线文件复制" : "备份核心配置" }}
+      </n-tooltip>
+      <n-tooltip v-if="node.adapter_type === 'sing_box_vless_reality'" trigger="hover">
+        <template #trigger>
+          <n-button
+            circle
+            secondary
+            :disabled="!canRotateRealityIdentity"
+            :loading="working === 'reality-identity'"
+            aria-label="轮换 Reality 身份"
+            @click="rotateRealityIdentity"
+          >
+            <template #icon><n-icon><key-round /></n-icon></template>
+          </n-button>
+        </template>
+        {{ canRotateRealityIdentity ? "轮换 Reality 身份" : "等待当前身份与配置完成应用" }}
       </n-tooltip>
       <n-button
         v-if="node.adapter_type !== 'standalone_sing_box'"

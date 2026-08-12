@@ -45,6 +45,8 @@ type IssuedSubscriptionToken struct {
 type SubscriptionEndpoint struct {
 	NodeID             string
 	NodeName           string
+	AdapterType        string
+	Protocol           string
 	PublicHost         string
 	PublicPort         int
 	SNI                string
@@ -52,6 +54,10 @@ type SubscriptionEndpoint struct {
 	TLSCertFingerprint string
 	TLSPublicKeySHA256 string
 	Credential         string
+	Flow               string
+	Network            string
+	RealityPublicKey   string
+	RealityShortID     string
 }
 
 type Subscription struct {
@@ -288,20 +294,35 @@ func (s *Store) ResolveSubscription(
 		return Subscription{}, ErrUnauthorized
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT n.id, n.name, n.public_host, n.public_port, n.sni, n.tls_insecure,
+		SELECT n.id, n.name, n.adapter_type, n.public_host, n.public_port, n.sni,
+		       n.tls_insecure,
 		       n.tls_cert_fingerprint, n.tls_public_key_sha256,
-		       c.id, c.secret_ciphertext, c.key_version
+		       c.id, c.protocol, c.secret_ciphertext, c.key_version,
+		       COALESCE(r.public_key, ''), COALESCE(r.short_id, '')
 		FROM node_user_assignments a
 		JOIN nodes n ON n.id = a.node_id
 		JOIN user_credentials c ON c.id = a.applied_credential_id
+		LEFT JOIN node_vless_reality r ON r.node_id = n.id
 		WHERE a.user_id = ? AND n.archived_at IS NULL
-		  AND n.adapter_type IN ('native_hysteria2', 's_ui') AND n.enabled = 1
+		  AND n.adapter_type IN (
+		      'native_hysteria2', 's_ui', 'sing_box_vless_reality'
+		  ) AND n.enabled = 1
 		  AND n.status NOT IN ('pending', 'degraded', 'disabled')
 		  AND n.public_host <> '' AND a.enabled = 1
 		  AND a.quota_state <> 'limited' AND a.state = 'applied'
 		  AND a.management_mode = 'managed'
 		  AND a.applied_version >= a.desired_version
 		  AND a.applied_credential_id IS NOT NULL AND c.state = 'applied'
+		  AND (
+		      n.adapter_type <> 'sing_box_vless_reality' OR (
+		          n.adapter_status = 'compatible' AND n.core_running = 1
+		          AND a.applied_credential_id = a.desired_credential_id
+		          AND a.applied_version = n.applied_version
+		          AND c.protocol = 'vless' AND r.public_key <> '' AND r.short_id <> ''
+		          AND r.applied_key_generation = r.desired_key_generation
+		          AND r.material_applied_version = a.applied_version
+		      )
+		  )
 		ORDER BY n.name COLLATE NOCASE, n.id
 	`, userID)
 	if err != nil {
@@ -310,14 +331,16 @@ func (s *Store) ResolveSubscription(
 	endpoints := make([]SubscriptionEndpoint, 0)
 	for rows.Next() {
 		var endpoint SubscriptionEndpoint
-		var credentialID string
+		var credentialID, credentialProtocol string
 		var ciphertext []byte
 		var keyVersion, tlsInsecure int
 		if err := rows.Scan(
-			&endpoint.NodeID, &endpoint.NodeName, &endpoint.PublicHost,
+			&endpoint.NodeID, &endpoint.NodeName, &endpoint.AdapterType,
+			&endpoint.PublicHost,
 			&endpoint.PublicPort, &endpoint.SNI, &tlsInsecure,
 			&endpoint.TLSCertFingerprint, &endpoint.TLSPublicKeySHA256,
-			&credentialID, &ciphertext, &keyVersion,
+			&credentialID, &credentialProtocol, &ciphertext, &keyVersion,
+			&endpoint.RealityPublicKey, &endpoint.RealityShortID,
 		); err != nil {
 			_ = rows.Close()
 			return Subscription{}, fmt.Errorf("scan subscription endpoint: %w", err)
@@ -327,13 +350,18 @@ func (s *Store) ResolveSubscription(
 			return Subscription{}, errors.New("subscription credential key version is unsupported")
 		}
 		secret, err := cryptoutil.Open(masterKey, ciphertext, credentialAAD(
-			credentialID, userID, endpoint.NodeID, "hysteria2", keyVersion,
+			credentialID, userID, endpoint.NodeID, credentialProtocol, keyVersion,
 		))
 		if err != nil {
 			_ = rows.Close()
 			return Subscription{}, fmt.Errorf("open subscription credential: %w", err)
 		}
 		endpoint.TLSInsecure = tlsInsecure == 1
+		endpoint.Protocol = credentialProtocol
+		if credentialProtocol == CredentialProtocolVLESS {
+			endpoint.Flow = "xtls-rprx-vision"
+			endpoint.Network = "tcp"
+		}
 		endpoint.Credential = string(secret)
 		endpoints = append(endpoints, endpoint)
 	}

@@ -72,6 +72,7 @@ export function formatDateTime(value: string | null, neverLabel = true): string 
 
 export const adapterLabels: Record<AdapterType, string> = {
   native_hysteria2: "原生 Hysteria2",
+  sing_box_vless_reality: "VLESS + Reality（sing-box）",
   standalone_sing_box: "独立 sing-box",
   s_ui: "S-UI",
 };

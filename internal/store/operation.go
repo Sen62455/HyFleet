@@ -209,17 +209,20 @@ func (s *Store) CreateNodeOperation(
 		return NodeOperation{}, fmt.Errorf("begin create node operation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var installationID string
+	var installationID, adapter string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COALESCE(agent_installation_id, '')
+		SELECT COALESCE(agent_installation_id, ''), adapter_type
 		FROM nodes WHERE id = ? AND archived_at IS NULL
-	`, nodeID).Scan(&installationID); errors.Is(err, sql.ErrNoRows) {
+	`, nodeID).Scan(&installationID, &adapter); errors.Is(err, sql.ErrNoRows) {
 		return NodeOperation{}, ErrNotFound
 	} else if err != nil {
 		return NodeOperation{}, fmt.Errorf("read operation node: %w", err)
 	}
 	if installationID == "" {
 		return NodeOperation{}, ErrPending
+	}
+	if adapter == AdapterSingBoxVLESSReality && operationType == "tail_core_log" {
+		return NodeOperation{}, ErrUnsupported
 	}
 	if err := ensureOperationQueueCapacity(ctx, tx, nodeID); err != nil {
 		return NodeOperation{}, err
@@ -340,18 +343,22 @@ func (s *Store) RetryNodeOperation(
 		return NodeOperation{}, fmt.Errorf("begin retry node operation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var operationType, status string
+	var operationType, status, adapter string
 	var maxLines, attempt int
 	if err := tx.QueryRowContext(ctx, `
-		SELECT type, status, max_lines, attempt
-		FROM node_operations WHERE id = ? AND node_id = ?
-	`, operationID, nodeID).Scan(&operationType, &status, &maxLines, &attempt); errors.Is(err, sql.ErrNoRows) {
+		SELECT o.type, o.status, o.max_lines, o.attempt, n.adapter_type
+		FROM node_operations o JOIN nodes n ON n.id = o.node_id AND n.archived_at IS NULL
+		WHERE o.id = ? AND o.node_id = ?
+	`, operationID, nodeID).Scan(&operationType, &status, &maxLines, &attempt, &adapter); errors.Is(err, sql.ErrNoRows) {
 		return NodeOperation{}, ErrNotFound
 	} else if err != nil {
 		return NodeOperation{}, fmt.Errorf("read retry operation: %w", err)
 	}
 	if status != "failed" && status != "expired" {
 		return NodeOperation{}, ErrConflict
+	}
+	if adapter == AdapterSingBoxVLESSReality && operationType == "tail_core_log" {
+		return NodeOperation{}, ErrUnsupported
 	}
 	if err := ensureOperationQueueCapacity(ctx, tx, nodeID); err != nil {
 		return NodeOperation{}, err
@@ -528,7 +535,7 @@ func (s *Store) RecordNodeOperationResult(
 	if result.Backup != nil {
 		backup := result.Backup
 		cleanBackupPath := path.Clean(backup.LocalPath)
-		if !strings.HasPrefix(cleanBackupPath, "/var/lib/hyfleet-backups/") ||
+		if !validConfigBackupPath(cleanBackupPath) ||
 			cleanBackupPath != backup.LocalPath || len(backup.LocalPath) > 512 || len(backup.SHA256) != 64 ||
 			strings.IndexFunc(backup.SHA256, func(character rune) bool {
 				return !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f'))
@@ -578,6 +585,12 @@ func (s *Store) RecordNodeOperationResult(
 		return fmt.Errorf("commit operation result: %w", err)
 	}
 	return nil
+}
+
+func validConfigBackupPath(value string) bool {
+	return path.Clean(value) == value &&
+		(strings.HasPrefix(value, "/var/lib/hyfleet-backups/") ||
+			strings.HasPrefix(value, "/var/lib/hyfleet-backups-lab/"))
 }
 
 func (s *Store) ListConfigBackups(ctx context.Context, nodeID string, limit int) ([]ConfigBackup, error) {
@@ -647,7 +660,7 @@ func (s *Store) RetryNodeSync(ctx context.Context, nodeID string, now time.Time)
 	if installationID == "" {
 		return Node{}, ErrPending
 	}
-	if adapter != "native_hysteria2" && adapter != "s_ui" {
+	if adapter != "native_hysteria2" && adapter != "s_ui" && adapter != AdapterSingBoxVLESSReality {
 		return Node{}, ErrUnsupported
 	}
 	version, err := bumpNodeSnapshot(ctx, tx, nodeID, now)

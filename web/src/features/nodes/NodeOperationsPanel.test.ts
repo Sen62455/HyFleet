@@ -89,4 +89,64 @@ describe("NodeOperationsPanel", () => {
     expect(api.listNodeOperations).toHaveBeenCalledTimes(2);
     wrapper.unmount();
   });
+
+  it("confirms and submits a bounded Reality identity rotation", async () => {
+    const realityNode = {
+      ...node,
+      id: "node-reality",
+      name: "Reality LA",
+      adapter_type: "sing_box_vless_reality",
+      agent_installation_id: "install-1",
+      desired_version: 7,
+      applied_version: 7,
+      reality: {
+        handshake_server: "www.microsoft.com",
+        handshake_port: 443,
+        key_generation: 2,
+        applied_key_generation: 2,
+        public_key: "public-key",
+        short_id: "0123456789abcdef",
+        material_applied_version: 7,
+        material_reported_at: "2026-08-12T08:00:00Z",
+      },
+    } as NodeRecord;
+    vi.spyOn(api, "listNodeOperations").mockResolvedValue([]);
+    vi.spyOn(api, "listConfigBackups").mockResolvedValue([]);
+    const rotate = vi.spyOn(api, "rotateRealityIdentity").mockResolvedValue({
+      ...realityNode,
+      desired_version: 8,
+      status: "pending",
+      reality: { ...realityNode.reality!, key_generation: 3 },
+    });
+
+    const host = defineComponent({
+      components: { NDialogProvider, NMessageProvider, NodeOperationsPanel },
+      setup: () => ({ realityNode }),
+      template: `
+        <n-dialog-provider>
+          <n-message-provider>
+            <node-operations-panel :node="realityNode" />
+          </n-message-provider>
+        </n-dialog-provider>
+      `,
+    });
+    const wrapper = mount(host, { attachTo: document.body });
+    await flushPromises();
+
+    const trigger = wrapper.find('button[aria-label="轮换 Reality 身份"]');
+    expect(trigger.exists()).toBe(true);
+    expect(trigger.attributes("disabled")).toBeUndefined();
+    await trigger.trigger("click");
+    await flushPromises();
+
+    const confirm = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "轮换",
+    ) as HTMLButtonElement | undefined;
+    expect(confirm).toBeDefined();
+    confirm!.click();
+    await flushPromises();
+
+    expect(rotate).toHaveBeenCalledWith("node-reality", 2, 7);
+    wrapper.unmount();
+  });
 });

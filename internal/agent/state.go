@@ -8,17 +8,19 @@ import (
 	"path/filepath"
 
 	"github.com/hyfleet/hyfleet/internal/cryptoutil"
+	"github.com/hyfleet/hyfleet/internal/protocol"
 )
 
 type State struct {
-	InstallationID             string `json:"installation_id"`
-	NodeID                     string `json:"node_id,omitempty"`
-	NodeCredential             string `json:"node_credential,omitempty"`
-	AppliedVersion             int64  `json:"applied_version"`
-	AppliedSnapshotHash        string `json:"applied_snapshot_hash,omitempty"`
-	PendingEnrollmentRequestID string `json:"pending_enrollment_request_id,omitempty"`
-	PendingAckVersion          int64  `json:"pending_ack_version,omitempty"`
-	PendingAckHash             string `json:"pending_ack_hash,omitempty"`
+	InstallationID             string                           `json:"installation_id"`
+	NodeID                     string                           `json:"node_id,omitempty"`
+	NodeCredential             string                           `json:"node_credential,omitempty"`
+	AppliedVersion             int64                            `json:"applied_version"`
+	AppliedSnapshotHash        string                           `json:"applied_snapshot_hash,omitempty"`
+	PendingEnrollmentRequestID string                           `json:"pending_enrollment_request_id,omitempty"`
+	PendingAckVersion          int64                            `json:"pending_ack_version,omitempty"`
+	PendingAckHash             string                           `json:"pending_ack_hash,omitempty"`
+	PendingAckReality          *protocol.AppliedRealityMaterial `json:"pending_ack_reality,omitempty"`
 }
 
 func LoadState(path string) (State, error) {

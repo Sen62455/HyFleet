@@ -166,6 +166,9 @@ foreach ($scriptName in @(
 )) {
     Copy-Item (Join-Path (Join-Path $repositoryRoot "deploy") $scriptName) (Join-Path $bundlePath "deploy")
 }
+Copy-Item `
+    (Join-Path (Join-Path $repositoryRoot "deploy") "sing-box-reality.sha256") `
+    (Join-Path $bundlePath "deploy")
 foreach ($documentName in @(
     "README.md",
     "00-product-requirements.md",
@@ -189,13 +192,15 @@ foreach ($documentName in @(
     "16-phase-7-public-release.md",
     "17-native-convergence-and-monitoring.md",
     "compatibility.md",
+    "vless-reality-lab-runbook.zh-CN.md",
     "inventory.example.yaml",
     (Join-Path "adr" "README.md"),
     (Join-Path "adr" "0001-control-plane-and-agent.md"),
     (Join-Path "adr" "0002-go-vue-sqlite-stack.md"),
     (Join-Path "adr" "0003-polling-and-eventual-consistency.md"),
     (Join-Path "adr" "0004-agent-side-adapters.md"),
-    (Join-Path "adr" "0005-credentials-and-accounting.md")
+    (Join-Path "adr" "0005-credentials-and-accounting.md"),
+    (Join-Path "adr" "0006-experimental-vless-reality-sing-box.md")
 )) {
     $documentTarget = Join-Path (Join-Path $bundlePath "docs") $documentName
     Copy-Item (Join-Path (Join-Path $repositoryRoot "docs") $documentName) $documentTarget
@@ -208,7 +213,7 @@ foreach ($rootFileName in @("install.sh", "README.md", "LICENSE", "SECURITY.md",
 }
 
 $textFiles = Get-ChildItem -Path $bundlePath -Recurse -File | Where-Object {
-    $_.Extension -in @(".sh", ".service", ".yaml", ".example", ".md")
+    $_.Extension -in @(".sh", ".service", ".yaml", ".example", ".md", ".sha256")
 }
 foreach ($textFile in $textFiles) {
     $content = [System.IO.File]::ReadAllText($textFile.FullName).Replace("`r`n", "`n")

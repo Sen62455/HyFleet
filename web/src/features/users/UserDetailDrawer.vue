@@ -27,7 +27,7 @@ import {
   NTag,
   NTooltip,
 } from "naive-ui";
-import { formatBytes, formatDateTime, quotaPercent, relativeTime } from "../../lib/format";
+import { adapterLabels, formatBytes, formatDateTime, quotaPercent, relativeTime } from "../../lib/format";
 import type { NodeRecord, SubscriptionTokenRecord, UserAssignment, UserRecord } from "../../types";
 
 const props = defineProps<{
@@ -68,10 +68,15 @@ const availableOptions = computed(() =>
   props.assignableNodes
     .filter((node) => !assignedNodeIDs.value.has(node.id))
     .map((node) => ({
-      label: `${node.name}${node.adapter_type === "s_ui" ? " · S-UI" : ""}`,
+      label: `${node.name} · ${adapterLabels[node.adapter_type]}`,
       value: node.id,
       disabled: !node.enabled,
     })),
+);
+const selectedNodeIsReality = computed(() =>
+  props.assignableNodes.some(
+    (node) => node.id === selectedNodeID.value && node.adapter_type === "sing_box_vless_reality",
+  ),
 );
 const activeSubscriptionTokens = computed(() =>
   props.subscriptionTokens.filter((token) => token.status === "active"),
@@ -89,6 +94,9 @@ const managedAssignments = computed(
 );
 const kickableAssignments = computed(
   () => managedAssignments.value.filter((assignment) => assignment.node_adapter === "native_hysteria2"),
+);
+const realityAssignments = computed(
+  () => props.user?.assignments.filter((assignment) => assignment.node_adapter === "sing_box_vless_reality") ?? [],
 );
 
 watch(
@@ -144,7 +152,10 @@ function handlePanelKeydown(event: KeyboardEvent) {
 
 function assign() {
   if (!props.user || !selectedNodeID.value) return;
-  emit("assign", props.user, selectedNodeID.value, Math.round(selectedLimitGiB.value * 1024 ** 3));
+  const trafficLimitBytes = selectedNodeIsReality.value
+    ? 0
+    : Math.round(selectedLimitGiB.value * 1024 ** 3);
+  emit("assign", props.user, selectedNodeID.value, trafficLimitBytes);
   selectedNodeID.value = null;
   selectedLimitGiB.value = 0;
 }
@@ -177,6 +188,10 @@ function subscriptionEligibility(assignment: UserAssignment) {
     node_disabled: "节点已停用",
     node_not_ready: "节点尚未就绪",
     endpoint_missing: "缺少公网端点",
+    adapter_not_compatible: "Reality 适配器未通过兼容性检查",
+    core_not_running: "sing-box 服务未运行",
+    applied_state_mismatch: "Reality 已应用状态不一致",
+    reality_material_missing: "Reality 公共材料尚未就绪",
     assignment_disabled: "分配已停用",
     assignment_quota_limited: "节点额度已用尽",
     assignment_not_applied: "等待配置同步",
@@ -240,6 +255,9 @@ function formatLabel(format: string) {
     <div class="user-detail-shell__body user-detail-panel__body">
 
       <section class="user-overview-ledger" aria-label="账户概览">
+        <p v-if="realityAssignments.length" class="assignment-adoption">
+          Reality 节点暂不提供按用户流量或在线状态；本页汇总不包含这些节点，踢下线也不可用。
+        </p>
         <div class="user-overview-ledger__cell">
           <span>账户有效期</span>
           <strong>{{ formatDateTime(user.expires_at) }}</strong>
@@ -367,7 +385,7 @@ function formatLabel(format: string) {
             clearable
             :options="availableOptions"
             :disabled="availableOptions.length === 0"
-            placeholder="选择 Hysteria2 节点"
+            placeholder="选择受管节点"
           />
           <n-input-number
             v-model:value="selectedLimitGiB"
@@ -375,7 +393,8 @@ function formatLabel(format: string) {
             :max="8388607"
             :precision="2"
             size="small"
-            placeholder="额度 GiB"
+            :disabled="selectedNodeIsReality"
+            :placeholder="selectedNodeIsReality ? 'Reality 不支持额度' : '额度 GiB'"
           />
           <n-button
             type="primary"
@@ -393,7 +412,7 @@ function formatLabel(format: string) {
             <header>
               <div>
                 <strong>{{ assignment.node_name }}</strong>
-                <span>v{{ assignment.applied_version }} / {{ assignment.desired_version }}</span>
+                <span>{{ adapterLabels[assignment.node_adapter] }} · v{{ assignment.applied_version }} / {{ assignment.desired_version }}</span>
               </div>
               <div class="assignment-tags">
                 <n-tag
@@ -425,7 +444,10 @@ function formatLabel(format: string) {
                 打开节点
               </n-button>
             </div>
-            <div class="assignment-usage">
+            <div v-if="assignment.node_adapter === 'sing_box_vless_reality'" class="assignment-adoption">
+              <span>按用户流量、在线状态和踢下线暂不支持；流量额度不会在此节点执行。</span>
+            </div>
+            <div v-else class="assignment-usage">
               <div>
                 <span>{{ formatBytes(assignment.traffic_used_bytes) }}</span>
                 <span v-if="assignment.traffic_limit_bytes"> / {{ formatBytes(assignment.traffic_limit_bytes) }}</span>
@@ -436,13 +458,16 @@ function formatLabel(format: string) {
               </span>
             </div>
             <n-progress
-              v-if="assignment.traffic_limit_bytes > 0"
+              v-if="assignment.node_adapter !== 'sing_box_vless_reality' && assignment.traffic_limit_bytes > 0"
               type="line"
               :percentage="quotaPercent(assignment.traffic_used_bytes, assignment.traffic_limit_bytes)"
               :show-indicator="false"
               :status="assignment.quota_state === 'limited' ? 'error' : 'success'"
             />
-            <div v-if="assignment.management_mode === 'managed'" class="assignment-limit-row">
+            <div
+              v-if="assignment.management_mode === 'managed' && assignment.node_adapter !== 'sing_box_vless_reality'"
+              class="assignment-limit-row"
+            >
               <n-input-number
                 v-model:value="assignmentLimits[assignment.id]"
                 :min="0"

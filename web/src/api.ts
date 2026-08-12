@@ -182,6 +182,15 @@ export const api = {
       body: "{}",
     }),
 
+  rotateRealityIdentity: (nodeId: string, expectedKeyGeneration: number, expectedDesiredVersion: number) =>
+    request<NodeRecord>(`/api/v1/nodes/${encodeURIComponent(nodeId)}/reality/rotate-identity`, {
+      method: "POST",
+      body: JSON.stringify({
+        expected_key_generation: expectedKeyGeneration,
+        expected_desired_version: expectedDesiredVersion,
+      }),
+    }),
+
   async listConfigBackups(nodeId: string) {
     const result = await request<{ backups: ConfigBackupRecord[] }>(
       `/api/v1/nodes/${encodeURIComponent(nodeId)}/backups`,

@@ -226,6 +226,178 @@ func TestAdminAndNodeLifecycle(t *testing.T) {
 	requireStatus(t, login, http.StatusOK)
 }
 
+func TestVLESSRealityNodeAPIUsesTypedBoundedSettings(t *testing.T) {
+	app := newTestApp(t)
+	app.bootstrap(t)
+
+	validInput := map[string]any{
+		"name": "Reality Lab", "provider": "LisaHost", "region": "Los Angeles",
+		"adapter_type": "sing_box_vless_reality",
+		"public_host":  "reality.example.com", "public_port": 24443,
+		"sni": "www.microsoft.com", "tls_insecure": false,
+		"tls_cert_fingerprint": "", "tls_public_key_sha256": "",
+		"reality": map[string]any{
+			"handshake_server": "www.microsoft.com", "handshake_port": 443,
+		},
+	}
+	canonicalInput := map[string]any{}
+	for key, value := range validInput {
+		canonicalInput[key] = value
+	}
+	canonicalInput["name"] = "Reality Canonical DNS"
+	canonicalInput["sni"] = "WWW.MICROSOFT.COM"
+	canonicalInput["reality"] = map[string]any{
+		"handshake_server": "WWW.MICROSOFT.COM", "handshake_port": 443,
+	}
+	canonicalResponse := app.request(t, http.MethodPost, "/api/v1/nodes", canonicalInput, app.csrf, "")
+	requireStatus(t, canonicalResponse, http.StatusCreated)
+	var canonicalNode nodeResponse
+	decodeResponse(t, canonicalResponse, &canonicalNode)
+	if canonicalNode.SNI != "www.microsoft.com" || canonicalNode.Reality == nil ||
+		canonicalNode.Reality.HandshakeServer != "www.microsoft.com" {
+		t.Fatalf("Reality DNS values were not canonicalized: %#v", canonicalNode)
+	}
+	created := app.request(t, http.MethodPost, "/api/v1/nodes", validInput, app.csrf, "")
+	requireStatus(t, created, http.StatusCreated)
+	var node nodeResponse
+	decodeResponse(t, created, &node)
+	if node.AdapterType != store.AdapterSingBoxVLESSReality || node.PublicPort != 24443 ||
+		node.SNI != "www.microsoft.com" || node.Reality == nil ||
+		node.Reality.HandshakeServer != "www.microsoft.com" ||
+		node.Reality.HandshakePort != 443 || node.Reality.KeyGeneration != 1 ||
+		node.Reality.PublicKey != "" || node.Reality.ShortID != "" ||
+		node.Reality.MaterialAppliedVersion != 0 {
+		t.Fatalf("unexpected Reality node: %#v", node)
+	}
+	envelope, err := app.store.GetDesiredSnapshot(context.Background(), node.ID, 1)
+	if err != nil {
+		t.Fatalf("GetDesiredSnapshot() error = %v", err)
+	}
+	if envelope.Snapshot.SchemaVersion != 2 || envelope.Snapshot.VLESSReality == nil ||
+		envelope.Snapshot.VLESSReality.Network != "tcp" ||
+		envelope.Snapshot.VLESSReality.Flow != "xtls-rprx-vision" ||
+		envelope.Snapshot.VLESSReality.KeyGeneration != 1 {
+		t.Fatalf("unexpected Reality desired snapshot: %#v", envelope.Snapshot)
+	}
+	canonical, err := json.Marshal(envelope.Snapshot)
+	if err != nil {
+		t.Fatalf("json.Marshal(snapshot) error = %v", err)
+	}
+	for _, forbidden := range []string{"private_key", "public_key", "short_id", "uuid"} {
+		if strings.Contains(string(canonical), forbidden) {
+			t.Fatalf("Reality desired snapshot leaked %q: %s", forbidden, canonical)
+		}
+	}
+
+	invalidCases := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "missing public host", mutate: func(input map[string]any) { input["public_host"] = "" }},
+		{name: "IP SNI", mutate: func(input map[string]any) { input["sni"] = "192.0.2.1" }},
+		{name: "single-label SNI", mutate: func(input map[string]any) { input["sni"] = "localhost" }},
+		{name: "trailing-dot SNI", mutate: func(input map[string]any) { input["sni"] = "www.microsoft.com." }},
+		{name: "single-label handshake", mutate: func(input map[string]any) {
+			input["reality"] = map[string]any{"handshake_server": "localhost", "handshake_port": 443}
+		}},
+		{name: "non-443 handshake", mutate: func(input map[string]any) {
+			input["reality"] = map[string]any{"handshake_server": "www.microsoft.com", "handshake_port": 8443}
+		}},
+		{name: "traditional TLS override", mutate: func(input map[string]any) { input["tls_insecure"] = true }},
+	}
+	for _, test := range invalidCases {
+		t.Run(test.name, func(t *testing.T) {
+			input := map[string]any{}
+			for key, value := range validInput {
+				input[key] = value
+			}
+			input["name"] = "Invalid " + test.name
+			test.mutate(input)
+			response := app.request(t, http.MethodPost, "/api/v1/nodes", input, app.csrf, "")
+			requireStatus(t, response, http.StatusUnprocessableEntity)
+		})
+	}
+
+	nonRealityWithSettings := map[string]any{
+		"name": "Bad native", "adapter_type": "native_hysteria2",
+		"reality": map[string]any{"handshake_server": "www.microsoft.com", "handshake_port": 443},
+	}
+	response := app.request(t, http.MethodPost, "/api/v1/nodes", nonRealityWithSettings, app.csrf, "")
+	requireStatus(t, response, http.StatusUnprocessableEntity)
+}
+
+func TestVLESSRealityIdentityRotationAPIIsExplicitAndConcurrencyBound(t *testing.T) {
+	app := newTestApp(t)
+	app.bootstrap(t)
+	created := app.request(t, http.MethodPost, "/api/v1/nodes", map[string]any{
+		"name": "Reality Rotation", "adapter_type": "sing_box_vless_reality",
+		"public_host": "reality.example.com", "public_port": 24443,
+		"sni": "www.microsoft.com", "tls_insecure": false,
+		"tls_cert_fingerprint": "", "tls_public_key_sha256": "",
+		"reality": map[string]any{
+			"handshake_server": "www.microsoft.com", "handshake_port": 443,
+		},
+	}, app.csrf, "")
+	requireStatus(t, created, http.StatusCreated)
+	var node nodeResponse
+	decodeResponse(t, created, &node)
+	if _, err := app.store.DB().Exec(`
+		UPDATE nodes SET agent_installation_id = ?, applied_version = desired_version
+		WHERE id = ?
+	`, cryptoutil.NewID(), node.ID); err != nil {
+		t.Fatalf("bind Reality test Agent: %v", err)
+	}
+	if _, err := app.store.DB().Exec(`
+		UPDATE node_vless_reality
+		SET applied_key_generation = desired_key_generation,
+		    public_key = ?, short_id = ?, material_applied_version = 1
+		WHERE node_id = ?
+	`, "RAjjVUXRxxNkVHMbFpJTPIq8V8kV9cYvf3qj6M7iCUQ", "0123456789abcdef", node.ID); err != nil {
+		t.Fatalf("seed applied Reality identity: %v", err)
+	}
+	path := "/api/v1/nodes/" + node.ID + "/reality/rotate-identity"
+	body := map[string]any{"expected_key_generation": 1, "expected_desired_version": 1}
+
+	withoutCSRF := app.request(t, http.MethodPost, path, body, "", "")
+	requireStatus(t, withoutCSRF, http.StatusForbidden)
+	rotated := app.request(t, http.MethodPost, path, body, app.csrf, "")
+	requireStatus(t, rotated, http.StatusAccepted)
+	var result nodeResponse
+	decodeResponse(t, rotated, &result)
+	if result.DesiredVersion != 2 || result.AppliedVersion != 1 || result.Status != "pending" ||
+		result.Reality == nil || result.Reality.KeyGeneration != 2 ||
+		result.Reality.AppliedKeyGeneration != 1 || result.Reality.PublicKey == "" {
+		t.Fatalf("rotated Reality node = %#v", result)
+	}
+	envelope, err := app.store.GetDesiredSnapshot(context.Background(), node.ID, 2)
+	if err != nil || envelope.Snapshot.VLESSReality == nil ||
+		envelope.Snapshot.VLESSReality.KeyGeneration != 2 {
+		t.Fatalf("rotated Reality snapshot = (%#v, %v)", envelope, err)
+	}
+	replayed := app.request(t, http.MethodPost, path, body, app.csrf, "")
+	requireStatus(t, replayed, http.StatusConflict)
+	var replayError protocol.ErrorResponse
+	decodeResponse(t, replayed, &replayError)
+	if replayError.Error.Code != "reality_identity_rotation_conflict" {
+		t.Fatalf("rotation replay error = %#v", replayError)
+	}
+
+	native := app.request(t, http.MethodPost, "/api/v1/nodes", map[string]any{
+		"name": "Native Rotation", "adapter_type": "native_hysteria2",
+	}, app.csrf, "")
+	requireStatus(t, native, http.StatusCreated)
+	var nativeNode nodeResponse
+	decodeResponse(t, native, &nativeNode)
+	unsupported := app.request(t, http.MethodPost,
+		"/api/v1/nodes/"+nativeNode.ID+"/reality/rotate-identity", body, app.csrf, "")
+	requireStatus(t, unsupported, http.StatusUnprocessableEntity)
+	var unsupportedError protocol.ErrorResponse
+	decodeResponse(t, unsupported, &unsupportedError)
+	if unsupportedError.Error.Code != "reality_identity_rotation_unsupported" {
+		t.Fatalf("unsupported rotation error = %#v", unsupportedError)
+	}
+}
+
 func TestAgentEnrollmentHeartbeatAndDesiredState(t *testing.T) {
 	app := newTestApp(t)
 	app.bootstrap(t)
@@ -333,6 +505,89 @@ func TestAgentEnrollmentHeartbeatAndDesiredState(t *testing.T) {
 	var samples int
 	if err := app.store.DB().QueryRow("SELECT COUNT(*) FROM node_metric_samples WHERE node_id = ?", node.ID).Scan(&samples); err != nil || samples != 1 {
 		t.Fatalf("metric sample count = %d, err = %v", samples, err)
+	}
+}
+
+func TestVLESSRealityHeartbeatPersistsTypedProbeState(t *testing.T) {
+	app := newTestApp(t)
+	app.bootstrap(t)
+	created := app.request(t, http.MethodPost, "/api/v1/nodes", map[string]any{
+		"name": "Reality heartbeat", "adapter_type": store.AdapterSingBoxVLESSReality,
+		"public_host": "reality.example.com", "public_port": 24443,
+		"sni": "www.microsoft.com",
+		"reality": map[string]any{
+			"handshake_server": "www.microsoft.com", "handshake_port": 443,
+		},
+	}, app.csrf, "")
+	requireStatus(t, created, http.StatusCreated)
+	var node nodeResponse
+	decodeResponse(t, created, &node)
+	tokenResponse := app.request(t, http.MethodPost,
+		"/api/v1/nodes/"+node.ID+"/enrollment-token", map[string]any{}, app.csrf, "")
+	requireStatus(t, tokenResponse, http.StatusCreated)
+	var token struct {
+		EnrollmentToken string `json:"enrollment_token"`
+	}
+	decodeResponse(t, tokenResponse, &token)
+
+	installationID := cryptoutil.NewID()
+	requestID := cryptoutil.NewID()
+	enrolled := agentRequest(t, app.handler, http.MethodPost, "/agent/v1/enroll", protocol.EnrollRequest{
+		EnrollmentToken: token.EnrollmentToken, InstallationID: installationID,
+		RequestID: requestID, AgentVersion: "v0.1.0-reality-test", OS: "linux",
+		OSVersion: "24.04", Architecture: "amd64",
+		Capabilities: []string{
+			"desired_state_v2", "credential_material_v1", "sing_box_vless_reality",
+		},
+		Adapter: protocol.EnrollmentAdapter{
+			Type: store.AdapterSingBoxVLESSReality, CoreName: "sing-box",
+		},
+	}, "", requestID)
+	requireStatus(t, enrolled, http.StatusOK)
+	var credentials protocol.EnrollResponse
+	decodeResponse(t, enrolled, &credentials)
+
+	probedAt := time.Now().UTC().Truncate(time.Second)
+	heartbeat := protocol.HeartbeatRequest{
+		InstallationID: installationID,
+		Agent: protocol.AgentInfo{
+			Version: "v0.1.0-reality-test", Protocol: protocol.MajorVersion,
+		},
+		Core: protocol.CoreInfo{Name: "sing-box", Version: "1.13.18", Running: true},
+		Adapter: protocol.AdapterInfo{
+			Name: store.AdapterSingBoxVLESSReality, Version: "1.13.18", Status: "compatible",
+			LastProbedAt: &probedAt,
+		},
+		Host:      protocol.HostMetrics{MemoryTotalBytes: 1, DiskTotalBytes: 1},
+		SampledAt: probedAt,
+	}
+	beat := agentRequest(t, app.handler, http.MethodPost, "/agent/v1/heartbeat",
+		heartbeat, credentials.NodeCredential, cryptoutil.NewID())
+	requireStatus(t, beat, http.StatusOK)
+	storedNode, err := app.store.GetNode(context.Background(), node.ID)
+	if err != nil {
+		t.Fatalf("GetNode() error = %v", err)
+	}
+	if storedNode.AdapterStatus != "compatible" || storedNode.AdapterVersion != "1.13.18" ||
+		storedNode.AdapterErrorCode != "" || storedNode.AdapterLastProbedAt == nil ||
+		!storedNode.AdapterLastProbedAt.Equal(probedAt) || storedNode.CoreName != "sing-box" ||
+		storedNode.CoreVersion != "1.13.18" || !storedNode.CoreRunning ||
+		storedNode.Status != "online" {
+		t.Fatalf("Reality heartbeat probe was not persisted: %#v", storedNode)
+	}
+
+	heartbeat.Core.Running = false
+	heartbeat.Adapter.Status = "incompatible"
+	heartbeat.Adapter.ErrorCode = "reality_binary_incompatible"
+	heartbeat.SampledAt = probedAt.Add(time.Second)
+	secondBeat := agentRequest(t, app.handler, http.MethodPost, "/agent/v1/heartbeat",
+		heartbeat, credentials.NodeCredential, cryptoutil.NewID())
+	requireStatus(t, secondBeat, http.StatusOK)
+	storedNode, err = app.store.GetNode(context.Background(), node.ID)
+	if err != nil || storedNode.AdapterStatus != "incompatible" ||
+		storedNode.AdapterErrorCode != "reality_binary_incompatible" || storedNode.CoreRunning ||
+		storedNode.Status != "degraded" {
+		t.Fatalf("incompatible Reality probe was not persisted: %#v, %v", storedNode, err)
 	}
 }
 

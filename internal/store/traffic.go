@@ -35,6 +35,9 @@ func (s *Store) IngestTrafficBatch(
 	if batch.InstallationID != identity.InstallationID {
 		return TrafficIngestResult{Status: "rejected", ErrorCode: "installation_conflict"}, nil
 	}
+	if identity.AdapterType == AdapterSingBoxVLESSReality {
+		return TrafficIngestResult{Status: "rejected", ErrorCode: "adapter_traffic_unsupported"}, nil
+	}
 	canonical, err := json.Marshal(batch)
 	if err != nil {
 		return TrafficIngestResult{}, fmt.Errorf("encode traffic batch fingerprint: %w", err)
@@ -396,6 +399,9 @@ func (s *Store) RecordOnlineSnapshot(
 	if snapshot.InstallationID != identity.InstallationID {
 		return false, ErrConflict
 	}
+	if identity.AdapterType == AdapterSingBoxVLESSReality {
+		return false, ErrUnsupported
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin online snapshot: %w", err)
@@ -496,10 +502,10 @@ func (s *Store) RequestUserKick(
 		return 0, fmt.Errorf("find kick user: %w", err)
 	}
 	query := `
-		SELECT a.node_id
+		SELECT a.node_id, n.adapter_type
 		FROM node_user_assignments a
 		JOIN nodes n ON n.id = a.node_id AND n.archived_at IS NULL
-		WHERE a.user_id = ? AND n.adapter_type = 'native_hysteria2'
+		WHERE a.user_id = ?
 	`
 	arguments := []any{userID}
 	if nodeID != "" {
@@ -512,13 +518,18 @@ func (s *Store) RequestUserKick(
 		return 0, fmt.Errorf("list kick assignments: %w", err)
 	}
 	nodeIDs := make([]string, 0)
+	realityTargets := 0
 	for rows.Next() {
-		var current string
-		if err := rows.Scan(&current); err != nil {
+		var current, adapter string
+		if err := rows.Scan(&current, &adapter); err != nil {
 			_ = rows.Close()
 			return 0, fmt.Errorf("scan kick assignment: %w", err)
 		}
-		nodeIDs = append(nodeIDs, current)
+		if adapter == "native_hysteria2" {
+			nodeIDs = append(nodeIDs, current)
+		} else if adapter == AdapterSingBoxVLESSReality {
+			realityTargets++
+		}
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -526,6 +537,9 @@ func (s *Store) RequestUserKick(
 	}
 	if err := rows.Close(); err != nil {
 		return 0, fmt.Errorf("close kick assignments: %w", err)
+	}
+	if realityTargets > 0 {
+		return 0, ErrKickUnsupported
 	}
 	if len(nodeIDs) == 0 {
 		return 0, ErrNotFound

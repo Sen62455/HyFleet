@@ -168,6 +168,10 @@ func (a *App) handleAgentSUIReport(response http.ResponseWriter, request *http.R
 func (a *App) handleCredentialMaterial(response http.ResponseWriter, request *http.Request) {
 	setCredentialResponseHeaders(response)
 	identity := agentFromContext(request.Context())
+	if !identity.Enabled {
+		a.writeError(response, request, http.StatusForbidden, "credential_material_denied", "credential material request was denied")
+		return
+	}
 	var input protocol.CredentialMaterialRequest
 	if err := decodeJSON(response, request, &input, 16*1024); err != nil {
 		a.writeError(response, request, http.StatusBadRequest, "invalid_request", "invalid credential material request")

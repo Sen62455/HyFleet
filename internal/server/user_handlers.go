@@ -333,6 +333,10 @@ func (a *App) writeUserStoreError(
 		a.writeError(response, request, http.StatusNotFound, "user_resource_not_found", "user or assignment not found")
 	case errors.Is(err, store.ErrUnsupported):
 		a.writeError(response, request, http.StatusUnprocessableEntity, "adapter_users_unsupported", "node adapter does not support managed users")
+	case errors.Is(err, store.ErrQuotaUnsupported):
+		a.writeError(response, request, http.StatusUnprocessableEntity, "adapter_quota_unsupported", "VLESS Reality assignments do not support traffic quotas")
+	case errors.Is(err, store.ErrKickUnsupported):
+		a.writeError(response, request, http.StatusUnprocessableEntity, "adapter_kick_unsupported", "the selected assignments do not support kicking active connections")
 	case errors.Is(err, store.ErrReadOnly):
 		a.writeError(response, request, http.StatusConflict, "assignment_read_only", "read-only assignments cannot change managed settings or credentials")
 	case errors.Is(err, store.ErrPending):

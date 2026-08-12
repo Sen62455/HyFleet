@@ -46,6 +46,10 @@ function syncState(user: UserRecord): { label: string; state: string } {
   }
   return { label: "已同步", state: "applied" };
 }
+
+function hasRealityAssignment(user: UserRecord): boolean {
+  return user.assignments.some((assignment) => assignment.node_adapter === "sing_box_vless_reality");
+}
 </script>
 
 <template>
@@ -90,6 +94,7 @@ function syncState(user: UserRecord): { label: string; state: string } {
             <span class="table-secondary online-inline" :class="{ 'online-inline--active': user.online_connections > 0 }">
               <wifi :size="12" aria-hidden="true" />{{ user.online_connections }}
             </span>
+            <span v-if="hasRealityAssignment(user)" class="table-secondary">Reality 未计入</span>
           </td>
           <td>
             <div v-if="user.assignments.length" class="assignment-inline">
@@ -105,6 +110,7 @@ function syncState(user: UserRecord): { label: string; state: string } {
               {{ formatBytes(user.traffic_used_bytes) }}
             </span>
             <span class="table-secondary">{{ user.traffic_limit_bytes ? `共 ${formatBytes(user.traffic_limit_bytes)}` : "不限额" }}</span>
+            <span v-if="hasRealityAssignment(user)" class="table-secondary">Reality 未统计</span>
           </td>
           <td><span class="user-expiry">{{ formatDateTime(user.expires_at) }}</span></td>
           <td>
@@ -161,9 +167,11 @@ function syncState(user: UserRecord): { label: string; state: string } {
           <span class="online-inline" :class="{ 'online-inline--active': user.online_connections > 0 }">
             <wifi :size="12" aria-hidden="true" />{{ user.online_connections }}
           </span>
+          <span v-if="hasRealityAssignment(user)">Reality 未计入</span>
         </div>
         <footer>
           <span>{{ formatBytes(user.traffic_used_bytes) }} / {{ user.traffic_limit_bytes ? formatBytes(user.traffic_limit_bytes) : "不限额" }}</span>
+          <span v-if="hasRealityAssignment(user)">Reality 流量未统计</span>
           <span>{{ formatDateTime(user.expires_at) }}</span>
           <span class="sync-state" :class="`sync-state--${syncState(user).state}`">
             <i aria-hidden="true" />{{ syncState(user).label }}

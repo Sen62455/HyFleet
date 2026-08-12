@@ -19,10 +19,13 @@ var (
 	}{
 		{regexp.MustCompile(`(?i)(authorization\s*:\s*(?:bearer\s+)?)[^\s,;]+`), `${1}[REDACTED]`},
 		{regexp.MustCompile(`(?i)\b(password|passwd|token|secret|credential|api[_-]?key)\b(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)`), `${1}${2}[REDACTED]`},
+		{regexp.MustCompile(`(?i)\b(private(?:[_-]?key)?)\b(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)`), `${1}${2}[REDACTED]`},
 		{regexp.MustCompile(`(?i)(hysteria2?://)[^@\s/]+@`), `${1}[REDACTED]@`},
+		{regexp.MustCompile(`(?i)(vless://)[^@\s/]+@`), `${1}[REDACTED]@`},
 		{regexp.MustCompile(`(?i)(https?://[^:/\s]+:)[^@/\s]+@`), `${1}[REDACTED]@`},
 		{regexp.MustCompile(`(?i)(/sub/)[A-Za-z0-9._~-]{8,}`), `${1}[REDACTED]`},
 		{regexp.MustCompile(`\bhys_[A-Za-z0-9_-]{16,}\b`), `[REDACTED]`},
+		{regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b`), `[REDACTED]`},
 	}
 )
 

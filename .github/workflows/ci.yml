@@ -86,14 +86,20 @@ jobs:
           sudo groupadd --system hyfleet-agent
           sudo useradd --system --gid hyfleet-agent --home-dir /var/lib/hyfleet-agent \
             --shell /usr/sbin/nologin hyfleet-agent
+          sudo groupadd --system hyfleet-singbox
+          sudo useradd --system --gid hyfleet-singbox --home-dir /var/lib/hyfleet-singbox \
+            --shell /usr/sbin/nologin hyfleet-singbox
           sudo install -d -m 0755 /etc/hyfleet /usr/local/libexec
+          sudo install -d -o hyfleet-singbox -g hyfleet-singbox -m 0750 /var/lib/hyfleet-singbox
           sudo install -d -m 0700 /var/lib/hyfleet-agent /var/lib/hyfleet-backups /var/lib/hyfleet-agent-ops
           sudo install -m 0755 bin/hyfleet-agent-linux-amd64 /usr/local/bin/hyfleet-agent
           sudo install -m 0755 bin/hyfleet-agent-ops-linux-amd64 /usr/local/libexec/hyfleet-agent-ops
+          sudo install -m 0755 /bin/true /usr/bin/sing-box
           systemd-analyze verify \
             deploy/systemd/hyfleet-agent.service \
             deploy/systemd/hyfleet-agent-ops.socket \
-            deploy/systemd/hyfleet-agent-ops@.service
+            deploy/systemd/hyfleet-agent-ops@.service \
+            deploy/systemd/hyfleet-sing-box-reality.service
 
   secrets:
     runs-on: ubuntu-24.04

@@ -170,7 +170,7 @@ function endpointLabel(node: NodeRecord) {
           <div><dt>负载</dt><dd>{{ node.load_1.toFixed(2) }} / {{ node.load_5.toFixed(2) }} / {{ node.load_15.toFixed(2) }}</dd></div>
           <div><dt><arrow-down :size="14" />下行</dt><dd>{{ formatRate(node.network_rx_bps) }}</dd></div>
           <div><dt><arrow-up :size="14" />上行</dt><dd>{{ formatRate(node.network_tx_bps) }}</dd></div>
-          <div><dt>在线</dt><dd>{{ node.online_connections }} 个连接</dd></div>
+          <div><dt>在线</dt><dd>{{ node.adapter_type === "sing_box_vless_reality" ? "暂不支持" : `${node.online_connections} 个连接` }}</dd></div>
         </dl>
       </article>
     </section>

@@ -13,6 +13,7 @@
 data/
 dist/
 bin/
+.codex-lab-build/
 
 # Node-specific inventory must never be committed.
 inventory.local.yaml

@@ -30,6 +30,11 @@ function endpointLabel(node: NodeRecord) {
   const host = node.public_host.includes(":") ? `[${node.public_host}]` : node.public_host;
   return `${host}:${node.public_port}`;
 }
+
+function realityHandshakeLabel(node: NodeRecord) {
+  if (!node.reality?.handshake_server) return "未配置";
+  return `${node.reality.handshake_server}:${node.reality.handshake_port || 443}`;
+}
 </script>
 
 <template>
@@ -85,9 +90,17 @@ function endpointLabel(node: NodeRecord) {
 
       <section class="detail-section">
         <div class="detail-section__heading">
-          <h2>流量与在线</h2>
+          <h2>用户流量与在线</h2>
           <n-tag
-            v-if="node.adapter_type === 'native_hysteria2'"
+            v-if="node.adapter_type === 'sing_box_vless_reality'"
+            type="warning"
+            size="small"
+            :bordered="false"
+          >
+            MVP 能力受限
+          </n-tag>
+          <n-tag
+            v-else-if="node.adapter_type === 'native_hysteria2'"
             :type="node.usage_available ? 'success' : (node.usage_enabled ? 'error' : 'warning')"
             size="small"
             :bordered="false"
@@ -95,6 +108,13 @@ function endpointLabel(node: NodeRecord) {
             {{ node.usage_available ? "统计正常" : (node.usage_enabled ? "统计异常" : "统计未配置") }}
           </n-tag>
         </div>
+        <dl v-if="node.adapter_type === 'sing_box_vless_reality'" class="detail-list">
+          <div><dt>按用户流量</dt><dd>暂不支持</dd></div>
+          <div><dt>在线状态</dt><dd>暂不支持</dd></div>
+          <div><dt>踢下线</dt><dd>暂不支持</dd></div>
+          <div><dt>额度执行</dt><dd>不可用</dd></div>
+        </dl>
+        <template v-else>
         <dl class="detail-list detail-list--two">
           <div><dt>在线用户 / 设备</dt><dd>{{ node.online_users }} / {{ node.online_connections }}</dd></div>
           <div><dt>未知在线用户</dt><dd>{{ node.online_unknown_users }}</dd></div>
@@ -109,6 +129,7 @@ function endpointLabel(node: NodeRecord) {
           <div><dt>在线采样</dt><dd>{{ relativeTime(node.online_sampled_at) }}</dd></div>
           <div v-if="node.usage_error_code"><dt>统计错误</dt><dd>{{ node.usage_error_code }}</dd></div>
         </dl>
+        </template>
       </section>
 
       <section class="detail-section">
@@ -121,10 +142,20 @@ function endpointLabel(node: NodeRecord) {
           <div><dt>核心服务</dt><dd>{{ node.agent_installation_id ? (node.core_running ? "运行中" : "未运行") : "尚未上报" }}</dd></div>
           <div><dt>Agent</dt><dd>{{ node.agent_version || "尚未注册" }}</dd></div>
           <div><dt>订阅端点</dt><dd>{{ endpointLabel(node) }}</dd></div>
-          <div><dt>TLS SNI</dt><dd>{{ node.sni || node.public_host || "-" }}</dd></div>
-          <div><dt>证书验证</dt><dd>{{ node.tls_insecure ? "跳过" : "验证" }}</dd></div>
-          <div><dt>证书固定</dt><dd>{{ node.tls_cert_fingerprint ? "已配置" : "未配置" }}</dd></div>
-          <div><dt>公钥固定</dt><dd>{{ node.tls_public_key_sha256 ? "已配置" : "未配置" }}</dd></div>
+          <template v-if="node.adapter_type === 'sing_box_vless_reality'">
+            <div><dt>协议与传输</dt><dd>VLESS / TCP / Reality</dd></div>
+            <div><dt>SNI / 伪装域名</dt><dd>{{ node.sni || "未配置" }}</dd></div>
+            <div><dt>握手目标</dt><dd>{{ realityHandshakeLabel(node) }}</dd></div>
+            <div><dt>Reality 身份</dt><dd>{{ node.reality?.public_key && node.reality?.short_id ? `已应用 · 第 ${node.reality.applied_key_generation} 代` : "等待节点生成" }}</dd></div>
+            <div><dt>目标身份代际</dt><dd>{{ node.reality ? `第 ${node.reality.key_generation} 代${node.reality.key_generation !== node.reality.applied_key_generation ? " · 等待应用" : ""}` : "未配置" }}</dd></div>
+            <div><dt>身份应用版本</dt><dd>{{ node.reality?.material_applied_version || "尚未应用" }}</dd></div>
+          </template>
+          <template v-else>
+            <div><dt>TLS SNI</dt><dd>{{ node.sni || node.public_host || "-" }}</dd></div>
+            <div><dt>证书验证</dt><dd>{{ node.tls_insecure ? "跳过" : "验证" }}</dd></div>
+            <div><dt>证书固定</dt><dd>{{ node.tls_cert_fingerprint ? "已配置" : "未配置" }}</dd></div>
+            <div><dt>公钥固定</dt><dd>{{ node.tls_public_key_sha256 ? "已配置" : "未配置" }}</dd></div>
+          </template>
         </dl>
       </section>
 

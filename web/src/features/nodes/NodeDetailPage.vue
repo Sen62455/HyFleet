@@ -10,7 +10,7 @@ import {
   Pencil,
   RefreshCw,
 } from "@lucide/vue";
-import { NButton, NIcon, NSpin, NTooltip } from "naive-ui";
+import { NButton, NIcon, NSpin, NTag, NTooltip } from "naive-ui";
 import { api, APIError } from "../../api";
 import MetricChart, { type ChartSeries } from "../../components/MetricChart.vue";
 import NodeSignalRail from "../../components/NodeSignalRail.vue";
@@ -107,6 +107,11 @@ function endpointLabel(node: NodeRecord) {
   if (!node.public_host) return "未配置";
   const host = node.public_host.includes(":") ? `[${node.public_host}]` : node.public_host;
   return `${host}:${node.public_port}`;
+}
+
+function realityHandshakeLabel(node: NodeRecord) {
+  if (!node.reality?.handshake_server) return "未配置";
+  return `${node.reality.handshake_server}:${node.reality.handshake_port || 443}`;
 }
 
 let refreshTimer: number | undefined;
@@ -278,13 +283,37 @@ watch(() => props.node.id, () => void loadMetrics());
             <div><dt>核心</dt><dd>{{ [node.core_name, node.core_version].filter(Boolean).join(" ") || "尚未上报" }}</dd></div>
             <div><dt>适配方式</dt><dd>{{ adapterLabels[node.adapter_type] }}</dd></div>
             <div><dt>订阅端点</dt><dd>{{ endpointLabel(node) }}</dd></div>
-            <div><dt>证书固定</dt><dd>{{ node.tls_cert_fingerprint ? "已配置" : "未配置" }}</dd></div>
-            <div><dt>公钥固定</dt><dd>{{ node.tls_public_key_sha256 ? "已配置" : "未配置" }}</dd></div>
+            <template v-if="node.adapter_type === 'sing_box_vless_reality'">
+              <div><dt>协议与传输</dt><dd>VLESS / TCP / Reality</dd></div>
+              <div><dt>SNI / 伪装域名</dt><dd>{{ node.sni || "未配置" }}</dd></div>
+              <div><dt>Reality 握手目标</dt><dd>{{ realityHandshakeLabel(node) }}</dd></div>
+              <div><dt>Reality 身份</dt><dd>{{ node.reality?.public_key && node.reality?.short_id ? `已应用 · 第 ${node.reality.applied_key_generation} 代` : "等待节点生成" }}</dd></div>
+              <div><dt>目标身份代际</dt><dd>{{ node.reality ? `第 ${node.reality.key_generation} 代${node.reality.key_generation !== node.reality.applied_key_generation ? " · 等待应用" : ""}` : "未配置" }}</dd></div>
+              <div><dt>身份应用版本</dt><dd>{{ node.reality?.material_applied_version || "尚未应用" }}</dd></div>
+            </template>
+            <template v-else>
+              <div><dt>证书固定</dt><dd>{{ node.tls_cert_fingerprint ? "已配置" : "未配置" }}</dd></div>
+              <div><dt>公钥固定</dt><dd>{{ node.tls_public_key_sha256 ? "已配置" : "未配置" }}</dd></div>
+            </template>
           </dl>
         </section>
         <section class="detail-band">
-          <h2>流量与在线</h2>
-          <dl class="detail-list detail-list--two">
+          <div class="detail-section__heading">
+            <h2>用户流量与在线</h2>
+            <n-tag
+              v-if="node.adapter_type === 'sing_box_vless_reality'"
+              type="warning"
+              size="small"
+              :bordered="false"
+            >MVP 能力受限</n-tag>
+          </div>
+          <dl v-if="node.adapter_type === 'sing_box_vless_reality'" class="detail-list detail-list--two">
+            <div><dt>按用户流量</dt><dd>暂不支持</dd></div>
+            <div><dt>额度执行</dt><dd>不可用</dd></div>
+            <div><dt>在线状态</dt><dd>暂不支持</dd></div>
+            <div><dt>踢下线</dt><dd>暂不支持</dd></div>
+          </dl>
+          <dl v-else class="detail-list detail-list--two">
             <div><dt>在线用户 / 连接</dt><dd>{{ node.online_users }} / {{ node.online_connections }}</dd></div>
             <div><dt>未识别用户</dt><dd>{{ node.online_unknown_users }}</dd></div>
             <div><dt>代理上传</dt><dd>{{ formatBytes(node.traffic_upload_bytes) }}</dd></div>

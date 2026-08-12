@@ -41,6 +41,10 @@ type Agent struct {
 	TrafficEvery         time.Duration
 	SUIAPIURL            string
 	SUIToken             string
+	SingBoxBinaryPath    string
+	RealityIdentityPath  string
+	OperationsStateDir   string
+	BackupDir            string
 }
 
 type agentFile struct {
@@ -67,6 +71,10 @@ type agentFile struct {
 	TrafficEvery          string `yaml:"traffic_every"`
 	SUIAPIURL             string `yaml:"s_ui_api_url"`
 	SUITokenEnv           string `yaml:"s_ui_token_env"`
+	SingBoxBinaryPath     string `yaml:"sing_box_binary_path"`
+	RealityIdentityPath   string `yaml:"reality_identity_path"`
+	OperationsStateDir    string `yaml:"operations_state_dir"`
+	BackupDir             string `yaml:"backup_dir"`
 }
 
 func LoadAgent(path string) (Agent, error) {
@@ -105,6 +113,9 @@ func LoadAgent(path string) (Agent, error) {
 	file.NodeName = strings.TrimSpace(file.NodeName)
 	file.CoreName = strings.TrimSpace(file.CoreName)
 	file.ServiceUnit = strings.TrimSpace(file.ServiceUnit)
+	if file.AdapterType == "sing_box_vless_reality" && file.ServiceUnit == "" {
+		file.ServiceUnit = "hyfleet-sing-box-reality.service"
+	}
 	if file.NodeName == "" || len(file.NodeName) > 64 {
 		return Agent{}, errors.New("node_name is required")
 	}
@@ -118,7 +129,7 @@ func LoadAgent(path string) (Agent, error) {
 		return Agent{}, errors.New("enrollment_token_env is not a valid environment variable name")
 	}
 	switch file.AdapterType {
-	case "native_hysteria2", "standalone_sing_box", "s_ui":
+	case "native_hysteria2", "standalone_sing_box", "s_ui", "sing_box_vless_reality":
 	default:
 		return Agent{}, errors.New("unsupported adapter_type")
 	}
@@ -139,6 +150,8 @@ func LoadAgent(path string) (Agent, error) {
 			file.CoreConfigPath = "/etc/hysteria/config.yaml"
 		case "standalone_sing_box":
 			file.CoreConfigPath = "/etc/sing-box/config.json"
+		case "sing_box_vless_reality":
+			file.CoreConfigPath = "/etc/sing-box/hyfleet-reality.json"
 		}
 	}
 	if file.CoreConfigPath != "" &&
@@ -151,9 +164,9 @@ func LoadAgent(path string) (Agent, error) {
 		if !strings.HasPrefix(file.CoreConfigPath, "/etc/hysteria/") {
 			return Agent{}, errors.New("native Hysteria2 core_config_path must be below /etc/hysteria")
 		}
-	case "standalone_sing_box":
+	case "standalone_sing_box", "sing_box_vless_reality":
 		if !strings.HasPrefix(file.CoreConfigPath, "/etc/sing-box/") {
-			return Agent{}, errors.New("standalone sing-box core_config_path must be below /etc/sing-box")
+			return Agent{}, errors.New("sing-box core_config_path must be below /etc/sing-box")
 		}
 	case "s_ui":
 		if file.CoreConfigPath != "" {
@@ -204,6 +217,52 @@ func LoadAgent(path string) (Agent, error) {
 			return Agent{}, errors.New("s_ui_token_env is not a valid environment variable name")
 		}
 	}
+	if file.AdapterType == "sing_box_vless_reality" {
+		if file.OperationsStateDir == "" {
+			file.OperationsStateDir = "/var/lib/hyfleet-agent-ops"
+		}
+		if err := validateRealityLocalDir(
+			"operations_state_dir", file.OperationsStateDir, "/var/lib/hyfleet-agent-ops",
+		); err != nil {
+			return Agent{}, err
+		}
+		if file.BackupDir == "" {
+			file.BackupDir = "/var/lib/hyfleet-backups"
+		}
+		if err := validateRealityLocalDir("backup_dir", file.BackupDir, "/var/lib/hyfleet-backups"); err != nil {
+			return Agent{}, err
+		}
+		if file.SingBoxBinaryPath == "" {
+			file.SingBoxBinaryPath = "/usr/bin/sing-box"
+		}
+		if file.SingBoxBinaryPath != "/usr/bin/sing-box" {
+			return Agent{}, errors.New("sing_box_binary_path must be /usr/bin/sing-box")
+		}
+		if file.RealityIdentityPath == "" {
+			identityName := strings.TrimSuffix(file.ServiceUnit, ".service")
+			file.RealityIdentityPath = pathpkg.Join(
+				file.OperationsStateDir, "reality-"+identityName+".json",
+			)
+		}
+		if !pathpkg.IsAbs(file.RealityIdentityPath) ||
+			pathpkg.Clean(file.RealityIdentityPath) != file.RealityIdentityPath ||
+			pathpkg.Dir(file.RealityIdentityPath) != file.OperationsStateDir ||
+			pathpkg.Ext(file.RealityIdentityPath) != ".json" || len(file.RealityIdentityPath) > 256 {
+			return Agent{}, errors.New("reality_identity_path must be a normalized JSON file directly below operations_state_dir")
+		}
+		if !validRealityDeploymentTuple(
+			file.ServiceUnit,
+			file.CoreConfigPath,
+			file.RealityIdentityPath,
+			file.OperationsStateDir,
+			file.BackupDir,
+		) {
+			return Agent{}, errors.New("Reality service, config, identity, state, and backup paths must match an allowlisted deployment tuple")
+		}
+	} else if file.SingBoxBinaryPath != "" || file.RealityIdentityPath != "" ||
+		file.OperationsStateDir != "" || file.BackupDir != "" {
+		return Agent{}, errors.New("Reality helper paths require sing_box_vless_reality")
+	}
 	heartbeat, err := parseDuration("heartbeat_every", file.HeartbeatEvery, 5*time.Second, 5*time.Minute)
 	if err != nil {
 		return Agent{}, err
@@ -244,7 +303,26 @@ func LoadAgent(path string) (Agent, error) {
 		TrafficEvery:         traffic,
 		SUIAPIURL:            strings.TrimRight(file.SUIAPIURL, "/"),
 		SUIToken:             os.Getenv(file.SUITokenEnv),
+		SingBoxBinaryPath:    file.SingBoxBinaryPath,
+		RealityIdentityPath:  file.RealityIdentityPath,
+		OperationsStateDir:   file.OperationsStateDir,
+		BackupDir:            file.BackupDir,
 	}, nil
+}
+
+func validRealityDeploymentTuple(serviceUnit, coreConfigPath, identityPath, stateDir, backupDir string) bool {
+	return serviceUnit == "hyfleet-sing-box-reality.service" &&
+		coreConfigPath == "/etc/sing-box/hyfleet-reality.json" &&
+		identityPath == "/var/lib/hyfleet-agent-ops/reality-hyfleet-sing-box-reality.json" &&
+		stateDir == "/var/lib/hyfleet-agent-ops" &&
+		backupDir == "/var/lib/hyfleet-backups"
+}
+
+func validateRealityLocalDir(field, value, productionPath string) error {
+	if !pathpkg.IsAbs(value) || pathpkg.Clean(value) != value || value != productionPath {
+		return fmt.Errorf("%s must be %s", field, productionPath)
+	}
+	return nil
 }
 
 func validateLoopbackSUIAPIURL(value string) error {

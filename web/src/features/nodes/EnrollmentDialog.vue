@@ -15,6 +15,7 @@ const copied = ref<"token" | "config" | null>(null);
 
 const serviceDefaults = {
   native_hysteria2: { core: "hysteria", unit: "hysteria-server.service" },
+  sing_box_vless_reality: { core: "sing-box", unit: "hyfleet-sing-box-reality.service" },
   standalone_sing_box: { core: "sing-box", unit: "sing-box.service" },
   s_ui: { core: "sing-box", unit: "s-ui.service" },
 };

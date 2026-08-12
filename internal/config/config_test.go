@@ -29,11 +29,130 @@ func TestCheckedInConfigurationExamples(t *testing.T) {
 		"agent.native-hysteria2.example.yaml",
 		"agent.standalone-sing-box.example.yaml",
 		"agent.s-ui.example.yaml",
+		"agent.vless-reality.example.yaml",
 	}
 	for _, name := range patterns {
-		if _, err := LoadAgent(filepath.Join(repositoryRoot, "configs", name)); err != nil {
+		cfg, err := LoadAgent(filepath.Join(repositoryRoot, "configs", name))
+		if err != nil {
 			t.Fatalf("%s is invalid: %v", name, err)
 		}
+		if name == "agent.vless-reality.example.yaml" &&
+			(cfg.OperationsStateDir != "/var/lib/hyfleet-agent-ops" ||
+				cfg.BackupDir != "/var/lib/hyfleet-backups" ||
+				cfg.OperationsSocketPath != "/run/hyfleet-agent-ops.sock" ||
+				!strings.HasSuffix(filepath.ToSlash(cfg.StatePath), "/var/lib/hyfleet-agent/agent-state.json") ||
+				!strings.HasSuffix(filepath.ToSlash(cfg.LocalDatabasePath), "/var/lib/hyfleet-agent/agent.db")) {
+			t.Fatalf("%s does not match the standard systemd paths: %#v", name, cfg)
+		}
+	}
+}
+
+func TestLoadVLESSRealityAgentUsesBoundedLocalPaths(t *testing.T) {
+	validBody := `
+server_url: https://panel.example.com
+node_name: reality-node
+adapter_type: sing_box_vless_reality
+core_name: sing-box
+service_unit: hyfleet-sing-box-reality.service
+state_path: state.json
+`
+	cfg, err := LoadAgent(writeConfig(t, "reality.yaml", validBody))
+	if err != nil {
+		t.Fatalf("LoadAgent() error = %v", err)
+	}
+	if cfg.CoreConfigPath != "/etc/sing-box/hyfleet-reality.json" ||
+		cfg.SingBoxBinaryPath != "/usr/bin/sing-box" ||
+		cfg.RealityIdentityPath != "/var/lib/hyfleet-agent-ops/reality-hyfleet-sing-box-reality.json" ||
+		cfg.OperationsStateDir != "/var/lib/hyfleet-agent-ops" ||
+		cfg.BackupDir != "/var/lib/hyfleet-backups" {
+		t.Fatalf("unexpected Reality config: %#v", cfg)
+	}
+	for name, addition := range map[string]string{
+		"binary":               "sing_box_binary_path: /tmp/sing-box\n",
+		"identity":             "reality_identity_path: /etc/sing-box/private.json\n",
+		"core":                 "core_config_path: /etc/hysteria/config.yaml\n",
+		"relative state dir":   "operations_state_dir: var/lib/hyfleet-agent-ops-lab\n",
+		"unclean state dir":    "operations_state_dir: /var/lib/hyfleet-agent-ops/../hyfleet-agent-ops-lab\n",
+		"nested state dir":     "operations_state_dir: /var/lib/hyfleet-agent-ops/lab\n",
+		"other lab state dir":  "operations_state_dir: /var/lib/hyfleet-agent-ops-test-lab\n",
+		"relative backup dir":  "backup_dir: var/lib/hyfleet-backups-lab\n",
+		"unclean backup dir":   "backup_dir: /var/lib/hyfleet-backups/../hyfleet-backups-lab\n",
+		"nested backup dir":    "backup_dir: /var/lib/hyfleet-backups/lab\n",
+		"other lab backup dir": "backup_dir: /var/lib/hyfleet-backups-test-lab\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LoadAgent(writeConfig(t, "invalid-reality.yaml", validBody+addition)); err == nil {
+				t.Fatal("LoadAgent() accepted an unbounded Reality path")
+			}
+		})
+	}
+}
+
+func TestLoadVLESSRealityAgentRejectsUnsupportedParallelLabPaths(t *testing.T) {
+	body := `
+server_url: https://panel.example.com
+node_name: reality-lab
+adapter_type: sing_box_vless_reality
+core_name: sing-box
+service_unit: hyfleet-sing-box-reality-lab.service
+core_config_path: /etc/sing-box/hyfleet-reality-lab.json
+state_path: /var/lib/hyfleet-agent-lab/agent-state.json
+operations_state_dir: /var/lib/hyfleet-agent-ops-lab
+backup_dir: /var/lib/hyfleet-backups-lab
+`
+	if _, err := LoadAgent(writeConfig(t, "reality-lab.yaml", body)); err == nil {
+		t.Fatal("LoadAgent() accepted a parallel lab layout without packaged systemd support")
+	}
+}
+
+func TestLoadVLESSRealityAgentRejectsMixedOrUnmanagedDeploymentTuple(t *testing.T) {
+	validBody := `
+server_url: https://panel.example.com
+node_name: reality-node
+adapter_type: sing_box_vless_reality
+core_name: sing-box
+service_unit: hyfleet-sing-box-reality.service
+core_config_path: /etc/sing-box/hyfleet-reality.json
+operations_state_dir: /var/lib/hyfleet-agent-ops
+backup_dir: /var/lib/hyfleet-backups
+reality_identity_path: /var/lib/hyfleet-agent-ops/reality-hyfleet-sing-box-reality.json
+state_path: state.json
+`
+	for name, replacement := range map[string]string{
+		"other unit":      strings.Replace(validBody, "hyfleet-sing-box-reality.service", "sing-box.service", 1),
+		"other config":    strings.Replace(validBody, "/etc/sing-box/hyfleet-reality.json", "/etc/sing-box/config.json", 1),
+		"other identity":  strings.Replace(validBody, "reality-hyfleet-sing-box-reality.json", "reality-other.json", 1),
+		"lab unit only":   strings.Replace(validBody, "hyfleet-sing-box-reality.service", "hyfleet-sing-box-reality-lab.service", 1),
+		"lab config only": strings.Replace(validBody, "hyfleet-reality.json", "hyfleet-reality-lab.json", 1),
+		"lab state only":  strings.Replace(validBody, "/var/lib/hyfleet-agent-ops\n", "/var/lib/hyfleet-agent-ops-lab\n", 1),
+		"lab backup only": strings.Replace(validBody, "/var/lib/hyfleet-backups\n", "/var/lib/hyfleet-backups-lab\n", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LoadAgent(writeConfig(t, "invalid-tuple.yaml", replacement)); err == nil {
+				t.Fatal("LoadAgent() accepted a mixed or unmanaged Reality deployment tuple")
+			}
+		})
+	}
+}
+
+func TestLoadAgentRejectsRealityHelperPathsForOtherAdapters(t *testing.T) {
+	body := `
+server_url: https://panel.example.com
+node_name: native-node
+adapter_type: native_hysteria2
+core_name: hysteria
+service_unit: hysteria-server.service
+state_path: state.json
+`
+	for name, addition := range map[string]string{
+		"operations state": "operations_state_dir: /var/lib/hyfleet-agent-ops\n",
+		"backup":           "backup_dir: /var/lib/hyfleet-backups\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LoadAgent(writeConfig(t, "invalid-native.yaml", body+addition)); err == nil {
+				t.Fatal("LoadAgent() accepted a Reality helper path for another adapter")
+			}
+		})
 	}
 }
 

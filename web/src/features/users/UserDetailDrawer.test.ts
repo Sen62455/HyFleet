@@ -138,4 +138,73 @@ describe("UserDetailDrawer", () => {
     expect(wrapper.text()).toContain("0 个有效 Token");
     wrapper.unmount();
   });
+
+  it("marks Reality traffic, online state, quotas, and kicking as unsupported", async () => {
+    const realityAssignment: UserAssignment = {
+      ...assignment,
+      id: "assignment-reality",
+      node_id: "node-reality",
+      node_name: "Reality LA",
+      node_adapter: "sing_box_vless_reality",
+      traffic_limit_bytes: 0,
+      traffic_upload_bytes: 0,
+      traffic_download_bytes: 0,
+      traffic_used_bytes: 0,
+      online_connections: 0,
+    };
+    const realityUser: UserRecord = {
+      ...user,
+      online_connections: 0,
+      online_nodes: 0,
+      traffic_upload_bytes: 0,
+      traffic_download_bytes: 0,
+      traffic_used_bytes: 0,
+      assignments: [realityAssignment],
+    };
+    const wrapper = mount(UserDetailDrawer, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        user: realityUser,
+        assignableNodes: [],
+        subscriptionTokens: [],
+        subscriptionLoading: false,
+        working: "",
+      },
+      global: { stubs: { teleport: true } },
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("VLESS + Reality（sing-box）");
+    expect(wrapper.text()).toContain("按用户流量、在线状态和踢下线暂不支持");
+    expect(wrapper.text()).toContain("流量额度不会在此节点执行");
+    expect(wrapper.find('button[aria-label="保存 Reality LA 流量额度"]').exists()).toBe(false);
+    expect(wrapper.find('button[aria-label="将用户从 Reality LA 踢下线"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("explains why a Reality assignment is withheld from subscriptions", async () => {
+    const realityAssignment: UserAssignment = {
+      ...assignment,
+      node_adapter: "sing_box_vless_reality",
+      subscription_eligible: false,
+      subscription_reason: "adapter_not_compatible",
+    };
+    const wrapper = mount(UserDetailDrawer, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        user: { ...user, assignments: [realityAssignment] },
+        assignableNodes: [],
+        subscriptionTokens: [],
+        subscriptionLoading: false,
+        working: "",
+      },
+      global: { stubs: { teleport: true } },
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Reality 适配器未通过兼容性检查");
+    wrapper.unmount();
+  });
 });

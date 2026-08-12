@@ -7,14 +7,16 @@ import (
 )
 
 var (
-	ErrNotFound        = errors.New("not found")
-	ErrConflict        = errors.New("conflict")
-	ErrExpired         = errors.New("expired")
-	ErrPending         = errors.New("pending changes")
-	ErrUnauthorized    = errors.New("unauthorized")
-	ErrVersionConflict = errors.New("version conflict")
-	ErrUnsupported     = errors.New("unsupported")
-	ErrReadOnly        = errors.New("read-only assignment")
+	ErrNotFound         = errors.New("not found")
+	ErrConflict         = errors.New("conflict")
+	ErrExpired          = errors.New("expired")
+	ErrPending          = errors.New("pending changes")
+	ErrUnauthorized     = errors.New("unauthorized")
+	ErrVersionConflict  = errors.New("version conflict")
+	ErrUnsupported      = errors.New("unsupported")
+	ErrReadOnly         = errors.New("read-only assignment")
+	ErrQuotaUnsupported = errors.New("quota unsupported")
+	ErrKickUnsupported  = errors.New("kick unsupported")
 )
 
 func unixTime(value int64) time.Time {

@@ -159,18 +159,29 @@ type TelemetrySnapshotResponse struct {
 }
 
 type DesiredSnapshot struct {
-	SchemaVersion int           `json:"schema_version"`
-	NodeID        string        `json:"node_id"`
-	Version       int64         `json:"version"`
-	Adapter       string        `json:"adapter"`
-	Users         []DesiredUser `json:"users"`
-	Kicks         []DesiredKick `json:"kicks"`
-	SUI           *DesiredSUI   `json:"s_ui,omitempty"`
-	GeneratedAt   time.Time     `json:"generated_at"`
+	SchemaVersion int                  `json:"schema_version"`
+	NodeID        string               `json:"node_id"`
+	Version       int64                `json:"version"`
+	Adapter       string               `json:"adapter"`
+	Users         []DesiredUser        `json:"users"`
+	Kicks         []DesiredKick        `json:"kicks"`
+	SUI           *DesiredSUI          `json:"s_ui,omitempty"`
+	VLESSReality  *DesiredVLESSReality `json:"vless_reality,omitempty"`
+	GeneratedAt   time.Time            `json:"generated_at"`
 }
 
 type DesiredSUI struct {
 	TargetInboundIDs []int64 `json:"target_inbound_ids"`
+}
+
+type DesiredVLESSReality struct {
+	ListenPort          int    `json:"listen_port"`
+	ServerName          string `json:"server_name"`
+	HandshakeServer     string `json:"handshake_server"`
+	HandshakeServerPort int    `json:"handshake_server_port"`
+	Flow                string `json:"flow"`
+	Network             string `json:"network"`
+	KeyGeneration       int64  `json:"key_generation"`
 }
 
 type DesiredUser struct {
@@ -187,6 +198,7 @@ type DesiredUser struct {
 type DesiredCredential struct {
 	Ref            string `json:"ref"`
 	Fingerprint    string `json:"fingerprint"`
+	Protocol       string `json:"protocol,omitempty"`
 	VerifierSHA256 string `json:"verifier_sha256,omitempty"`
 }
 
@@ -202,12 +214,19 @@ type DesiredEnvelope struct {
 }
 
 type DesiredAckRequest struct {
-	Status       string `json:"status"`
-	SnapshotHash string `json:"snapshot_hash"`
-	Adapter      string `json:"adapter"`
-	DurationMS   int64  `json:"duration_ms"`
-	ErrorCode    string `json:"error_code,omitempty"`
-	Message      string `json:"message,omitempty"`
+	Status       string                  `json:"status"`
+	SnapshotHash string                  `json:"snapshot_hash"`
+	Adapter      string                  `json:"adapter"`
+	DurationMS   int64                   `json:"duration_ms"`
+	ErrorCode    string                  `json:"error_code,omitempty"`
+	Message      string                  `json:"message,omitempty"`
+	Reality      *AppliedRealityMaterial `json:"reality,omitempty"`
+}
+
+type AppliedRealityMaterial struct {
+	KeyGeneration int64  `json:"key_generation"`
+	PublicKey     string `json:"public_key"`
+	ShortID       string `json:"short_id"`
 }
 
 type TrafficBatchesRequest struct {

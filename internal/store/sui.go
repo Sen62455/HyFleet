@@ -423,7 +423,9 @@ func (s *Store) GetCredentialMaterial(
 	snapshotHash []byte,
 	masterKey []byte,
 ) (string, error) {
-	if identity.AdapterType != "s_ui" || credentialRef == "" || desiredVersion < 1 ||
+	if !identity.Enabled ||
+		(identity.AdapterType != "s_ui" && identity.AdapterType != AdapterSingBoxVLESSReality) ||
+		credentialRef == "" || desiredVersion < 1 ||
 		len(snapshotHash) != sha256.Size {
 		return "", ErrUnauthorized
 	}
@@ -433,8 +435,10 @@ func (s *Store) GetCredentialMaterial(
 		SELECT s.canonical_json, s.sha256, n.desired_version
 		FROM node_snapshots s
 		JOIN nodes n ON n.id = s.node_id AND n.archived_at IS NULL
-		WHERE s.node_id = ? AND s.version = ? AND n.adapter_type = 's_ui'
-	`, identity.NodeID, desiredVersion).Scan(&canonical, &expectedHash, &currentVersion)
+		WHERE s.node_id = ? AND s.version = ? AND n.adapter_type = ?
+	`, identity.NodeID, desiredVersion, identity.AdapterType).Scan(
+		&canonical, &expectedHash, &currentVersion,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrUnauthorized
 	}
@@ -451,7 +455,20 @@ func (s *Store) GetCredentialMaterial(
 	}
 	found := false
 	for _, user := range snapshot.Users {
-		if user.Credential.Ref == credentialRef && user.ManagementMode == "managed" {
+		if user.Credential.Ref != credentialRef {
+			continue
+		}
+		if identity.AdapterType == AdapterSingBoxVLESSReality &&
+			(!user.Enabled || user.QuotaState == "limited") {
+			continue
+		}
+		if identity.AdapterType == "s_ui" && user.ManagementMode == "managed" {
+			found = true
+			break
+		}
+		if identity.AdapterType == AdapterSingBoxVLESSReality &&
+			snapshot.SchemaVersion == 2 && snapshot.VLESSReality != nil &&
+			user.Credential.Protocol == CredentialProtocolVLESS {
 			found = true
 			break
 		}
@@ -459,18 +476,22 @@ func (s *Store) GetCredentialMaterial(
 	if !found {
 		return "", ErrUnauthorized
 	}
-	var userID, nodeID, state, managementMode string
+	var userID, nodeID, state, managementMode, credentialProtocol string
 	var ciphertext []byte
 	var keyVersion int
+	var userEnabled, assignmentEnabled, nodeEnabled int
 	err = s.db.QueryRowContext(ctx, `
 		SELECT c.user_id, c.node_id, c.secret_ciphertext, c.key_version, c.state,
-		       a.management_mode
+		       a.management_mode, c.protocol, u.enabled, a.enabled, n.enabled
 		FROM user_credentials c
 		JOIN node_user_assignments a
 		  ON a.node_id = c.node_id AND a.user_id = c.user_id
+		JOIN users u ON u.id = a.user_id AND u.archived_at IS NULL
+		JOIN nodes n ON n.id = a.node_id AND n.archived_at IS NULL
 		WHERE c.id = ? AND c.node_id = ? AND a.desired_credential_id = c.id
 	`, credentialRef, identity.NodeID).Scan(
 		&userID, &nodeID, &ciphertext, &keyVersion, &state, &managementMode,
+		&credentialProtocol, &userEnabled, &assignmentEnabled, &nodeEnabled,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrUnauthorized
@@ -478,12 +499,20 @@ func (s *Store) GetCredentialMaterial(
 	if err != nil {
 		return "", fmt.Errorf("read credential material: %w", err)
 	}
-	if nodeID != identity.NodeID || managementMode != "managed" ||
+	if nodeID != identity.NodeID || managementMode != "managed" || nodeEnabled != 1 ||
 		keyVersion != credentialKeyVersion || (state != "staged" && state != "applied") {
 		return "", ErrUnauthorized
 	}
+	if identity.AdapterType == AdapterSingBoxVLESSReality &&
+		(userEnabled != 1 || assignmentEnabled != 1) {
+		return "", ErrUnauthorized
+	}
+	expectedProtocol, err := credentialProtocolForAdapter(identity.AdapterType)
+	if err != nil || credentialProtocol != expectedProtocol {
+		return "", ErrUnauthorized
+	}
 	secret, err := cryptoutil.Open(masterKey, ciphertext, credentialAAD(
-		credentialRef, userID, nodeID, "hysteria2", keyVersion,
+		credentialRef, userID, nodeID, credentialProtocol, keyVersion,
 	))
 	if err != nil {
 		return "", fmt.Errorf("open credential material: %w", err)

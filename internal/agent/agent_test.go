@@ -188,7 +188,7 @@ func TestHeartbeatContinuesWhenHostMetricsAreUnavailable(t *testing.T) {
 	t.Cleanup(func() { _ = runner.Close() })
 	runner.collector = failingCollector{}
 
-	if _, err := runner.heartbeat(context.Background()); err != nil {
+	if _, _, err := runner.heartbeat(context.Background()); err != nil {
 		t.Fatalf("heartbeat() error = %v", err)
 	}
 	heartbeat := <-heartbeats
@@ -276,6 +276,41 @@ func TestHeartbeatsContinueWhileNodeOperationIsBlocked(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Agent.Run() error = %v", err)
+	}
+}
+
+func TestRealityUsageCycleDoesNotCallUnsupportedEndpoints(t *testing.T) {
+	nodeID := uuid.NewString()
+	requests := atomic.Int32{}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		http.Error(response, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	statePath := filepath.Join(t.TempDir(), "agent-state.json")
+	if err := SaveState(statePath, State{
+		InstallationID: uuid.NewString(),
+		NodeID:         nodeID,
+		NodeCredential: "hya_" + nodeID + ".reality-usage",
+	}); err != nil {
+		t.Fatalf("SaveState() error = %v", err)
+	}
+	runner, err := New(config.Agent{
+		ServerURL: server.URL, StatePath: statePath,
+		AdapterType: "sing_box_vless_reality", CoreName: "sing-box",
+		ServiceUnit: "hyfleet-sing-box-reality.service", AllowHTTP: true,
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runner.Close() })
+
+	if err := runner.runUsageCycle(context.Background()); err != nil {
+		t.Fatalf("runUsageCycle() error = %v", err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("unsupported Reality usage requests = %d, want 0", got)
 	}
 }
 

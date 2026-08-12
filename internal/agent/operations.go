@@ -2,11 +2,8 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -100,6 +97,11 @@ func (agent *Agent) executeNodeOperation(
 	ctx context.Context,
 	operation protocol.NodeOperation,
 ) protocol.OperationResultRequest {
+	agent.dataPlaneMu.Lock()
+	defer agent.dataPlaneMu.Unlock()
+	if agent.config.AdapterType == "sing_box_vless_reality" {
+		agent.dataPlaneRevision++
+	}
 	if agent.operationExecutor != nil {
 		return agent.operationExecutor(ctx, operation)
 	}
@@ -110,20 +112,21 @@ func (agent *Agent) executeNodeOperationWithHelper(
 	ctx context.Context,
 	operation protocol.NodeOperation,
 ) protocol.OperationResultRequest {
-	dialer := net.Dialer{Timeout: 3 * time.Second}
-	connection, err := dialer.DialContext(ctx, "unix", agent.config.OperationsSocketPath)
+	response, err := exchangeHelper(
+		ctx,
+		agent.config.OperationsSocketPath,
+		45*time.Second,
+		nodeops.HelperRequest{Operation: &operation},
+	)
 	if err != nil {
-		return failedOperationResult(operation.Sequence, "operations_helper_unavailable", err)
-	}
-	defer connection.Close()
-	deadline := time.Now().Add(45 * time.Second)
-	_ = connection.SetDeadline(deadline)
-	if err := json.NewEncoder(connection).Encode(nodeops.HelperRequest{Operation: operation}); err != nil {
-		return failedOperationResult(operation.Sequence, "operations_helper_write_failed", err)
-	}
-	var response nodeops.HelperResponse
-	if err := json.NewDecoder(io.LimitReader(connection, 64*1024)).Decode(&response); err != nil {
-		return failedOperationResult(operation.Sequence, "operations_helper_read_failed", err)
+		errorCode := "operations_helper_unavailable"
+		switch helperExchangeErrorStage(err) {
+		case helperExchangeWrite:
+			errorCode = "operations_helper_write_failed"
+		case helperExchangeRead:
+			errorCode = "operations_helper_read_failed"
+		}
+		return failedOperationResult(operation.Sequence, errorCode, err)
 	}
 	if response.Sequence != operation.Sequence ||
 		(response.Status != "succeeded" && response.Status != "failed") ||

@@ -111,6 +111,11 @@ func (a *App) handleAgentOnlineSnapshot(response http.ResponseWriter, request *h
 		return
 	}
 	accepted, err := a.store.RecordOnlineSnapshot(request.Context(), identity, input, now)
+	if errors.Is(err, store.ErrUnsupported) {
+		a.writeError(response, request, http.StatusUnprocessableEntity,
+			"adapter_online_unsupported", "node adapter does not support online snapshots")
+		return
+	}
 	if errors.Is(err, store.ErrConflict) {
 		a.writeError(response, request, http.StatusConflict,
 			"installation_conflict", "Agent installation does not match enrollment")

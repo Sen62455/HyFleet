@@ -13,12 +13,17 @@ usage() {
 Usage:
   sudo bash install.sh server [--version v1.2.0] --public-url https://panel.example.com
   sudo bash install.sh agent [--version v1.2.0] --server-url https://panel.example.com \
-    --node-name NODE --adapter native-hysteria2|standalone-sing-box|s-ui [options]
+    --node-name NODE \
+    --adapter native-hysteria2|standalone-sing-box|s-ui|vless-reality [options]
 
 This bootstrap supports systemd-based Debian and Ubuntu on amd64 or arm64. It
 downloads a GitHub Release, verifies both checksum layers, then runs the bundled
 native installer. Agent enrollment remains interactive so its one-time token is
 not written to shell history.
+
+The vless-reality adapter is available only from the experimental branch. It
+requires the pinned HyFleet sing-box 1.13.18-hyfleet-utls1.8.7 build already
+installed as /usr/bin/sing-box. This bootstrap does not download or replace it.
 EOF
 }
 

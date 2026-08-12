@@ -853,7 +853,7 @@ func rotateAssignmentCredentialTx(
 	if (adapter != "native_hysteria2" && adapter != "s_ui") || managementMode != "managed" {
 		return CreatedCredential{}, ErrUnsupported
 	}
-	if state != "applied" || desiredVersion != appliedVersion ||
+	if state != "applied" || appliedVersion < desiredVersion ||
 		desiredCredentialID == "" || desiredCredentialID != appliedCredentialID {
 		return CreatedCredential{}, ErrPending
 	}
@@ -1013,7 +1013,7 @@ func subscriptionEligibilityReason(
 		return "assignment_disabled"
 	case assignment.QuotaState == "limited":
 		return "assignment_quota_limited"
-	case assignment.State != "applied" || assignment.AppliedVersion != assignment.DesiredVersion:
+	case assignment.State != "applied" || assignment.AppliedVersion < assignment.DesiredVersion:
 		return "assignment_not_applied"
 	case assignment.AppliedCredentialID == "" || appliedCredentialState != "applied":
 		return "credential_not_applied"

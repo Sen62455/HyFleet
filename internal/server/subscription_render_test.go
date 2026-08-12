@@ -69,10 +69,15 @@ func TestSubscriptionRenderersEscapeStructuredValues(t *testing.T) {
 		clashValue.Proxies[0]["fingerprint"] != certificateFingerprint {
 		t.Fatalf("unexpected Clash subscription: %#v", clashValue)
 	}
+	rules := strings.Join(clashValue.Rules, "\n")
 	if len(clashValue.ProxyGroups) != 1 || clashValue.ProxyGroups[0].Name != "HyFleet" ||
 		clashValue.ProxyGroups[0].Type != "select" || len(clashValue.ProxyGroups[0].Proxies) != 1 ||
 		clashValue.ProxyGroups[0].Proxies[0] != "IPv6 / Tokyo #1" ||
-		len(clashValue.Rules) != 1 || clashValue.Rules[0] != "MATCH,HyFleet" {
+		len(clashValue.Rules) < 3 || clashValue.Rules[0] != "DOMAIN-SUFFIX,cn,DIRECT" ||
+		!strings.Contains(rules, "DOMAIN-SUFFIX,douyin.com,DIRECT") ||
+		!strings.Contains(rules, "GEOIP,CN,DIRECT") ||
+		strings.Contains(rules, "198.18.0.0/16") ||
+		clashValue.Rules[len(clashValue.Rules)-1] != "MATCH,HyFleet" {
 		t.Fatalf("Clash rule-mode configuration is incomplete: %#v", clashValue)
 	}
 

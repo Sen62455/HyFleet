@@ -143,6 +143,70 @@ func TestSubscriptionTokenAndAppliedCredentialLifecycle(t *testing.T) {
 	}
 }
 
+func TestAppliedAssignmentRemainsUsableAfterLaterNodeSnapshot(t *testing.T) {
+	ctx := context.Background()
+	database, err := Open(ctx, filepath.Join(t.TempDir(), "server.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer database.Close()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	masterKey := bytes.Repeat([]byte{0x58}, 32)
+	node, err := database.CreateNode(ctx, NewNode{
+		ID: uuid.NewString(), Name: "shared-node", AdapterType: "native_hysteria2",
+		PublicHost: "shared.example.com", PublicPort: 443, Enabled: true, Now: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	primary, _, err := database.CreateUser(ctx, NewUser{
+		ID: uuid.NewString(), Username: "primary", Enabled: true,
+		NodeIDs: []string{node.ID}, Now: now.Add(time.Second),
+	}, masterKey)
+	if err != nil {
+		t.Fatalf("CreateUser(primary) error = %v", err)
+	}
+	ackCurrentDesired(t, database, node.ID, now.Add(2*time.Second))
+	issued, err := database.CreateSubscriptionToken(ctx, NewSubscriptionToken{
+		ID: uuid.NewString(), UserID: primary.ID, Name: "primary",
+		Now: now.Add(3 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("CreateSubscriptionToken() error = %v", err)
+	}
+
+	if _, _, err := database.CreateUser(ctx, NewUser{
+		ID: uuid.NewString(), Username: "secondary", Enabled: true,
+		NodeIDs: []string{node.ID}, Now: now.Add(4 * time.Second),
+	}, masterKey); err != nil {
+		t.Fatalf("CreateUser(secondary) error = %v", err)
+	}
+	ackCurrentDesired(t, database, node.ID, now.Add(5*time.Second))
+
+	refreshed, err := database.GetUser(ctx, primary.ID)
+	if err != nil || len(refreshed.Assignments) != 1 {
+		t.Fatalf("GetUser(primary) = %#v, error = %v", refreshed, err)
+	}
+	assignment := refreshed.Assignments[0]
+	if assignment.State != "applied" || assignment.AppliedVersion <= assignment.DesiredVersion ||
+		!assignment.SubscriptionEligible || assignment.SubscriptionReason != "" {
+		t.Fatalf("later node snapshot made assignment unavailable: %#v", assignment)
+	}
+
+	subscription, err := database.ResolveSubscription(
+		ctx, cryptoutil.TokenHash(issued.Secret), "clash", now.Add(6*time.Second), masterKey,
+	)
+	if err != nil || len(subscription.Endpoints) != 1 || subscription.Endpoints[0].NodeID != node.ID {
+		t.Fatalf("ResolveSubscription() = %#v, error = %v", subscription, err)
+	}
+	if _, _, err := database.RotateAssignmentCredential(
+		ctx, primary.ID, node.ID, now.Add(7*time.Second), masterKey,
+	); err != nil {
+		t.Fatalf("RotateAssignmentCredential(after later snapshot) error = %v", err)
+	}
+}
+
 func TestGlobalCredentialRotationIsAtomicWhenAssignmentIsPending(t *testing.T) {
 	ctx := context.Background()
 	database, err := Open(ctx, filepath.Join(t.TempDir(), "server.db"))

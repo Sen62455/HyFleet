@@ -300,7 +300,7 @@ func (s *Store) ResolveSubscription(
 		  AND n.public_host <> '' AND a.enabled = 1
 		  AND a.quota_state <> 'limited' AND a.state = 'applied'
 		  AND a.management_mode = 'managed'
-		  AND a.applied_version = a.desired_version
+		  AND a.applied_version >= a.desired_version
 		  AND a.applied_credential_id IS NOT NULL AND c.state = 'applied'
 		ORDER BY n.name COLLATE NOCASE, n.id
 	`, userID)

@@ -1172,7 +1172,14 @@ body {
 }
 
 .metric-chart {
+  min-height: 244px;
+  padding: 12px 14px 10px;
   background: var(--hf-surface);
+}
+
+.metric-chart__canvas {
+  height: 220px;
+  overflow: visible;
 }
 
 .metric-chart__grid {
@@ -1185,6 +1192,18 @@ body {
 .metric-chart__time {
   fill: var(--hf-subtle);
   font-family: var(--hf-data);
+  letter-spacing: 0;
+  text-rendering: geometricPrecision;
+}
+
+.metric-chart__axis-label {
+  font-size: 11px;
+  font-weight: 540;
+}
+
+.metric-chart__time {
+  font-size: 10.5px;
+  font-weight: 500;
 }
 
 .metric-chart__line {
@@ -1202,16 +1221,21 @@ body {
 }
 
 .metric-chart__tooltip {
+  min-width: 148px;
+  padding: 10px 12px;
   border: 1px solid var(--hf-line-strong);
   border-radius: 2px;
   background: var(--hf-surface-raised);
   box-shadow: var(--hf-shadow-hover);
   color: var(--hf-muted);
   font-family: var(--hf-data);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .metric-chart__tooltip strong {
   color: var(--hf-ink);
+  font-size: 12px;
 }
 
 .metric-chart__empty {
@@ -2861,16 +2885,16 @@ button.fleet-register__cell:focus-visible {
 }
 
 .monitor-ledger .monitor-panel > header {
-  min-height: 56px;
-  padding: 0 19px;
+  min-height: 60px;
+  padding: 0 22px;
 }
 
 .monitor-ledger .monitor-panel h2 {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .monitor-ledger .monitor-panel header span {
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .detail-band:first-child .detail-metrics {

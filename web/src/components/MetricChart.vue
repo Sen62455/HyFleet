@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, useId } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 
 export interface ChartSeries {
   name: string;
@@ -21,12 +21,15 @@ const props = withDefaults(defineProps<{
 const activeIndex = ref<number | null>(null);
 const chartFocused = ref(false);
 const announcement = ref("");
+const chartRoot = ref<HTMLElement | null>(null);
+const chartCanvas = ref<SVGSVGElement | null>(null);
 const summaryId = `${useId()}-summary`;
-const width = 640;
-const height = 190;
-const padding = { top: 14, right: 14, bottom: 28, left: 42 };
-const plotWidth = width - padding.left - padding.right;
+const chartWidth = ref(640);
+const height = 220;
+const padding = { top: 18, right: 24, bottom: 38, left: 82 };
+const plotWidth = computed(() => chartWidth.value - padding.left - padding.right);
 const plotHeight = height - padding.top - padding.bottom;
+let resizeObserver: ResizeObserver | null = null;
 
 const pointCount = computed(() => Math.max(0, ...props.series.map((item) => item.values.length)));
 const maximum = computed(() => {
@@ -60,7 +63,7 @@ const chartSummary = computed(() => {
 });
 
 function x(index: number) {
-  return padding.left + (pointCount.value <= 1 ? 0 : (index / (pointCount.value - 1)) * plotWidth);
+  return padding.left + (pointCount.value <= 1 ? 0 : (index / (pointCount.value - 1)) * plotWidth.value);
 }
 
 function y(value: number) {
@@ -85,9 +88,14 @@ function selectIndex(index: number, announce = false) {
 function move(event: MouseEvent | PointerEvent) {
   if (pointCount.value === 0) return;
   const bounds = (event.currentTarget as SVGElement).getBoundingClientRect();
-  const relative = ((event.clientX - bounds.left) / bounds.width) * width;
-  const ratio = Math.max(0, Math.min(1, (relative - padding.left) / plotWidth));
+  const relative = ((event.clientX - bounds.left) / bounds.width) * chartWidth.value;
+  const ratio = Math.max(0, Math.min(1, (relative - padding.left) / plotWidth.value));
   selectIndex(Math.round(ratio * (pointCount.value - 1)));
+}
+
+function syncCanvasWidth() {
+  const measured = chartCanvas.value?.getBoundingClientRect().width;
+  if (measured && Number.isFinite(measured)) chartWidth.value = Math.max(280, Math.round(measured));
 }
 
 function focusChart() {
@@ -122,15 +130,32 @@ function shortTime(value: string | undefined) {
   if (!Number.isFinite(date.getTime())) return "";
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
 }
+
+onMounted(() => {
+  window.addEventListener("resize", syncCanvasWidth, { passive: true });
+  if (typeof ResizeObserver !== "undefined" && chartRoot.value) {
+    resizeObserver = new ResizeObserver(syncCanvasWidth);
+    resizeObserver.observe(chartRoot.value);
+  }
+  void nextTick(syncCanvasWidth);
+});
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  window.removeEventListener("resize", syncCanvasWidth);
+});
+
+watch(pointCount, () => void nextTick(syncCanvasWidth));
 </script>
 
 <template>
-  <div class="metric-chart" @mouseleave="clearPointer">
+  <div ref="chartRoot" class="metric-chart" @mouseleave="clearPointer">
     <div v-if="pointCount === 0" class="metric-chart__empty">{{ emptyLabel }}</div>
     <svg
       v-else
+      ref="chartCanvas"
       class="metric-chart__canvas"
-      :viewBox="`0 0 ${width} ${height}`"
+      :viewBox="`0 0 ${chartWidth} ${height}`"
       role="img"
       tabindex="0"
       focusable="true"
@@ -143,7 +168,7 @@ function shortTime(value: string | undefined) {
       @pointermove="move"
     >
       <g v-for="tick in ticks" :key="tick.ratio">
-        <line :x1="padding.left" :x2="width - padding.right" :y1="tick.y" :y2="tick.y" class="metric-chart__grid" />
+        <line :x1="padding.left" :x2="chartWidth - padding.right" :y1="tick.y" :y2="tick.y" class="metric-chart__grid" />
         <text :x="padding.left - 7" :y="tick.y + 4" text-anchor="end" class="metric-chart__axis-label">
           {{ valueFormatter(tick.value) }}
         </text>
@@ -168,8 +193,8 @@ function shortTime(value: string | undefined) {
           class="metric-chart__point"
         />
       </g>
-      <text :x="padding.left" :y="height - 5" class="metric-chart__time">{{ shortTime(labels[0]) }}</text>
-      <text :x="width - padding.right" :y="height - 5" text-anchor="end" class="metric-chart__time">
+      <text :x="padding.left" :y="height - 7" class="metric-chart__time">{{ shortTime(labels[0]) }}</text>
+      <text :x="chartWidth - padding.right" :y="height - 7" text-anchor="end" class="metric-chart__time">
         {{ shortTime(labels[labels.length - 1]) }}
       </text>
     </svg>

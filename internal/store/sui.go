@@ -384,7 +384,7 @@ func (s *Store) AdoptSUIClient(
 		}
 		return User{}, fmt.Errorf("read S-UI adoption: %w", err)
 	}
-	if mode != "read_only" || assignmentState != "applied" || desiredVersion != appliedVersion ||
+	if mode != "read_only" || assignmentState != "applied" || appliedVersion < desiredVersion ||
 		confirmedName == "" || confirmedName != currentName {
 		return User{}, ErrConflict
 	}

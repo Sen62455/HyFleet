@@ -61,6 +61,47 @@ type singBoxTLSData struct {
 	CertificatePublicKeySHA256 []string `json:"certificate_public_key_sha256,omitempty"`
 }
 
+func defaultClashRules() []string {
+	return []string{
+		"DOMAIN-SUFFIX,cn,DIRECT",
+		"DOMAIN-KEYWORD,-cn,DIRECT",
+		"DOMAIN-SUFFIX,qq.com,DIRECT",
+		"DOMAIN-SUFFIX,weixin.qq.com,DIRECT",
+		"DOMAIN-SUFFIX,tenpay.com,DIRECT",
+		"DOMAIN-SUFFIX,baidu.com,DIRECT",
+		"DOMAIN-SUFFIX,bilibili.com,DIRECT",
+		"DOMAIN-SUFFIX,bilivideo.com,DIRECT",
+		"DOMAIN-SUFFIX,douyin.com,DIRECT",
+		"DOMAIN-SUFFIX,iesdouyin.com,DIRECT",
+		"DOMAIN-SUFFIX,amemv.com,DIRECT",
+		"DOMAIN-SUFFIX,snssdk.com,DIRECT",
+		"DOMAIN-SUFFIX,toutiao.com,DIRECT",
+		"DOMAIN-SUFFIX,bytedance.com,DIRECT",
+		"DOMAIN-SUFFIX,pstatp.com,DIRECT",
+		"DOMAIN-SUFFIX,ixigua.com,DIRECT",
+		"DOMAIN-SUFFIX,zhihu.com,DIRECT",
+		"DOMAIN-SUFFIX,aliyun.com,DIRECT",
+		"DOMAIN-SUFFIX,taobao.com,DIRECT",
+		"DOMAIN-SUFFIX,tmall.com,DIRECT",
+		"DOMAIN-SUFFIX,jd.com,DIRECT",
+		"DOMAIN-SUFFIX,360buyimg.com,DIRECT",
+		"DOMAIN-SUFFIX,163.com,DIRECT",
+		"DOMAIN-SUFFIX,126.com,DIRECT",
+		"DOMAIN-SUFFIX,netease.com,DIRECT",
+		"DOMAIN-SUFFIX,mi.com,DIRECT",
+		"DOMAIN-SUFFIX,xiaomi.com,DIRECT",
+		"DOMAIN-SUFFIX,xiaohongshu.com,DIRECT",
+		"DOMAIN-SUFFIX,iqiyi.com,DIRECT",
+		"DOMAIN-SUFFIX,youku.com,DIRECT",
+		"IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+		"IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+		"IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+		"IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+		"GEOIP,CN,DIRECT",
+		"MATCH,HyFleet",
+	}
+}
+
 func renderSubscription(format string, subscription store.Subscription) (renderedSubscription, error) {
 	switch format {
 	case "uri":
@@ -93,7 +134,7 @@ func renderSubscription(format string, subscription store.Subscription) (rendere
 			ProxyGroups: []clashProxyGroup{{
 				Name: "HyFleet", Type: "select", Proxies: proxyNames,
 			}},
-			Rules: []string{"MATCH,HyFleet"},
+			Rules: defaultClashRules(),
 		})
 		if err != nil {
 			return renderedSubscription{}, fmt.Errorf("encode Clash subscription: %w", err)

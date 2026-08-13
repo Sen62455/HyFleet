@@ -135,7 +135,7 @@ func TestUpdateNodeAllowsAdapterChangeWithoutDependentState(t *testing.T) {
 	}
 }
 
-func TestRequestUserKickAtomicallyRejectsMixedRealityTargets(t *testing.T) {
+func TestRequestUserKickAtomicallyQueuesMixedManagedTargets(t *testing.T) {
 	database, err := Open(t.Context(), filepath.Join(t.TempDir(), "server.db"))
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -157,7 +157,7 @@ func TestRequestUserKickAtomicallyRejectsMixedRealityTargets(t *testing.T) {
 	}
 
 	count, err := database.RequestUserKick(t.Context(), user.ID, "", now.Add(time.Second))
-	if count != 0 || !errors.Is(err, ErrKickUnsupported) {
+	if count != 2 || err != nil {
 		t.Fatalf("RequestUserKick(mixed global) = %d, error = %v", count, err)
 	}
 	var queued int
@@ -170,8 +170,8 @@ func TestRequestUserKickAtomicallyRejectsMixedRealityTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetNode(native after) error = %v", err)
 	}
-	if queued != 0 || nativeAfter.DesiredVersion != nativeBefore.DesiredVersion {
-		t.Fatalf("rejected global kick wrote state: queued=%d before=%d after=%d",
+	if queued != 2 || nativeAfter.DesiredVersion != nativeBefore.DesiredVersion+1 {
+		t.Fatalf("mixed global kick state: queued=%d before=%d after=%d",
 			queued, nativeBefore.DesiredVersion, nativeAfter.DesiredVersion)
 	}
 

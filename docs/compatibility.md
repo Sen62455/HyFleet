@@ -23,7 +23,7 @@ root-owned Unix socket helper.
 | Native Hysteria2 | Hysteria2 v2 HTTP auth and traffic APIs | Managed | Managed |
 | S-UI | S-UI v1.5.3 through versions below v1.6.0, `/apiv2` | Explicit adoption | Managed after adoption |
 | Standalone sing-box | `sing-box.service`, fixed file or directory configuration | Observation only | Not yet managed |
-| VLESS Reality (experimental) | HyFleet sing-box `1.13.18-hyfleet-utls1.8.7`, direct TCP, Reality, `xtls-rprx-vision` | Managed | Subscription managed; traffic and online state unavailable |
+| VLESS Reality (experimental) | HyFleet sing-box `1.13.18-hyfleet-utls1.8.7-api2`, direct TCP, Reality, `xtls-rprx-vision` | Managed | Subscription, per-user traffic, active connections, and targeted disconnect managed |
 
 Standalone sing-box supports core status, restart, bounded logs, alerts, and
 node-local configuration backup. A configured directory may contain at most 512
@@ -33,7 +33,7 @@ of uncompressed data. Symbolic links and special files are rejected.
 The VLESS Reality adapter exists only on the
 `experimental/vless-reality-singbox` branch. Its data-plane contract is pinned
 to the regular executable `/usr/bin/sing-box`, version
-`1.13.18-hyfleet-utls1.8.7`, the unit
+`1.13.18-hyfleet-utls1.8.7-api2`, the unit
 `hyfleet-sing-box-reality.service`, the generated configuration
 `/etc/sing-box/hyfleet-reality.json`, and the root-only identity
 `/var/lib/hyfleet-agent-ops/reality-hyfleet-sing-box-reality.json`. The HyFleet

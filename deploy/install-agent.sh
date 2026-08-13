@@ -5,6 +5,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 bundle_dir="$(cd -- "${script_dir}/.." && pwd)"
 source_binary="${bundle_dir}/bin/hyfleet-agent"
 source_ops_binary="${bundle_dir}/bin/hyfleet-agent-ops"
+source_reality_binary="${bundle_dir}/bin/sing-box-reality"
 source_unit="${script_dir}/systemd/hyfleet-agent.service"
 source_ops_socket="${script_dir}/systemd/hyfleet-agent-ops.socket"
 source_ops_service="${script_dir}/systemd/hyfleet-agent-ops@.service"
@@ -16,7 +17,7 @@ reality_core_config="/etc/sing-box/hyfleet-reality.json"
 reality_binary="/usr/bin/sing-box"
 reality_identity="/var/lib/hyfleet-agent-ops/reality-hyfleet-sing-box-reality.json"
 reality_applied="/var/lib/hyfleet-agent-ops/reality-hyfleet-sing-box-reality-applied.json"
-reality_sing_box_version="1.13.18-hyfleet-utls1.8.7"
+reality_sing_box_version="1.13.18-hyfleet-utls1.8.7-api2"
 
 server_url=""
 node_name=""
@@ -55,8 +56,8 @@ Options:
 
 The vless-reality adapter uses fixed service, config, binary, and identity
 paths. --service-unit and --core-config-path may only repeat those fixed values.
-The installer never downloads sing-box. It accepts only the pinned HyFleet
-1.13.18-hyfleet-utls1.8.7 build whose checksum is bundled with this release.
+The installer never downloads sing-box. The release contains the pinned HyFleet
+1.13.18-hyfleet-utls1.8.7-api2 build and its checksum manifest.
 EOF
 }
 
@@ -156,20 +157,24 @@ ops_elf_machine="$(od -An -t x1 -j 18 -N 2 "${source_ops_binary}" | tr -d '[:spa
   fail "hyfleet-agent-ops architecture does not match host $(uname -m)"
 
 validate_reality_binary() {
+  local binary_path="$1"
+  local require_root_owner="$2"
   local actual_hash expected_hash first_line manifest_matches reality_artifact
   reality_artifact="sing-box-${reality_sing_box_version}-linux-${architecture}"
   [[ -f "${source_reality_checksums}" && ! -L "${source_reality_checksums}" ]] ||
     fail "missing checksum manifest ${source_reality_checksums}; extract the complete release archive"
-  [[ -f "${reality_binary}" && -x "${reality_binary}" && ! -L "${reality_binary}" ]] ||
-    fail "vless-reality requires the regular executable ${reality_binary}; install the pinned HyFleet build first"
-  [[ "$(stat -c '%u:%g' "${reality_binary}")" == "0:0" ]] ||
-    fail "${reality_binary} must be owned by root:root"
-  [[ -z "$(find "${reality_binary}" -maxdepth 0 -perm /022 -print -quit)" ]] ||
-    fail "${reality_binary} must not be writable by group or other"
-  [[ "$(od -An -t x1 -N 4 "${reality_binary}" | tr -d '[:space:]')" == "7f454c46" ]] ||
-    fail "${reality_binary} is not a Linux ELF binary"
-  [[ "$(od -An -t x1 -j 18 -N 2 "${reality_binary}" | tr -d '[:space:]')" == "${expected_machine}" ]] ||
-    fail "${reality_binary} architecture does not match host $(uname -m)"
+  [[ -f "${binary_path}" && -x "${binary_path}" && ! -L "${binary_path}" ]] ||
+    fail "vless-reality requires a regular executable at ${binary_path}"
+  if [[ "${require_root_owner}" == true ]]; then
+    [[ "$(stat -c '%u:%g' "${binary_path}")" == "0:0" ]] ||
+      fail "${binary_path} must be owned by root:root"
+  fi
+  [[ -z "$(find "${binary_path}" -maxdepth 0 -perm /022 -print -quit)" ]] ||
+    fail "${binary_path} must not be writable by group or other"
+  [[ "$(od -An -t x1 -N 4 "${binary_path}" | tr -d '[:space:]')" == "7f454c46" ]] ||
+    fail "${binary_path} is not a Linux ELF binary"
+  [[ "$(od -An -t x1 -j 18 -N 2 "${binary_path}" | tr -d '[:space:]')" == "${expected_machine}" ]] ||
+    fail "${binary_path} architecture does not match host $(uname -m)"
   manifest_matches="$(awk -v artifact="${reality_artifact}" '
     length($1) == 64 && $1 ~ /^[0-9a-f]+$/ && $2 == artifact && NF == 2 {
       hash=$1
@@ -182,10 +187,10 @@ validate_reality_binary() {
   expected_hash="${manifest_matches}"
   [[ -n "${expected_hash}" ]] ||
     fail "checksum manifest has no unique entry for ${reality_artifact}"
-  actual_hash="$(sha256sum "${reality_binary}" | awk '{print $1}')"
+  actual_hash="$(sha256sum "${binary_path}" | awk '{print $1}')"
   [[ "${actual_hash}" == "${expected_hash}" ]] ||
-    fail "${reality_binary} checksum does not match the pinned HyFleet ${architecture} build"
-  first_line="$("${reality_binary}" version | sed -n '1p')"
+    fail "${binary_path} checksum does not match the pinned HyFleet ${architecture} build"
+  first_line="$("${binary_path}" version | sed -n '1p')"
   [[ "${first_line}" == "sing-box version ${reality_sing_box_version}" ]] ||
     fail "vless-reality requires sing-box ${reality_sing_box_version}; found ${first_line:-no version output}"
 }
@@ -332,6 +337,8 @@ EOF
     cat >> "${temporary_dir}/agent.yaml" <<EOF
 sing_box_binary_path: ${reality_binary}
 reality_identity_path: ${reality_identity}
+reality_api_url: http://127.0.0.1:18083
+reality_api_secret_env: HYFLEET_REALITY_API_SECRET
 EOF
   fi
   install -o root -g hyfleet-agent -m 0640 "${temporary_dir}/agent.yaml" "${config_path}"
@@ -355,7 +362,9 @@ if [[ "${configured_adapter}" == "sing_box_vless_reality" ]]; then
     fail "vless-reality requires binary ${reality_binary}"
   [[ "$(awk '$1 == "reality_identity_path:" { print $2; exit }' "${config_path}")" == "${reality_identity}" ]] ||
     fail "vless-reality requires identity path ${reality_identity}"
-  validate_reality_binary
+  [[ -f "${source_reality_binary}" ]] ||
+    fail "missing ${source_reality_binary}; extract the complete release archive"
+  validate_reality_binary "${source_reality_binary}" false
   getent group hyfleet-singbox >/dev/null 2>&1 || groupadd --system hyfleet-singbox
   if ! id -u hyfleet-singbox >/dev/null 2>&1; then
     useradd --system --gid hyfleet-singbox --home-dir /var/lib/hyfleet-singbox \
@@ -411,6 +420,12 @@ if [[ "${configured_adapter}" == "sing_box_vless_reality" ]]; then
     [[ "$(stat -c '%u:%g %a' "${reality_core_config}")" == "0:${reality_group_id} 640" ]] ||
       fail "managed Reality configuration has invalid ownership or permissions"
   fi
+  if [[ -e "${reality_binary}" || -L "${reality_binary}" ]]; then
+    validate_reality_binary "${reality_binary}" true
+  else
+    install -o root -g root -m 0755 "${source_reality_binary}" "${reality_binary}"
+    validate_reality_binary "${reality_binary}" true
+  fi
 fi
 
 install -o root -g root -m 0644 "${source_unit}" \
@@ -435,10 +450,6 @@ curl --fail --silent --show-error "${configured_server}/healthz" >/dev/null ||
   fail "cannot reach ${configured_server}/healthz with trusted TLS"
 
 environment_path="/etc/hyfleet/agent.env"
-if [[ "${configured_adapter}" == "sing_box_vless_reality" ]]; then
-  validate_reality_binary
-fi
-
 sui_token=""
 if [[ "${configured_adapter}" == "s_ui" ]]; then
   if [[ -f "${environment_path}" ]]; then
@@ -454,11 +465,34 @@ if [[ "${configured_adapter}" == "s_ui" ]]; then
   [[ "${sui_token}" =~ ^[A-Za-z0-9._~+/=:@%-]{1,1024}$ ]] || fail "invalid S-UI API token"
 fi
 
+reality_api_secret=""
+if [[ "${configured_adapter}" == "sing_box_vless_reality" ]]; then
+  if [[ -e "${environment_path}" || -L "${environment_path}" ]]; then
+    [[ -f "${environment_path}" && ! -L "${environment_path}" ]] ||
+      fail "${environment_path} must be a regular file, not a symbolic link"
+    agent_group_id="$(getent group hyfleet-agent | awk -F: '{ print $3; exit }')"
+    [[ "$(stat -c '%u:%g %a' "${environment_path}")" == "0:${agent_group_id} 640" ]] ||
+      fail "${environment_path} has invalid ownership or permissions"
+    reality_secret_count="$(awk -F= '$1 == "HYFLEET_REALITY_API_SECRET" { count++ } END { print count+0 }' "${environment_path}")"
+    [[ "${reality_secret_count}" -le 1 ]] ||
+      fail "${environment_path} contains duplicate Reality API secret entries"
+    reality_api_secret="$(awk -F= '$1 == "HYFLEET_REALITY_API_SECRET" { sub(/^[^=]*=/, ""); print; exit }' "${environment_path}")"
+  fi
+  if [[ -z "${reality_api_secret}" ]]; then
+    reality_api_secret="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')"
+  fi
+  [[ "${reality_api_secret}" =~ ^[A-Za-z0-9_-]{43,128}$ ]] ||
+    fail "invalid Reality API secret in ${environment_path}"
+fi
+
 write_agent_environment() {
   local enrollment_token_value="${1:-}"
   : > "${temporary_dir}/agent.env"
   if [[ -n "${sui_token}" ]]; then
     printf 'HYFLEET_SUI_TOKEN=%s\n' "${sui_token}" >> "${temporary_dir}/agent.env"
+  fi
+  if [[ -n "${reality_api_secret}" ]]; then
+    printf 'HYFLEET_REALITY_API_SECRET=%s\n' "${reality_api_secret}" >> "${temporary_dir}/agent.env"
   fi
   if [[ -n "${enrollment_token_value}" ]]; then
     printf 'HYFLEET_ENROLLMENT_TOKEN=%s\n' "${enrollment_token_value}" >> "${temporary_dir}/agent.env"
@@ -522,6 +556,7 @@ fi
 
 write_agent_environment
 unset sui_token
+unset reality_api_secret
 systemctl restart hyfleet-agent
 for _ in {1..10}; do
   if systemctl is-active --quiet hyfleet-agent; then

@@ -43,6 +43,8 @@ type Agent struct {
 	SUIToken             string
 	SingBoxBinaryPath    string
 	RealityIdentityPath  string
+	RealityAPIURL        string
+	RealityAPISecret     string
 	OperationsStateDir   string
 	BackupDir            string
 }
@@ -73,6 +75,8 @@ type agentFile struct {
 	SUITokenEnv           string `yaml:"s_ui_token_env"`
 	SingBoxBinaryPath     string `yaml:"sing_box_binary_path"`
 	RealityIdentityPath   string `yaml:"reality_identity_path"`
+	RealityAPIURL         string `yaml:"reality_api_url"`
+	RealityAPISecretEnv   string `yaml:"reality_api_secret_env"`
 	OperationsStateDir    string `yaml:"operations_state_dir"`
 	BackupDir             string `yaml:"backup_dir"`
 }
@@ -95,6 +99,7 @@ func LoadAgent(path string) (Agent, error) {
 		TrafficEvery:          "30s",
 		SUITokenEnv:           "HYFLEET_SUI_TOKEN",
 		OperationsSocketPath:  "/run/hyfleet-agent-ops.sock",
+		RealityAPISecretEnv:   "HYFLEET_REALITY_API_SECRET",
 	}
 	if err := decodeYAML(data, &file); err != nil {
 		return Agent{}, fmt.Errorf("parse agent config: %w", err)
@@ -218,6 +223,15 @@ func LoadAgent(path string) (Agent, error) {
 		}
 	}
 	if file.AdapterType == "sing_box_vless_reality" {
+		if file.RealityAPIURL == "" {
+			file.RealityAPIURL = "http://127.0.0.1:18083"
+		}
+		if err := validateLoopbackHTTPOrigin(file.RealityAPIURL); err != nil {
+			return Agent{}, fmt.Errorf("reality_api_url: %w", err)
+		}
+		if !environmentNamePattern.MatchString(file.RealityAPISecretEnv) {
+			return Agent{}, errors.New("reality_api_secret_env is not a valid environment variable name")
+		}
 		if file.OperationsStateDir == "" {
 			file.OperationsStateDir = "/var/lib/hyfleet-agent-ops"
 		}
@@ -305,6 +319,8 @@ func LoadAgent(path string) (Agent, error) {
 		SUIToken:             os.Getenv(file.SUITokenEnv),
 		SingBoxBinaryPath:    file.SingBoxBinaryPath,
 		RealityIdentityPath:  file.RealityIdentityPath,
+		RealityAPIURL:        strings.TrimRight(file.RealityAPIURL, "/"),
+		RealityAPISecret:     os.Getenv(file.RealityAPISecretEnv),
 		OperationsStateDir:   file.OperationsStateDir,
 		BackupDir:            file.BackupDir,
 	}, nil

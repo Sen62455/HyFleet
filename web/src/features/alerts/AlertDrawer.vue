@@ -25,6 +25,8 @@ const alertLabels: Record<AlertRecord["type"], string> = {
   sync_failed: "同步失败",
   sync_stuck: "同步超时",
   operation_failed: "运维操作失败",
+  traffic_quota_warning: "节点流量接近额度",
+  traffic_quota_exhausted: "节点流量额度已用尽",
 };
 </script>
 

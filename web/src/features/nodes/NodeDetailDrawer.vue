@@ -92,15 +92,7 @@ function realityHandshakeLabel(node: NodeRecord) {
         <div class="detail-section__heading">
           <h2>用户流量与在线</h2>
           <n-tag
-            v-if="node.adapter_type === 'sing_box_vless_reality'"
-            type="warning"
-            size="small"
-            :bordered="false"
-          >
-            MVP 能力受限
-          </n-tag>
-          <n-tag
-            v-else-if="node.adapter_type === 'native_hysteria2'"
+            v-if="node.adapter_type === 'native_hysteria2' || node.adapter_type === 'sing_box_vless_reality'"
             :type="node.usage_available ? 'success' : (node.usage_enabled ? 'error' : 'warning')"
             size="small"
             :bordered="false"
@@ -108,20 +100,13 @@ function realityHandshakeLabel(node: NodeRecord) {
             {{ node.usage_available ? "统计正常" : (node.usage_enabled ? "统计异常" : "统计未配置") }}
           </n-tag>
         </div>
-        <dl v-if="node.adapter_type === 'sing_box_vless_reality'" class="detail-list">
-          <div><dt>按用户流量</dt><dd>暂不支持</dd></div>
-          <div><dt>在线状态</dt><dd>暂不支持</dd></div>
-          <div><dt>踢下线</dt><dd>暂不支持</dd></div>
-          <div><dt>额度执行</dt><dd>不可用</dd></div>
-        </dl>
-        <template v-else>
         <dl class="detail-list detail-list--two">
-          <div><dt>在线用户 / 设备</dt><dd>{{ node.online_users }} / {{ node.online_connections }}</dd></div>
+          <div><dt>在线用户 / 活跃连接</dt><dd>{{ node.online_users }} / {{ node.online_connections }}</dd></div>
           <div><dt>未知在线用户</dt><dd>{{ node.online_unknown_users }}</dd></div>
           <div><dt>上传</dt><dd>{{ formatBytes(node.traffic_upload_bytes) }}</dd></div>
           <div><dt>下载</dt><dd>{{ formatBytes(node.traffic_download_bytes) }}</dd></div>
           <div><dt>未归属流量</dt><dd>{{ formatBytes(node.traffic_unattributed_bytes) }}</dd></div>
-          <div><dt>待上报批次</dt><dd>{{ node.usage_outbox_batches }}</dd></div>
+          <div><dt>当前周期有效用量</dt><dd>{{ formatBytes(node.traffic_used_bytes) }}</dd></div>
         </dl>
         <dl class="detail-list">
           <div><dt>统计采样</dt><dd>{{ relativeTime(node.usage_sampled_at) }}</dd></div>
@@ -129,7 +114,6 @@ function realityHandshakeLabel(node: NodeRecord) {
           <div><dt>在线采样</dt><dd>{{ relativeTime(node.online_sampled_at) }}</dd></div>
           <div v-if="node.usage_error_code"><dt>统计错误</dt><dd>{{ node.usage_error_code }}</dd></div>
         </dl>
-        </template>
       </section>
 
       <section class="detail-section">

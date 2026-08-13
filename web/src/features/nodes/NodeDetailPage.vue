@@ -10,7 +10,7 @@ import {
   Pencil,
   RefreshCw,
 } from "@lucide/vue";
-import { NButton, NIcon, NSpin, NTag, NTooltip } from "naive-ui";
+import { NButton, NIcon, NInputNumber, NProgress, NSelect, NSpin, NTooltip, useMessage } from "naive-ui";
 import { api, APIError } from "../../api";
 import MetricChart, { type ChartSeries } from "../../components/MetricChart.vue";
 import NodeSignalRail from "../../components/NodeSignalRail.vue";
@@ -30,6 +30,7 @@ import NodeOperationsPanel from "./NodeOperationsPanel.vue";
 import SUIAdapterPanel from "./SUIAdapterPanel.vue";
 
 const props = defineProps<{ node: NodeRecord }>();
+const message = useMessage();
 const emit = defineEmits<{
   back: [];
   edit: [node: NodeRecord];
@@ -44,6 +45,18 @@ const metrics = ref<NodeMetricSeries>({ range: "24h", step_seconds: 60, samples:
 const metricsLoading = ref(false);
 const metricsError = ref("");
 const telemetryPanel = ref<InstanceType<typeof HostTelemetryPanel> | null>(null);
+type TrafficUnit = "GiB" | "TiB";
+const calibrationValue = ref(0);
+const calibrationUnit = ref<TrafficUnit>("GiB");
+const calibrationWorking = ref(false);
+const trafficUnitOptions = [
+  { label: "GiB", value: "GiB" },
+  { label: "TiB", value: "TiB" },
+];
+const trafficUnitBytes: Record<TrafficUnit, number> = {
+  GiB: 1024 ** 3,
+  TiB: 1024 ** 4,
+};
 const ranges: { value: MetricRange; label: string }[] = [
   { value: "1h", label: "1 小时" },
   { value: "6h", label: "6 小时" },
@@ -54,6 +67,24 @@ const ranges: { value: MetricRange; label: string }[] = [
 const selectedRangeLabel = computed(() => ranges.find((item) => item.value === metricRange.value)?.label ?? "24 小时");
 const memoryPercent = computed(() => percent(props.node.memory_used_bytes, props.node.memory_total_bytes));
 const diskPercent = computed(() => percent(props.node.disk_used_bytes, props.node.disk_total_bytes));
+const cycleProxyUsed = computed(
+  () => props.node.traffic_cycle_upload_bytes + props.node.traffic_cycle_download_bytes,
+);
+const trafficRemaining = computed(() =>
+  props.node.traffic_limit_bytes > 0
+    ? Math.max(0, props.node.traffic_limit_bytes - props.node.traffic_used_bytes)
+    : 0,
+);
+const trafficQuotaPercent = computed(() =>
+  props.node.traffic_limit_bytes > 0
+    ? percent(props.node.traffic_used_bytes, props.node.traffic_limit_bytes)
+    : 0,
+);
+const trafficQuotaLabel = computed(() => {
+  if (props.node.traffic_limit_bytes <= 0) return "不限额";
+  const raw = (props.node.traffic_used_bytes / props.node.traffic_limit_bytes) * 100;
+  return `${raw.toFixed(raw >= 10 ? 0 : 1)}%`;
+});
 
 function meterWidth(value: number) {
   return `${Math.max(0, Math.min(100, value))}%`;
@@ -112,6 +143,47 @@ function endpointLabel(node: NodeRecord) {
 function realityHandshakeLabel(node: NodeRecord) {
   if (!node.reality?.handshake_server) return "未配置";
   return `${node.reality.handshake_server}:${node.reality.handshake_port || 443}`;
+}
+
+function utcDateLabel(value: Date) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "UTC",
+  }).format(value);
+}
+
+function trafficCycleLabel(node: NodeRecord) {
+  if (!node.traffic_cycle_started_at) return "等待首批流量数据";
+  const start = new Date(node.traffic_cycle_started_at);
+  if (!Number.isFinite(start.getTime())) return "周期时间未知";
+  const nextMonth = start.getUTCMonth() + 1;
+  const lastDay = new Date(Date.UTC(start.getUTCFullYear(), nextMonth + 1, 0)).getUTCDate();
+  const end = new Date(Date.UTC(
+    start.getUTCFullYear(),
+    nextMonth,
+    Math.min(node.traffic_reset_day, lastDay),
+  ));
+  return `${utcDateLabel(start)} - ${utcDateLabel(end)} UTC`;
+}
+
+async function calibrateTraffic() {
+  calibrationWorking.value = true;
+  try {
+    const bytes = Math.round(calibrationValue.value * trafficUnitBytes[calibrationUnit.value]);
+    await api.calibrateNodeTraffic(props.node.id, bytes);
+    emit("changed");
+    message.success("运营商流量已校准");
+  } catch (error) {
+    if (error instanceof APIError && error.status === 401) {
+      emit("session-expired");
+      return;
+    }
+    message.error(error instanceof APIError ? error.message : "流量校准失败。");
+  } finally {
+    calibrationWorking.value = false;
+  }
 }
 
 let refreshTimer: number | undefined;
@@ -300,27 +372,60 @@ watch(() => props.node.id, () => void loadMetrics());
         <section class="detail-band">
           <div class="detail-section__heading">
             <h2>用户流量与在线</h2>
-            <n-tag
-              v-if="node.adapter_type === 'sing_box_vless_reality'"
-              type="warning"
-              size="small"
-              :bordered="false"
-            >MVP 能力受限</n-tag>
           </div>
-          <dl v-if="node.adapter_type === 'sing_box_vless_reality'" class="detail-list detail-list--two">
-            <div><dt>按用户流量</dt><dd>暂不支持</dd></div>
-            <div><dt>额度执行</dt><dd>不可用</dd></div>
-            <div><dt>在线状态</dt><dd>暂不支持</dd></div>
-            <div><dt>踢下线</dt><dd>暂不支持</dd></div>
-          </dl>
-          <dl v-else class="detail-list detail-list--two">
-            <div><dt>在线用户 / 连接</dt><dd>{{ node.online_users }} / {{ node.online_connections }}</dd></div>
+          <dl class="detail-list detail-list--two">
+            <div><dt>在线用户 / 活跃连接</dt><dd>{{ node.online_users }} / {{ node.online_connections }}</dd></div>
             <div><dt>未识别用户</dt><dd>{{ node.online_unknown_users }}</dd></div>
             <div><dt>代理上传</dt><dd>{{ formatBytes(node.traffic_upload_bytes) }}</dd></div>
             <div><dt>代理下载</dt><dd>{{ formatBytes(node.traffic_download_bytes) }}</dd></div>
-            <div><dt>网卡接收总量</dt><dd>{{ formatBytes(node.network_rx_bytes_total) }}</dd></div>
-            <div><dt>网卡发送总量</dt><dd>{{ formatBytes(node.network_tx_bytes_total) }}</dd></div>
+            <div><dt>最近流量上报</dt><dd>{{ relativeTime(node.traffic_last_report_at) }}</dd></div>
+            <div><dt>最近在线采样</dt><dd>{{ relativeTime(node.online_sampled_at) }}</dd></div>
           </dl>
+        </section>
+        <section class="detail-band node-traffic-budget">
+          <div class="detail-section__heading">
+            <h2>月流量额度</h2>
+            <span>{{ trafficCycleLabel(node) }}</span>
+          </div>
+          <div class="node-traffic-budget__summary">
+            <strong>{{ formatBytes(node.traffic_used_bytes) }}</strong>
+            <span>/ {{ node.traffic_limit_bytes > 0 ? formatBytes(node.traffic_limit_bytes) : "不限额" }}</span>
+            <b>{{ trafficQuotaLabel }}</b>
+          </div>
+          <n-progress
+            v-if="node.traffic_limit_bytes > 0"
+            type="line"
+            :percentage="trafficQuotaPercent"
+            :show-indicator="false"
+            :status="node.traffic_used_bytes >= node.traffic_limit_bytes ? 'error' : 'success'"
+          />
+          <dl class="detail-list detail-list--two">
+            <div><dt>周期代理上传</dt><dd>{{ formatBytes(node.traffic_cycle_upload_bytes) }}</dd></div>
+            <div><dt>周期代理下载</dt><dd>{{ formatBytes(node.traffic_cycle_download_bytes) }}</dd></div>
+            <div><dt>双向代理合计</dt><dd>{{ formatBytes(cycleProxyUsed) }}</dd></div>
+            <div><dt>剩余额度</dt><dd>{{ node.traffic_limit_bytes > 0 ? formatBytes(trafficRemaining) : "不限额" }}</dd></div>
+            <div><dt>运营商校准值</dt><dd>{{ node.traffic_calibration_bytes === null ? "尚未校准" : formatBytes(node.traffic_calibration_bytes) }}</dd></div>
+            <div><dt>最近校准</dt><dd>{{ relativeTime(node.traffic_calibrated_at) }}</dd></div>
+          </dl>
+          <div class="node-traffic-budget__calibration">
+            <n-input-number
+              v-model:value="calibrationValue"
+              :min="0"
+              :max="8388607"
+              :precision="2"
+              aria-label="运营商本周期已用流量"
+              placeholder="运营商本周期已用量"
+            />
+            <n-select
+              v-model:value="calibrationUnit"
+              :options="trafficUnitOptions"
+              :consistent-menu-width="false"
+              aria-label="运营商流量单位"
+            />
+            <n-button type="primary" :loading="calibrationWorking" @click="calibrateTraffic">
+              校准用量
+            </n-button>
+          </div>
         </section>
       </div>
       <div class="node-detail-column">

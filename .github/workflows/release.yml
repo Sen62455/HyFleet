@@ -76,7 +76,10 @@ jobs:
           cache: true
           cache-dependency-path: web/pnpm-lock.yaml
           package-json-file: web/package.json
-      - name: Build release bundle
+      - name: Build pinned Reality data plane
+        shell: pwsh
+        run: bash scripts/build-sing-box-reality.sh
+      - name: Package release bundle
         shell: pwsh
         run: >-
           ./scripts/build-release.ps1

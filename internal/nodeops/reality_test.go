@@ -1,6 +1,7 @@
 package nodeops
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -70,6 +71,7 @@ func testRealityHelper(t *testing.T) (*Helper, RealityApplyRequest, string) {
 			ListenPort: 18443, ServerName: "www.microsoft.com",
 			HandshakeServer: "www.microsoft.com", HandshakeServerPort: 443,
 			Flow: "xtls-rprx-vision", Network: "tcp", KeyGeneration: 1,
+			APISecret: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		},
 		Users: []RealityApplyUser{{UserID: uuid.NewString(), UUID: uuid.NewString()}},
 	}
@@ -151,6 +153,79 @@ func TestRealityApplyChecksActivatesAndReplaysWithoutSecrets(t *testing.T) {
 	if replayed.Status != "succeeded" || replayed.Reality == nil ||
 		replayed.Reality.PublicKey != result.Reality.PublicKey || commands != 3 {
 		t.Fatalf("idempotent replay = %#v, commands=%d", replayed, commands)
+	}
+}
+
+func TestRealityApplyWithUnchangedConfigChecksHealthWithoutRestart(t *testing.T) {
+	helper, request, configPath := testRealityHelper(t)
+	helper.RunCommand = successfulRealityCommands(t, helper)
+	first := helper.Handle(t.Context(), HelperRequest{RealityApply: &request})
+	if first.Status != "succeeded" {
+		t.Fatalf("initial Reality apply = %#v", first)
+	}
+
+	request.Version = 2
+	request.RequestID = uuid.NewString()
+	request.SnapshotSHA256 = base64.RawURLEncoding.EncodeToString(bytesFilled(32, 9))
+	listenerChecks := 0
+	helper.CheckTCPListener = func(_ context.Context, port int) error {
+		listenerChecks++
+		if port != request.Settings.ListenPort {
+			t.Fatalf("listener port = %d, want %d", port, request.Settings.ListenPort)
+		}
+		return nil
+	}
+	commands := 0
+	helper.RunCommand = func(_ context.Context, name string, arguments ...string) ([]byte, error) {
+		if isRealityVersionCommand(helper, name, arguments) {
+			return supportedRealityVersionOutput(), nil
+		}
+		commands++
+		if name != "systemctl" || strings.Join(arguments, " ") !=
+			"is-active hyfleet-sing-box-reality.service" {
+			t.Fatalf("unchanged apply invoked disruptive command: %s %v", name, arguments)
+		}
+		return []byte("active\n"), nil
+	}
+	result := helper.Handle(t.Context(), HelperRequest{RealityApply: &request})
+	if result.Status != "succeeded" || commands != 1 || listenerChecks != 1 || result.Backup != nil {
+		t.Fatalf("unchanged Reality apply = %#v; commands=%d listener_checks=%d", result, commands, listenerChecks)
+	}
+	configured, err := os.ReadFile(configPath)
+	if err != nil || !strings.Contains(string(configured), request.Users[0].UUID) {
+		t.Fatalf("unchanged Reality config was lost: %v", err)
+	}
+}
+
+func TestRealityApplyWithUnchangedConfigFailsWhenServiceIsUnhealthy(t *testing.T) {
+	helper, request, _ := testRealityHelper(t)
+	helper.RunCommand = successfulRealityCommands(t, helper)
+	first := helper.Handle(t.Context(), HelperRequest{RealityApply: &request})
+	if first.Status != "succeeded" {
+		t.Fatalf("initial Reality apply = %#v", first)
+	}
+
+	request.Version = 2
+	request.RequestID = uuid.NewString()
+	request.SnapshotSHA256 = base64.RawURLEncoding.EncodeToString(bytesFilled(32, 10))
+	helper.RunCommand = func(_ context.Context, name string, arguments ...string) ([]byte, error) {
+		if isRealityVersionCommand(helper, name, arguments) {
+			return supportedRealityVersionOutput(), nil
+		}
+		if name != "systemctl" || strings.Join(arguments, " ") !=
+			"is-active hyfleet-sing-box-reality.service" {
+			t.Fatalf("unexpected health command: %s %v", name, arguments)
+		}
+		return []byte("inactive\n"), errors.New("inactive")
+	}
+	result := helper.Handle(t.Context(), HelperRequest{RealityApply: &request})
+	if result.Status != "failed" || result.ErrorCode != "reality_health_failed" ||
+		result.RolledBack || result.Backup != nil {
+		t.Fatalf("unhealthy unchanged Reality apply = %#v", result)
+	}
+	applied, ok, err := helper.loadRealityApplied()
+	if err != nil || !ok || applied.Version != 1 {
+		t.Fatalf("failed health apply advanced local state: %#v, %v, %v", applied, ok, err)
 	}
 }
 
@@ -888,8 +963,8 @@ func TestSupportedRealitySingBoxVersionRequiresHyFleetBuild(t *testing.T) {
 		output    string
 		supported bool
 	}{
-		{name: "HyFleet build", output: "sing-box version 1.13.18-hyfleet-utls1.8.7\n", supported: true},
-		{name: "HyFleet build with details", output: "sing-box version 1.13.18-hyfleet-utls1.8.7\n\nEnvironment: go1.26.5 linux/amd64\n", supported: true},
+		{name: "HyFleet build", output: "sing-box version 1.13.18-hyfleet-utls1.8.7-api2\n", supported: true},
+		{name: "HyFleet build with details", output: "sing-box version 1.13.18-hyfleet-utls1.8.7-api2\n\nEnvironment: go1.26.5 linux/amd64\n", supported: true},
 		{name: "official build", output: "sing-box version 1.13.18\n"},
 		{name: "different dependency build", output: "sing-box version 1.13.18-hyfleet-utls1.8.6\n"},
 		{name: "extra first-line field", output: "sing-box version 1.13.18-hyfleet-utls1.8.7 unexpected\n"},
@@ -899,6 +974,19 @@ func TestSupportedRealitySingBoxVersionRequiresHyFleetBuild(t *testing.T) {
 				t.Fatalf("isSupportedRealitySingBoxVersion() = %v, want %v", got, testCase.supported)
 			}
 		})
+	}
+}
+
+func TestRealityProductionBinaryChecksumRejectsTampering(t *testing.T) {
+	if expectedRealitySingBoxSHA256() == "" {
+		t.Skip("unsupported architecture")
+	}
+	payload := []byte("tampered Reality binary")
+	if validRealitySingBoxChecksum("/usr/bin/sing-box", bytes.NewReader(payload), int64(len(payload))) {
+		t.Fatal("tampered production binary passed the pinned checksum guard")
+	}
+	if !validRealitySingBoxChecksum("/tmp/test-sing-box", bytes.NewReader(payload), int64(len(payload))) {
+		t.Fatal("test path unexpectedly enforced the production checksum guard")
 	}
 }
 

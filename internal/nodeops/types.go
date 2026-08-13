@@ -57,6 +57,7 @@ type RealityApplySettings struct {
 	Flow                string `json:"flow"`
 	Network             string `json:"network"`
 	KeyGeneration       int64  `json:"key_generation"`
+	APISecret           string `json:"api_secret"`
 }
 
 type RealityApplyUser struct {

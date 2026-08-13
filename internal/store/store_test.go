@@ -106,6 +106,70 @@ func TestHeartbeatPoolSurvivesBusyReadConnection(t *testing.T) {
 	}
 }
 
+func TestHeartbeatCapabilitiesRefreshAndMissingFieldPreservation(t *testing.T) {
+	database, err := Open(t.Context(), filepath.Join(t.TempDir(), "server.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer database.Close()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	node, err := database.CreateNode(t.Context(), NewNode{
+		ID: uuid.NewString(), Name: "heartbeat-capabilities",
+		AdapterType: "native_hysteria2", Enabled: true, Now: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	installationID := uuid.NewString()
+	if _, err := database.DB().ExecContext(t.Context(), `
+		UPDATE nodes SET agent_installation_id = ? WHERE id = ?
+	`, installationID, node.ID); err != nil {
+		t.Fatalf("bind node: %v", err)
+	}
+	if _, err := database.DB().ExecContext(t.Context(), `
+		INSERT INTO node_agent_capabilities(node_id, capability, reported_at)
+		VALUES (?, 'enrollment_capability', ?)
+	`, node.ID, now.UnixMilli()); err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+	identity := AgentIdentity{
+		NodeID: node.ID, InstallationID: installationID,
+		AdapterType: "native_hysteria2", Enabled: true,
+	}
+	heartbeat := protocol.HeartbeatRequest{
+		InstallationID: installationID,
+		Agent:          protocol.AgentInfo{Version: "test", Protocol: protocol.MajorVersion},
+		Core:           protocol.CoreInfo{Name: "hysteria", Running: true},
+		Host:           protocol.HostMetrics{MemoryTotalBytes: 1, DiskTotalBytes: 1},
+		SampledAt:      now,
+	}
+	if _, err := database.RecordHeartbeat(t.Context(), identity, heartbeat, now); err != nil {
+		t.Fatalf("RecordHeartbeat(missing capabilities) error = %v", err)
+	}
+	capabilities, err := database.ListAgentCapabilities(t.Context(), node.ID)
+	if err != nil || fmt.Sprint(capabilities) != "[enrollment_capability]" {
+		t.Fatalf("capabilities after omitted field = (%v, %v)", capabilities, err)
+	}
+	heartbeat.Capabilities = []string{"runtime_capability", "runtime_capability"}
+	heartbeat.SampledAt = now.Add(time.Minute)
+	if _, err := database.RecordHeartbeat(t.Context(), identity, heartbeat, now.Add(time.Minute)); err != nil {
+		t.Fatalf("RecordHeartbeat(refresh capabilities) error = %v", err)
+	}
+	capabilities, err = database.ListAgentCapabilities(t.Context(), node.ID)
+	if err != nil || fmt.Sprint(capabilities) != "[runtime_capability]" {
+		t.Fatalf("capabilities after refresh = (%v, %v)", capabilities, err)
+	}
+	heartbeat.Capabilities = []string{}
+	heartbeat.SampledAt = now.Add(2 * time.Minute)
+	if _, err := database.RecordHeartbeat(t.Context(), identity, heartbeat, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("RecordHeartbeat(clear capabilities) error = %v", err)
+	}
+	capabilities, err = database.ListAgentCapabilities(t.Context(), node.ID)
+	if err != nil || len(capabilities) != 0 {
+		t.Fatalf("capabilities after explicit empty field = (%v, %v)", capabilities, err)
+	}
+}
+
 func TestEnrollmentTokenRequiresExistingAdministrator(t *testing.T) {
 	database, err := Open(context.Background(), filepath.Join(t.TempDir(), "server.db"))
 	if err != nil {

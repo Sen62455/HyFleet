@@ -9,6 +9,8 @@ sing_box_binary_path: /usr/bin/sing-box
 operations_state_dir: /var/lib/hyfleet-agent-ops
 backup_dir: /var/lib/hyfleet-backups
 reality_identity_path: /var/lib/hyfleet-agent-ops/reality-hyfleet-sing-box-reality.json
+reality_api_url: http://127.0.0.1:18083
+reality_api_secret_env: HYFLEET_REALITY_API_SECRET
 operations_socket_path: /run/hyfleet-agent-ops.sock
 state_path: /var/lib/hyfleet-agent/agent-state.json
 local_database_path: /var/lib/hyfleet-agent/agent.db

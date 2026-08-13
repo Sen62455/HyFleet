@@ -76,6 +76,80 @@ func TestTrafficOutboxPersistsDeltasAndRotatesAfterCounterReset(t *testing.T) {
 	}
 }
 
+func TestTrafficCounterEpochChangeCountsNewProcessWithoutComparingOldBaseline(t *testing.T) {
+	ctx := context.Background()
+	local, err := openLocalStore(ctx, filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("openLocalStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = local.Close() })
+	installationID := uuid.NewString()
+	userID := uuid.NewString()
+	firstCounterEpoch := uuid.NewString()
+	secondCounterEpoch := uuid.NewString()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	if batches, err := local.recordTrafficSample(ctx, installationID, map[string]trafficCounters{
+		userID: {TX: 100, RX: 200},
+	}, now, firstCounterEpoch); err != nil || len(batches) != 0 {
+		t.Fatalf("initial epoch baseline = %#v, error = %v", batches, err)
+	}
+	first, err := local.recordTrafficSample(ctx, installationID, map[string]trafficCounters{
+		userID: {TX: 150, RX: 260},
+	}, now.Add(time.Second), firstCounterEpoch)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first epoch traffic = %#v, error = %v", first, err)
+	}
+	assertTrafficDelta(t, first[0], userID, 50, 60)
+
+	second, err := local.recordTrafficSample(ctx, installationID, map[string]trafficCounters{
+		userID: {TX: 500, RX: 700},
+	}, now.Add(2*time.Second), secondCounterEpoch)
+	if err != nil || len(second) != 1 {
+		t.Fatalf("new counter epoch traffic = %#v, error = %v", second, err)
+	}
+	assertTrafficDelta(t, second[0], userID, 500, 700)
+	if second[0].SourceEpoch == first[0].SourceEpoch || second[0].Sequence != 1 {
+		t.Fatalf("new counter epoch source = %s/%d, old = %s",
+			second[0].SourceEpoch, second[0].Sequence, first[0].SourceEpoch)
+	}
+}
+
+func TestFirstCounterEpochAfterUpgradeRotatesLegacyBaseline(t *testing.T) {
+	ctx := context.Background()
+	local, err := openLocalStore(ctx, filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatalf("openLocalStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = local.Close() })
+	installationID := uuid.NewString()
+	userID := uuid.NewString()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if batches, err := local.recordTrafficSample(ctx, installationID, map[string]trafficCounters{
+		userID: {TX: 100, RX: 200},
+	}, now); err != nil || len(batches) != 0 {
+		t.Fatalf("legacy baseline = %#v, error = %v", batches, err)
+	}
+	legacy, err := local.recordTrafficSample(ctx, installationID, map[string]trafficCounters{
+		userID: {TX: 150, RX: 260},
+	}, now.Add(time.Second))
+	if err != nil || len(legacy) != 1 {
+		t.Fatalf("legacy traffic = %#v, error = %v", legacy, err)
+	}
+
+	upgraded, err := local.recordTrafficSample(ctx, installationID, map[string]trafficCounters{
+		userID: {TX: 500, RX: 700},
+	}, now.Add(2*time.Second), uuid.NewString())
+	if err != nil || len(upgraded) != 1 {
+		t.Fatalf("first epoch-aware traffic = %#v, error = %v", upgraded, err)
+	}
+	assertTrafficDelta(t, upgraded[0], userID, 500, 700)
+	if upgraded[0].SourceEpoch == legacy[0].SourceEpoch || upgraded[0].Sequence != 1 {
+		t.Fatalf("upgrade counter epoch source = %s/%d, old = %s",
+			upgraded[0].SourceEpoch, upgraded[0].Sequence, legacy[0].SourceEpoch)
+	}
+}
+
 func TestTrafficSampleSplitsOutboxAtProtocolLimit(t *testing.T) {
 	ctx := context.Background()
 	local, err := openLocalStore(ctx, filepath.Join(t.TempDir(), "agent.db"))

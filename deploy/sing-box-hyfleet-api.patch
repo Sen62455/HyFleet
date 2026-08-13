@@ -1,0 +1,190 @@
+diff --git a/experimental/clashapi/hyfleet.go b/experimental/clashapi/hyfleet.go
+new file mode 100644
+index 0000000..40c20bf
+--- /dev/null
++++ b/experimental/clashapi/hyfleet.go
+@@ -0,0 +1,32 @@
++package clashapi
++
++import (
++	"net/http"
++
++	"github.com/sagernet/sing-box/experimental/clashapi/trafficontrol"
++
++	"github.com/go-chi/chi/v5"
++	"github.com/go-chi/render"
++	"github.com/gofrs/uuid/v5"
++)
++
++func hyFleetRouter(trafficManager *trafficontrol.Manager) http.Handler {
++	router := chi.NewRouter()
++	router.Get("/users", func(writer http.ResponseWriter, request *http.Request) {
++		render.JSON(writer, request, map[string]any{
++			"epoch": trafficManager.UserCounterEpoch(), "users": trafficManager.UserSnapshots(),
++		})
++	})
++	router.Delete("/users/{user}", func(writer http.ResponseWriter, request *http.Request) {
++		user := chi.URLParam(request, "user")
++		parsed, err := uuid.FromString(user)
++		if err != nil || parsed.String() != user {
++			render.Status(request, http.StatusBadRequest)
++			render.JSON(writer, request, ErrBadRequest)
++			return
++		}
++		closed := trafficManager.CloseUser(user)
++		render.JSON(writer, request, map[string]any{"closed": closed})
++	})
++	return router
++}
+diff --git a/experimental/clashapi/server.go b/experimental/clashapi/server.go
+index 950dca0..012e6e5 100644
+--- a/experimental/clashapi/server.go
++++ b/experimental/clashapi/server.go
+@@ -103,3 +103,13 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
+-	allowedOrigins := options.AccessControlAllowOrigin
+-	if len(allowedOrigins) == 0 {
+-		allowedOrigins = []string{"*"}
++	if !options.HyFleetOnly {
++		allowedOrigins := options.AccessControlAllowOrigin
++		if len(allowedOrigins) == 0 {
++			allowedOrigins = []string{"*"}
++		}
++		cors := cors.New(cors.Options{
++			AllowedOrigins:      allowedOrigins,
++			AllowedMethods:      []string{"GET", "POST", "PUT", "PATCH", "DELETE"},
++			AllowedHeaders:      []string{"Content-Type", "Authorization"},
++			AllowPrivateNetwork: options.AccessControlAllowPrivateNetwork,
++			MaxAge:              300,
++		})
++		chiRouter.Use(cors.Handler)
+@@ -107,8 +116,0 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
+-	cors := cors.New(cors.Options{
+-		AllowedOrigins:      allowedOrigins,
+-		AllowedMethods:      []string{"GET", "POST", "PUT", "PATCH", "DELETE"},
+-		AllowedHeaders:      []string{"Content-Type", "Authorization"},
+-		AllowPrivateNetwork: options.AccessControlAllowPrivateNetwork,
+-		MaxAge:              300,
+-	})
+-	chiRouter.Use(cors.Handler)
+@@ -116,0 +119,4 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
++		if options.HyFleetOnly {
++			r.Mount("/hyfleet/v1", hyFleetRouter(trafficManager))
++			return
++		}
+diff --git a/experimental/clashapi/trafficontrol/manager.go b/experimental/clashapi/trafficontrol/manager.go
+index 6763436..d810ca1 100644
+--- a/experimental/clashapi/trafficontrol/manager.go
++++ b/experimental/clashapi/trafficontrol/manager.go
+@@ -4,0 +5 @@ import (
++	"sort"
+@@ -42,0 +44,3 @@ type Manager struct {
++	usersAccess             sync.Mutex
++	userCounterEpoch        string
++	users                   map[string]*UserSnapshot
+@@ -49,0 +54,7 @@ type Manager struct {
++type UserSnapshot struct {
++	User        string `json:"user"`
++	Upload      int64  `json:"upload"`
++	Download    int64  `json:"download"`
++	Connections int64  `json:"connections"`
++}
++
+@@ -60,0 +72,6 @@ func (m *Manager) Join(c Tracker) {
++	if metadata.Metadata.User != "" {
++		m.usersAccess.Lock()
++		user := m.loadOrCreateUser(metadata.Metadata.User)
++		user.Connections++
++		m.usersAccess.Unlock()
++	}
+@@ -73,0 +91,8 @@ func (m *Manager) Leave(c Tracker) {
++		if metadata.Metadata.User != "" {
++			m.usersAccess.Lock()
++			user := m.loadOrCreateUser(metadata.Metadata.User)
++			if user.Connections > 0 {
++				user.Connections--
++			}
++			m.usersAccess.Unlock()
++		}
+@@ -93,0 +119,64 @@ func (m *Manager) Leave(c Tracker) {
++func (m *Manager) PushUserUploaded(user string, size int64) {
++	if user == "" || size <= 0 {
++		return
++	}
++	m.usersAccess.Lock()
++	m.loadOrCreateUser(user).Upload += size
++	m.usersAccess.Unlock()
++}
++
++func (m *Manager) PushUserDownloaded(user string, size int64) {
++	if user == "" || size <= 0 {
++		return
++	}
++	m.usersAccess.Lock()
++	m.loadOrCreateUser(user).Download += size
++	m.usersAccess.Unlock()
++}
++
++func (m *Manager) UserSnapshots() []UserSnapshot {
++	m.usersAccess.Lock()
++	result := make([]UserSnapshot, 0, len(m.users))
++	for _, user := range m.users {
++		result = append(result, *user)
++	}
++	m.usersAccess.Unlock()
++	sort.Slice(result, func(i, j int) bool { return result[i].User < result[j].User })
++	return result
++}
++
++func (m *Manager) UserCounterEpoch() string {
++	m.usersAccess.Lock()
++	defer m.usersAccess.Unlock()
++	if m.userCounterEpoch == "" {
++		m.userCounterEpoch = uuid.Must(uuid.NewV4()).String()
++	}
++	return m.userCounterEpoch
++}
++
++func (m *Manager) CloseUser(user string) int {
++	connections := make([]Tracker, 0)
++	m.connections.Range(func(_ uuid.UUID, value Tracker) bool {
++		if value.Metadata().Metadata.User == user {
++			connections = append(connections, value)
++		}
++		return true
++	})
++	for _, connection := range connections {
++		_ = connection.Close()
++	}
++	return len(connections)
++}
++
++func (m *Manager) loadOrCreateUser(name string) *UserSnapshot {
++	if m.users == nil {
++		m.users = make(map[string]*UserSnapshot)
++	}
++	user := m.users[name]
++	if user == nil {
++		user = &UserSnapshot{User: name}
++		m.users[name] = user
++	}
++	return user
++}
++
+diff --git a/experimental/clashapi/trafficontrol/tracker.go b/experimental/clashapi/trafficontrol/tracker.go
+index f001b77..bdb57ea 100644
+--- a/experimental/clashapi/trafficontrol/tracker.go
++++ b/experimental/clashapi/trafficontrol/tracker.go
+@@ -153,0 +154 @@ func NewTCPTracker(conn net.Conn, manager *Manager, metadata adapter.InboundCont
++			manager.PushUserUploaded(metadata.User, n)
+@@ -156,0 +158 @@ func NewTCPTracker(conn net.Conn, manager *Manager, metadata adapter.InboundCont
++			manager.PushUserDownloaded(metadata.User, n)
+@@ -234,0 +237 @@ func NewUDPTracker(conn N.PacketConn, manager *Manager, metadata adapter.Inbound
++			manager.PushUserUploaded(metadata.User, n)
+@@ -237,0 +241 @@ func NewUDPTracker(conn N.PacketConn, manager *Manager, metadata adapter.Inbound
++			manager.PushUserDownloaded(metadata.User, n)
+diff --git a/option/experimental.go b/option/experimental.go
+index bf0df9e..b12cdb2 100644
+--- a/option/experimental.go
++++ b/option/experimental.go
+@@ -30,0 +31 @@ type ClashAPIOptions struct {
++	HyFleetOnly                      bool                       `json:"hyfleet_only,omitempty"`

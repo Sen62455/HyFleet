@@ -7,7 +7,7 @@ manifest_path="${repository_root}/deploy/sing-box-reality.sha256"
 
 sing_box_repository="https://github.com/SagerNet/sing-box.git"
 sing_box_commit="45ca32dcb966f07f97fc888fe8586e359dbe8405"
-sing_box_version="1.13.18-hyfleet-utls1.8.7"
+sing_box_version="1.13.18-hyfleet-utls1.8.7-api2"
 go_toolchain="go1.26.5"
 utls_version="v1.8.7"
 utls_sum="h1:Cp+yWkNTFkSihETgGWq34hlVFds5HpYWVOR1xovUVTs="
@@ -91,13 +91,20 @@ git -C "${source_dir}" checkout --quiet --detach FETCH_HEAD
   go mod edit -require="github.com/metacubex/utls@${utls_version}"
   go mod download "github.com/metacubex/utls@${utls_version}"
 
+  git apply --unidiff-zero --whitespace=error-all \
+    "${repository_root}/deploy/sing-box-hyfleet-api.patch"
+
   [[ "$(git diff --numstat -- go.mod)" == $'1\t1\tgo.mod' &&
     "$(git diff --numstat -- go.sum)" == $'2\t0\tgo.sum' ]] ||
     fail "the dependency update does not match the reviewed go.mod/go.sum line counts"
   changed_file_count=0
   while IFS= read -r status_line; do
     case "${status_line}" in
-      " M go.mod"|" M go.sum")
+      " M go.mod"|" M go.sum"|" M option/experimental.go"|\
+      " M experimental/clashapi/server.go"|\
+      " M experimental/clashapi/trafficontrol/manager.go"|\
+      " M experimental/clashapi/trafficontrol/tracker.go"|\
+      "?? experimental/clashapi/hyfleet.go")
         ((changed_file_count += 1))
         ;;
       *)
@@ -105,8 +112,8 @@ git -C "${source_dir}" checkout --quiet --detach FETCH_HEAD
         ;;
     esac
   done < <(git status --porcelain=v1 --untracked-files=all)
-  [[ "${changed_file_count}" -eq 2 ]] ||
-    fail "the sing-box source tree does not contain exactly the two reviewed changes"
+  [[ "${changed_file_count}" -eq 7 ]] ||
+    fail "the sing-box source tree does not contain exactly the reviewed changes"
 
   selected_utls="$(go list -mod=readonly -m \
     -f '{{.Path}} {{.Version}} {{.Sum}} {{.GoModSum}}' github.com/metacubex/utls)"
@@ -138,7 +145,7 @@ git -C "${source_dir}" checkout --quiet --detach FETCH_HEAD
         -mod=readonly \
         -trimpath \
         -buildvcs=false \
-        -tags with_utls \
+        -tags with_utls,with_clash_api \
         -ldflags "-s -w -buildid= -X github.com/sagernet/sing-box/constant.Version=${sing_box_version}" \
         -o "${stage_dir}/${artifact}" \
         ./cmd/sing-box

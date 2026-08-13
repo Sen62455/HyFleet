@@ -371,6 +371,57 @@ func (s *Store) RecordHeartbeat(
 	if err != nil {
 		return 0, fmt.Errorf("update heartbeat: %w", err)
 	}
+	if heartbeat.Capabilities != nil {
+		capabilities := normalizeAgentCapabilities(heartbeat.Capabilities)
+		var hadRealityUserControl int
+		if identity.AdapterType == AdapterSingBoxVLESSReality {
+			if err := tx.QueryRowContext(ctx, `
+				SELECT EXISTS(
+					SELECT 1 FROM node_agent_capabilities
+					WHERE node_id = ? AND capability = 'reality_user_control_v1'
+				)
+			`, identity.NodeID).Scan(&hadRealityUserControl); err != nil {
+				return 0, fmt.Errorf("read previous heartbeat Agent capabilities: %w", err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM node_agent_capabilities WHERE node_id = ?", identity.NodeID,
+		); err != nil {
+			return 0, fmt.Errorf("replace heartbeat Agent capabilities: %w", err)
+		}
+		for _, capability := range capabilities {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO node_agent_capabilities(node_id, capability, reported_at)
+				VALUES (?, ?, ?)
+			`, identity.NodeID, capability, now.UnixMilli()); err != nil {
+				return 0, fmt.Errorf("store heartbeat Agent capability: %w", err)
+			}
+		}
+		if identity.AdapterType == AdapterSingBoxVLESSReality && hadRealityUserControl == 0 &&
+			containsAllCapabilities(capabilities,
+				"traffic_stats_v1", "traffic_outbox_v1", "online_snapshot_v1",
+				"kick_generation_v1", "reality_user_control_v1",
+			) {
+			desiredVersion, err = bumpNodeSnapshot(ctx, tx, identity.NodeID, now)
+			if err != nil {
+				return 0, fmt.Errorf("resync Reality node after capability upgrade: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE nodes SET status = CASE WHEN enabled = 1 THEN 'pending' ELSE 'disabled' END,
+					status_reason = '', updated_at = ? WHERE id = ?
+			`, now.UnixMilli(), identity.NodeID); err != nil {
+				return 0, fmt.Errorf("mark Reality capability upgrade pending: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE node_user_assignments
+				SET desired_version = ?, state = 'pending', last_error_code = '',
+					last_error_message = '', updated_at = ?
+				WHERE node_id = ?
+			`, desiredVersion, now.UnixMilli(), identity.NodeID); err != nil {
+				return 0, fmt.Errorf("mark Reality assignments pending after capability upgrade: %w", err)
+			}
+		}
+	}
 	bucket := heartbeat.SampledAt.UTC().Truncate(time.Minute).UnixMilli()
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO node_metric_samples(

@@ -298,3 +298,85 @@ func TestAlertReconciliationDeduplicatesAcknowledgesAndResolves(t *testing.T) {
 		t.Fatalf("offline alerts = %#v, error = %v", offline, err)
 	}
 }
+
+func TestNodeTrafficQuotaAlertThresholdsAndRecovery(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	database, _, node, _ := newOperationTestStore(t, "native_hysteria2", now)
+	if _, err := database.DB().ExecContext(t.Context(), `
+		UPDATE nodes SET agent_installation_id = ?, status = 'online', core_running = 1,
+			last_seen_at = ?, traffic_limit_bytes = 1000,
+			traffic_cycle_upload_bytes = 400, traffic_cycle_download_bytes = 399,
+			updated_at = ? WHERE id = ?
+	`, uuid.NewString(), now.UnixMilli(), now.UnixMilli(), node.ID); err != nil {
+		t.Fatalf("seed node traffic budget: %v", err)
+	}
+	reconcile := func(at time.Time) []Alert {
+		t.Helper()
+		if err := database.ReconcileAlerts(t.Context(), at, 90*time.Second, 5*time.Minute); err != nil {
+			t.Fatalf("ReconcileAlerts(%s) error = %v", at, err)
+		}
+		alerts, err := database.ListAlerts(t.Context(), "active", 100)
+		if err != nil {
+			t.Fatalf("ListAlerts(active) error = %v", err)
+		}
+		return alerts
+	}
+	trafficAlerts := func(alerts []Alert) map[string]Alert {
+		t.Helper()
+		result := make(map[string]Alert)
+		for _, alert := range alerts {
+			if alert.Type == "traffic_quota_warning" || alert.Type == "traffic_quota_exhausted" {
+				result[alert.Type] = alert
+			}
+		}
+		return result
+	}
+
+	if got := trafficAlerts(reconcile(now.Add(time.Second))); len(got) != 0 {
+		t.Fatalf("traffic alerts below 80%% = %#v", got)
+	}
+	if _, err := database.DB().ExecContext(t.Context(), `
+		UPDATE nodes SET traffic_cycle_download_bytes = 400 WHERE id = ?
+	`, node.ID); err != nil {
+		t.Fatalf("raise traffic to warning threshold: %v", err)
+	}
+	warning := trafficAlerts(reconcile(now.Add(2 * time.Second)))
+	if len(warning) != 1 || warning["traffic_quota_warning"].Severity != "warning" {
+		t.Fatalf("traffic alerts at 80%% = %#v", warning)
+	}
+	if _, err := database.DB().ExecContext(t.Context(), `
+		UPDATE nodes SET traffic_cycle_download_bytes = 600 WHERE id = ?
+	`, node.ID); err != nil {
+		t.Fatalf("raise traffic to exhausted threshold: %v", err)
+	}
+	exhausted := trafficAlerts(reconcile(now.Add(3 * time.Second)))
+	if len(exhausted) != 1 || exhausted["traffic_quota_exhausted"].Severity != "critical" {
+		t.Fatalf("traffic alerts at 100%% = %#v", exhausted)
+	}
+	resolvedWarning, err := database.GetAlert(t.Context(), warning["traffic_quota_warning"].ID)
+	if err != nil || resolvedWarning.Status != "resolved" {
+		t.Fatalf("warning after exhaustion = %#v, error = %v", resolvedWarning, err)
+	}
+	if _, err := database.DB().ExecContext(t.Context(), `
+		UPDATE nodes SET traffic_limit_bytes = 2000 WHERE id = ?
+	`, node.ID); err != nil {
+		t.Fatalf("raise node allowance: %v", err)
+	}
+	if got := trafficAlerts(reconcile(now.Add(4 * time.Second))); len(got) != 0 {
+		t.Fatalf("traffic alerts after allowance recovery = %#v", got)
+	}
+	resolvedCritical, err := database.GetAlert(t.Context(), exhausted["traffic_quota_exhausted"].ID)
+	if err != nil || resolvedCritical.Status != "resolved" {
+		t.Fatalf("critical alert after recovery = %#v, error = %v", resolvedCritical, err)
+	}
+	if _, err := database.DB().ExecContext(t.Context(), `
+		UPDATE nodes SET traffic_cycle_upload_bytes = 800, traffic_cycle_download_bytes = 800
+		WHERE id = ?
+	`, node.ID); err != nil {
+		t.Fatalf("raise traffic to warning threshold after recovery: %v", err)
+	}
+	reopened := trafficAlerts(reconcile(now.Add(5 * time.Second)))
+	if len(reopened) != 1 || reopened["traffic_quota_warning"].ID == warning["traffic_quota_warning"].ID {
+		t.Fatalf("reopened traffic warning = %#v", reopened)
+	}
+}

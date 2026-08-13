@@ -101,6 +101,11 @@ func (agent *Agent) executeNodeOperation(
 	defer agent.dataPlaneMu.Unlock()
 	if agent.config.AdapterType == "sing_box_vless_reality" {
 		agent.dataPlaneRevision++
+		if operation.Type == "restart_core" {
+			if _, _, err := agent.sampleRealityUsage(ctx, false); err != nil {
+				agent.logger.Warn("pre-restart Reality usage sample failed", "error", err)
+			}
+		}
 	}
 	if agent.operationExecutor != nil {
 		return agent.operationExecutor(ctx, operation)

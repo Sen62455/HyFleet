@@ -51,6 +51,8 @@ describe("NodeFormModal", () => {
         material_applied_version: 2,
         material_reported_at: "2026-08-12T08:00:00Z",
       },
+      traffic_limit_bytes: 2 * 1024 ** 4,
+      traffic_reset_day: 15,
       enabled: true,
     } as NodeRecord;
     const wrapper = mount(NodeFormModal, {
@@ -83,6 +85,8 @@ describe("NodeFormModal", () => {
         handshake_server: "www.microsoft.com",
         handshake_port: 443,
       },
+      traffic_limit_bytes: 2 * 1024 ** 4,
+      traffic_reset_day: 15,
     });
     wrapper.unmount();
   });

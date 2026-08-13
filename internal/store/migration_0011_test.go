@@ -35,6 +35,51 @@ type migration0010Fixture struct {
 	now                     time.Time
 }
 
+func TestTrafficAlertMigrationPreservesExistingAlert(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "vless-reality.db")
+	fixture := createMigration0010Fixture(t, ctx, path)
+
+	database, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open(upgrade through traffic alerts) error = %v", err)
+	}
+	defer database.Close()
+
+	var alertType, severity, status, message string
+	var occurrenceCount int
+	if err := database.DB().QueryRowContext(ctx, `
+		SELECT type, severity, status, message, occurrence_count
+		FROM alerts WHERE node_id = ?
+	`, fixture.nativeNodeID).Scan(
+		&alertType, &severity, &status, &message, &occurrenceCount,
+	); err != nil {
+		t.Fatalf("read alert after 0013 migration: %v", err)
+	}
+	if alertType != "offline" || severity != "warning" || status != "acknowledged" ||
+		message != "legacy alert" || occurrenceCount != 2 {
+		t.Fatalf("preserved alert = %q %q %q %q %d",
+			alertType, severity, status, message, occurrenceCount)
+	}
+	if _, err := database.DB().ExecContext(ctx, `
+		INSERT INTO alerts(
+			id, node_id, type, severity, status, message, occurrence_count,
+			first_seen_at, last_seen_at, created_at, updated_at
+		) VALUES (?, ?, 'traffic_quota_warning', 'warning', 'open', 'traffic warning',
+			1, ?, ?, ?, ?)
+	`, uuid.NewString(), fixture.nativeNodeID, fixture.now.UnixMilli(), fixture.now.UnixMilli(),
+		fixture.now.UnixMilli(), fixture.now.UnixMilli()); err != nil {
+		t.Fatalf("insert new traffic alert after migration: %v", err)
+	}
+	var foreignKeyViolations int
+	if err := database.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_foreign_key_check").Scan(
+		&foreignKeyViolations,
+	); err != nil || foreignKeyViolations != 0 {
+		t.Fatalf("foreign key violations after alert migration = %d, error = %v",
+			foreignKeyViolations, err)
+	}
+}
+
 func TestVLESSRealityMigrationFromV123PreservesComplete0010Database(t *testing.T) {
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "v1.2.3.db")
@@ -461,7 +506,7 @@ func assertMigration0011Recorded(t *testing.T, ctx context.Context, database *St
 	var migrationCount, realityMigrationCount int
 	if err := database.DB().QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM schema_migrations",
-	).Scan(&migrationCount); err != nil || migrationCount != 11 {
+	).Scan(&migrationCount); err != nil || migrationCount != 13 {
 		t.Fatalf("migration count = %d, error = %v", migrationCount, err)
 	}
 	if err := database.DB().QueryRowContext(ctx, `

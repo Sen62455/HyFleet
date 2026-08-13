@@ -40,10 +40,16 @@ func (agent *Agent) applyAndPersistVLESSRealityDesired(
 	defer agent.dataPlaneMu.Unlock()
 	agent.dataPlaneRevision++
 	revision := agent.dataPlaneRevision
+	if err := agent.localStore.queueKicks(ctx, envelope.Snapshot.Kicks, time.Now().UTC()); err != nil {
+		return revision, realityApplyError{code: "kick_queue_failed"}
+	}
 
 	material, err := agent.applyVLESSRealityDesired(ctx, envelope)
 	if err != nil {
 		return revision, err
+	}
+	if err := agent.executeRealityPendingKicks(ctx); err != nil {
+		return revision, realityApplyError{code: "kick_apply_failed"}
 	}
 	previousState := agent.state
 	agent.state.AppliedVersion = envelope.Snapshot.Version
@@ -79,7 +85,7 @@ func (agent *Agent) applyVLESSRealityDesired(
 			HandshakeServer:     desired.HandshakeServer,
 			HandshakeServerPort: desired.HandshakeServerPort,
 			Flow:                desired.Flow, Network: desired.Network,
-			KeyGeneration: desired.KeyGeneration,
+			KeyGeneration: desired.KeyGeneration, APISecret: agent.config.RealityAPISecret,
 		},
 		Users: make([]nodeops.RealityApplyUser, 0, len(envelope.Snapshot.Users)),
 	}

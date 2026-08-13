@@ -27,7 +27,13 @@ type nodeRequest struct {
 	TLSCertFingerprint *string             `json:"tls_cert_fingerprint"`
 	TLSPublicKeySHA256 *string             `json:"tls_public_key_sha256"`
 	Reality            *nodeRealityRequest `json:"reality"`
+	TrafficLimitBytes  *int64              `json:"traffic_limit_bytes"`
+	TrafficResetDay    *int                `json:"traffic_reset_day"`
 	Enabled            *bool               `json:"enabled"`
+}
+
+type nodeTrafficCalibrationRequest struct {
+	ProviderUsedBytes int64 `json:"provider_used_bytes"`
 }
 
 type nodeRealityRequest struct {
@@ -52,76 +58,84 @@ type rotateRealityIdentityRequest struct {
 }
 
 type nodeResponse struct {
-	ID                       string               `json:"id"`
-	Name                     string               `json:"name"`
-	Provider                 string               `json:"provider"`
-	Region                   string               `json:"region"`
-	AdapterType              string               `json:"adapter_type"`
-	AdapterStatus            string               `json:"adapter_status"`
-	AdapterVersion           string               `json:"adapter_version"`
-	AdapterErrorCode         string               `json:"adapter_error_code"`
-	AdapterLastProbedAt      *time.Time           `json:"adapter_last_probed_at"`
-	AdapterLastDiscoveredAt  *time.Time           `json:"adapter_last_discovered_at"`
-	SUITargetInboundIDs      []int64              `json:"s_ui_target_inbound_ids"`
-	PublicHost               string               `json:"public_host"`
-	PublicPort               int                  `json:"public_port"`
-	SNI                      string               `json:"sni"`
-	TLSInsecure              bool                 `json:"tls_insecure"`
-	TLSCertFingerprint       string               `json:"tls_cert_fingerprint"`
-	TLSPublicKeySHA256       string               `json:"tls_public_key_sha256"`
-	Reality                  *nodeRealityResponse `json:"reality"`
-	Enabled                  bool                 `json:"enabled"`
-	Status                   string               `json:"status"`
-	StatusReason             string               `json:"status_reason"`
-	DesiredVersion           int64                `json:"desired_version"`
-	AppliedVersion           int64                `json:"applied_version"`
-	AgentInstallationID      string               `json:"agent_installation_id,omitempty"`
-	AgentVersion             string               `json:"agent_version"`
-	ProtocolVersion          int                  `json:"protocol_version"`
-	OSName                   string               `json:"os_name"`
-	OSVersion                string               `json:"os_version"`
-	Architecture             string               `json:"architecture"`
-	Hostname                 string               `json:"hostname"`
-	KernelVersion            string               `json:"kernel_version"`
-	CoreName                 string               `json:"core_name"`
-	CoreVersion              string               `json:"core_version"`
-	CoreRunning              bool                 `json:"core_running"`
-	UptimeSeconds            int64                `json:"uptime_seconds"`
-	CPUCores                 int                  `json:"cpu_cores"`
-	CPUPercent               float64              `json:"cpu_percent"`
-	MemoryUsedBytes          int64                `json:"memory_used_bytes"`
-	MemoryTotalBytes         int64                `json:"memory_total_bytes"`
-	SwapUsedBytes            int64                `json:"swap_used_bytes"`
-	SwapTotalBytes           int64                `json:"swap_total_bytes"`
-	DiskUsedBytes            int64                `json:"disk_used_bytes"`
-	DiskTotalBytes           int64                `json:"disk_total_bytes"`
-	DiskReadBytesPerSecond   int64                `json:"disk_read_bytes_per_second"`
-	DiskWriteBytesPerSecond  int64                `json:"disk_write_bytes_per_second"`
-	NetworkRXBPS             int64                `json:"network_rx_bps"`
-	NetworkTXBPS             int64                `json:"network_tx_bps"`
-	NetworkRXBytesTotal      int64                `json:"network_rx_bytes_total"`
-	NetworkTXBytesTotal      int64                `json:"network_tx_bytes_total"`
-	Load1                    float64              `json:"load_1"`
-	Load5                    float64              `json:"load_5"`
-	Load15                   float64              `json:"load_15"`
-	UsageEnabled             bool                 `json:"usage_enabled"`
-	UsageAvailable           bool                 `json:"usage_available"`
-	UsageOutboxBatches       int                  `json:"usage_outbox_batches"`
-	UsageErrorCode           string               `json:"usage_error_code"`
-	UsageSampledAt           *time.Time           `json:"usage_sampled_at"`
-	TrafficUploadBytes       int64                `json:"traffic_upload_bytes"`
-	TrafficDownloadBytes     int64                `json:"traffic_download_bytes"`
-	TrafficUnattributedBytes int64                `json:"traffic_unattributed_bytes"`
-	TrafficLastReportAt      *time.Time           `json:"traffic_last_report_at"`
-	OnlineUsers              int                  `json:"online_users"`
-	OnlineConnections        int                  `json:"online_connections"`
-	OnlineUnknownUsers       int                  `json:"online_unknown_users"`
-	OnlineSampledAt          *time.Time           `json:"online_sampled_at"`
-	OnlineLastReportAt       *time.Time           `json:"online_last_report_at"`
-	LastSeenAt               *time.Time           `json:"last_seen_at"`
-	LastAppliedAt            *time.Time           `json:"last_applied_at"`
-	CreatedAt                time.Time            `json:"created_at"`
-	UpdatedAt                time.Time            `json:"updated_at"`
+	ID                        string               `json:"id"`
+	Name                      string               `json:"name"`
+	Provider                  string               `json:"provider"`
+	Region                    string               `json:"region"`
+	AdapterType               string               `json:"adapter_type"`
+	AdapterStatus             string               `json:"adapter_status"`
+	AdapterVersion            string               `json:"adapter_version"`
+	AdapterErrorCode          string               `json:"adapter_error_code"`
+	AdapterLastProbedAt       *time.Time           `json:"adapter_last_probed_at"`
+	AdapterLastDiscoveredAt   *time.Time           `json:"adapter_last_discovered_at"`
+	SUITargetInboundIDs       []int64              `json:"s_ui_target_inbound_ids"`
+	PublicHost                string               `json:"public_host"`
+	PublicPort                int                  `json:"public_port"`
+	SNI                       string               `json:"sni"`
+	TLSInsecure               bool                 `json:"tls_insecure"`
+	TLSCertFingerprint        string               `json:"tls_cert_fingerprint"`
+	TLSPublicKeySHA256        string               `json:"tls_public_key_sha256"`
+	Reality                   *nodeRealityResponse `json:"reality"`
+	Enabled                   bool                 `json:"enabled"`
+	Status                    string               `json:"status"`
+	StatusReason              string               `json:"status_reason"`
+	DesiredVersion            int64                `json:"desired_version"`
+	AppliedVersion            int64                `json:"applied_version"`
+	AgentInstallationID       string               `json:"agent_installation_id,omitempty"`
+	AgentVersion              string               `json:"agent_version"`
+	ProtocolVersion           int                  `json:"protocol_version"`
+	OSName                    string               `json:"os_name"`
+	OSVersion                 string               `json:"os_version"`
+	Architecture              string               `json:"architecture"`
+	Hostname                  string               `json:"hostname"`
+	KernelVersion             string               `json:"kernel_version"`
+	CoreName                  string               `json:"core_name"`
+	CoreVersion               string               `json:"core_version"`
+	CoreRunning               bool                 `json:"core_running"`
+	UptimeSeconds             int64                `json:"uptime_seconds"`
+	CPUCores                  int                  `json:"cpu_cores"`
+	CPUPercent                float64              `json:"cpu_percent"`
+	MemoryUsedBytes           int64                `json:"memory_used_bytes"`
+	MemoryTotalBytes          int64                `json:"memory_total_bytes"`
+	SwapUsedBytes             int64                `json:"swap_used_bytes"`
+	SwapTotalBytes            int64                `json:"swap_total_bytes"`
+	DiskUsedBytes             int64                `json:"disk_used_bytes"`
+	DiskTotalBytes            int64                `json:"disk_total_bytes"`
+	DiskReadBytesPerSecond    int64                `json:"disk_read_bytes_per_second"`
+	DiskWriteBytesPerSecond   int64                `json:"disk_write_bytes_per_second"`
+	NetworkRXBPS              int64                `json:"network_rx_bps"`
+	NetworkTXBPS              int64                `json:"network_tx_bps"`
+	NetworkRXBytesTotal       int64                `json:"network_rx_bytes_total"`
+	NetworkTXBytesTotal       int64                `json:"network_tx_bytes_total"`
+	Load1                     float64              `json:"load_1"`
+	Load5                     float64              `json:"load_5"`
+	Load15                    float64              `json:"load_15"`
+	UsageEnabled              bool                 `json:"usage_enabled"`
+	UsageAvailable            bool                 `json:"usage_available"`
+	UsageOutboxBatches        int                  `json:"usage_outbox_batches"`
+	UsageErrorCode            string               `json:"usage_error_code"`
+	UsageSampledAt            *time.Time           `json:"usage_sampled_at"`
+	TrafficUploadBytes        int64                `json:"traffic_upload_bytes"`
+	TrafficDownloadBytes      int64                `json:"traffic_download_bytes"`
+	TrafficUnattributedBytes  int64                `json:"traffic_unattributed_bytes"`
+	TrafficLastReportAt       *time.Time           `json:"traffic_last_report_at"`
+	TrafficLimitBytes         int64                `json:"traffic_limit_bytes"`
+	TrafficResetDay           int                  `json:"traffic_reset_day"`
+	TrafficCycleStartedAt     *time.Time           `json:"traffic_cycle_started_at"`
+	TrafficCycleUploadBytes   int64                `json:"traffic_cycle_upload_bytes"`
+	TrafficCycleDownloadBytes int64                `json:"traffic_cycle_download_bytes"`
+	TrafficUsedBytes          int64                `json:"traffic_used_bytes"`
+	TrafficCalibrationBytes   *int64               `json:"traffic_calibration_bytes"`
+	TrafficCalibratedAt       *time.Time           `json:"traffic_calibrated_at"`
+	OnlineUsers               int                  `json:"online_users"`
+	OnlineConnections         int                  `json:"online_connections"`
+	OnlineUnknownUsers        int                  `json:"online_unknown_users"`
+	OnlineSampledAt           *time.Time           `json:"online_sampled_at"`
+	OnlineLastReportAt        *time.Time           `json:"online_last_report_at"`
+	LastSeenAt                *time.Time           `json:"last_seen_at"`
+	LastAppliedAt             *time.Time           `json:"last_applied_at"`
+	CreatedAt                 time.Time            `json:"created_at"`
+	UpdatedAt                 time.Time            `json:"updated_at"`
 }
 
 type nodeMetricResponse struct {
@@ -240,6 +254,7 @@ func (a *App) handleCreateNode(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	now := time.Now().UTC()
+	trafficLimit, trafficResetDay := nodeTrafficBudgetValues(input, nil)
 	node, err := a.store.CreateNode(request.Context(), store.NewNode{
 		ID:                 cryptoutil.NewID(),
 		Name:               input.Name,
@@ -253,6 +268,8 @@ func (a *App) handleCreateNode(response http.ResponseWriter, request *http.Reque
 		TLSCertFingerprint: tlsCertFingerprint,
 		TLSPublicKeySHA256: tlsPublicKeySHA256,
 		VLESSReality:       requestedRealitySettings(input.Reality, nil),
+		TrafficLimitBytes:  trafficLimit,
+		TrafficResetDay:    trafficResetDay,
 		Enabled:            enabled,
 		Now:                now,
 	})
@@ -295,6 +312,7 @@ func (a *App) handleUpdateNode(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	now := time.Now().UTC()
+	trafficLimit, trafficResetDay := nodeTrafficBudgetValues(input, &current)
 	node, err := a.store.UpdateNode(request.Context(), current.ID, store.UpdateNode{
 		Name:               input.Name,
 		Provider:           input.Provider,
@@ -307,6 +325,8 @@ func (a *App) handleUpdateNode(response http.ResponseWriter, request *http.Reque
 		TLSCertFingerprint: tlsCertFingerprint,
 		TLSPublicKeySHA256: tlsPublicKeySHA256,
 		VLESSReality:       requestedRealitySettings(input.Reality, current.VLESSReality),
+		TrafficLimitBytes:  trafficLimit,
+		TrafficResetDay:    trafficResetDay,
 		Enabled:            *input.Enabled,
 		Now:                now,
 	})
@@ -336,6 +356,32 @@ func (a *App) handleArchiveNode(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	response.WriteHeader(http.StatusNoContent)
+}
+
+func (a *App) handleCalibrateNodeTraffic(response http.ResponseWriter, request *http.Request) {
+	var input nodeTrafficCalibrationRequest
+	if err := decodeJSON(response, request, &input, 16*1024); err != nil {
+		a.writeError(response, request, http.StatusBadRequest, "invalid_request", "invalid traffic calibration request")
+		return
+	}
+	if !validTrafficLimit(input.ProviderUsedBytes) {
+		a.writeError(response, request, http.StatusUnprocessableEntity, "validation_failed", "provider_used_bytes must be between 0 and the JavaScript safe integer limit")
+		return
+	}
+	node, err := a.store.CalibrateNodeTraffic(
+		request.Context(), chi.URLParam(request, "nodeID"), input.ProviderUsedBytes,
+		time.Now().UTC(),
+	)
+	if errors.Is(err, store.ErrNotFound) {
+		a.writeError(response, request, http.StatusNotFound, "node_not_found", "node not found")
+		return
+	}
+	if err != nil {
+		a.logger.Error("calibrate node traffic failed", "request_id", requestIDFromContext(request.Context()), "error", err)
+		a.writeError(response, request, http.StatusInternalServerError, "traffic_calibration_failed", "could not calibrate node traffic")
+		return
+	}
+	writeJSON(response, http.StatusOK, a.presentNode(node, time.Now().UTC()))
 }
 
 func (a *App) handleEnrollmentToken(response http.ResponseWriter, request *http.Request) {
@@ -454,6 +500,12 @@ func validateNodeRequest(input nodeRequest) string {
 			return "tls_public_key_sha256 must be a base64-encoded SHA-256 public key hash"
 		}
 	}
+	if input.TrafficLimitBytes != nil && !validTrafficLimit(*input.TrafficLimitBytes) {
+		return "traffic_limit_bytes must be between 0 and the JavaScript safe integer limit"
+	}
+	if input.TrafficResetDay != nil && (*input.TrafficResetDay < 1 || *input.TrafficResetDay > 31) {
+		return "traffic_reset_day must be between 1 and 31"
+	}
 	switch input.AdapterType {
 	case "native_hysteria2", "standalone_sing_box", "s_ui", store.AdapterSingBoxVLESSReality:
 		return ""
@@ -517,14 +569,39 @@ func (a *App) presentNode(node store.Node, now time.Time) nodeResponse {
 		UsageEnabled: node.UsageEnabled, UsageAvailable: node.UsageAvailable,
 		UsageOutboxBatches: node.UsageOutboxBatches, UsageErrorCode: node.UsageErrorCode,
 		UsageSampledAt: node.UsageSampledAt, TrafficUploadBytes: node.TrafficUploadBytes,
-		TrafficDownloadBytes:     node.TrafficDownloadBytes,
-		TrafficUnattributedBytes: node.TrafficUnattributedBytes,
-		TrafficLastReportAt:      node.TrafficLastReportAt, OnlineUsers: node.OnlineUsers,
-		OnlineConnections: node.OnlineConnections, OnlineUnknownUsers: node.OnlineUnknownUsers,
+		TrafficDownloadBytes:      node.TrafficDownloadBytes,
+		TrafficUnattributedBytes:  node.TrafficUnattributedBytes,
+		TrafficLastReportAt:       node.TrafficLastReportAt,
+		TrafficLimitBytes:         node.TrafficLimitBytes,
+		TrafficResetDay:           node.TrafficResetDay,
+		TrafficCycleStartedAt:     node.TrafficCycleStartedAt,
+		TrafficCycleUploadBytes:   node.TrafficCycleUploadBytes,
+		TrafficCycleDownloadBytes: node.TrafficCycleDownloadBytes,
+		TrafficUsedBytes:          store.EffectiveNodeTrafficUsed(node),
+		TrafficCalibrationBytes:   node.TrafficCalibrationBytes,
+		TrafficCalibratedAt:       node.TrafficCalibratedAt,
+		OnlineUsers:               node.OnlineUsers,
+		OnlineConnections:         node.OnlineConnections, OnlineUnknownUsers: node.OnlineUnknownUsers,
 		OnlineSampledAt: node.OnlineSampledAt, OnlineLastReportAt: node.OnlineLastReportAt,
 		LastSeenAt: node.LastSeenAt, LastAppliedAt: node.LastAppliedAt,
 		CreatedAt: node.CreatedAt, UpdatedAt: node.UpdatedAt,
 	}
+}
+
+func nodeTrafficBudgetValues(input nodeRequest, current *store.Node) (int64, int) {
+	limit := int64(0)
+	resetDay := 1
+	if current != nil {
+		limit = current.TrafficLimitBytes
+		resetDay = current.TrafficResetDay
+	}
+	if input.TrafficLimitBytes != nil {
+		limit = *input.TrafficLimitBytes
+	}
+	if input.TrafficResetDay != nil {
+		resetDay = *input.TrafficResetDay
+	}
+	return limit, resetDay
 }
 
 func validateEffectiveRealityNode(

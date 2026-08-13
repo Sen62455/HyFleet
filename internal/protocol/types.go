@@ -52,6 +52,7 @@ type PollingPolicy struct {
 type HeartbeatRequest struct {
 	InstallationID string      `json:"installation_id"`
 	AppliedVersion int64       `json:"applied_version"`
+	Capabilities   []string    `json:"capabilities"`
 	Agent          AgentInfo   `json:"agent"`
 	Core           CoreInfo    `json:"core"`
 	Adapter        AdapterInfo `json:"adapter"`

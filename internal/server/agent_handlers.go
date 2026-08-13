@@ -131,6 +131,19 @@ func validHeartbeat(input protocol.HeartbeatRequest) bool {
 		len(input.Host.Hostname) > 255 || len(input.Host.KernelVersion) > 128 {
 		return false
 	}
+	if len(input.Capabilities) > 32 {
+		return false
+	}
+	seenCapabilities := make(map[string]struct{}, len(input.Capabilities))
+	for _, capability := range input.Capabilities {
+		if capability == "" || len(capability) > 64 {
+			return false
+		}
+		if _, duplicate := seenCapabilities[capability]; duplicate {
+			return false
+		}
+		seenCapabilities[capability] = struct{}{}
+	}
 	if input.Adapter.Name != "" || input.Adapter.Status != "" {
 		switch input.Adapter.Name {
 		case "s_ui", "native_hysteria2", "standalone_sing_box", store.AdapterSingBoxVLESSReality:
@@ -191,6 +204,7 @@ func (a *App) handleAgentDesired(response http.ResponseWriter, request *http.Req
 		compatible, capabilityErr := a.store.HasAgentCapabilities(
 			request.Context(), identity.NodeID,
 			"desired_state_v2", "credential_material_v1", "sing_box_vless_reality",
+			"reality_user_control_v1",
 		)
 		if capabilityErr != nil {
 			a.logger.Error("read Agent capabilities failed", "request_id", requestIDFromContext(request.Context()), "error", capabilityErr)

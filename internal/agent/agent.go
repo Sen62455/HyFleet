@@ -36,6 +36,7 @@ type Agent struct {
 	authCache            *AuthCache
 	localStore           *localStore
 	statsClient          *hysteriaStatsClient
+	realityStatsClient   *realityStatsClient
 	suiClient            *suiClient
 	usage                protocol.UsageInfo
 	adapterInfo          protocol.AdapterInfo
@@ -97,6 +98,9 @@ func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
 			cfg.TrafficEvery = 30 * time.Second
 		}
 	}
+	if cfg.AdapterType == "sing_box_vless_reality" && cfg.TrafficEvery <= 0 {
+		cfg.TrafficEvery = 30 * time.Second
+	}
 	state, err := LoadState(cfg.StatePath)
 	if err != nil {
 		return nil, err
@@ -156,6 +160,14 @@ func New(cfg config.Agent, logger *slog.Logger) (*Agent, error) {
 		result.usage.Enabled = cfg.SUIToken != ""
 		if cfg.SUIToken == "" {
 			result.usage.LastErrorCode = "sui_token_not_configured"
+		}
+	}
+	if cfg.AdapterType == "sing_box_vless_reality" {
+		result.usage.Enabled = cfg.RealityAPISecret != ""
+		if cfg.RealityAPISecret == "" {
+			result.usage.LastErrorCode = "reality_api_secret_not_configured"
+		} else {
+			result.realityStatsClient = newRealityStatsClient(cfg.RealityAPIURL, cfg.RealityAPISecret)
 		}
 	}
 	return result, nil
@@ -232,6 +244,16 @@ func (agent *Agent) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			if realityAdapter {
+				shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				agent.dataPlaneMu.Lock()
+				_, _, err := agent.sampleRealityUsage(shutdownCtx, false)
+				agent.dataPlaneMu.Unlock()
+				cancel()
+				if err != nil {
+					agent.logger.Warn("final Reality usage sample failed", "error", err)
+				}
+			}
 			return nil
 		case err, open := <-authServerErrors:
 			if open && err != nil {
@@ -394,6 +416,7 @@ func (agent *Agent) heartbeat(ctx context.Context) (int64, uint64, error) {
 	request := protocol.HeartbeatRequest{
 		InstallationID: agent.state.InstallationID,
 		AppliedVersion: agent.state.AppliedVersion,
+		Capabilities:   agent.capabilities(),
 		Agent: protocol.AgentInfo{
 			Version:  buildinfo.Version,
 			Protocol: protocol.MajorVersion,
@@ -542,8 +565,13 @@ func (agent *Agent) capabilities() []string {
 			"traffic_outbox_v1", "online_snapshot_v1")
 	}
 	if agent.config.AdapterType == "sing_box_vless_reality" {
-		return append(capabilities, "desired_state_v2", "credential_material_v1",
+		capabilities = append(capabilities, "desired_state_v2", "credential_material_v1",
 			"sing_box_vless_reality")
+		if agent.realityStatsClient != nil {
+			capabilities = append(capabilities, "traffic_stats_v1", "traffic_outbox_v1",
+				"online_snapshot_v1", "kick_generation_v1", "reality_user_control_v1")
+		}
+		return capabilities
 	}
 	return append(capabilities, "read_only_adapter")
 }
@@ -553,7 +581,7 @@ func (agent *Agent) runUsageCycle(ctx context.Context) error {
 		return nil
 	}
 	if agent.config.AdapterType == "sing_box_vless_reality" {
-		return nil
+		return agent.runRealityUsageCycle(ctx)
 	}
 	if agent.config.AdapterType == "s_ui" {
 		return agent.runSUIUsageCycle(ctx)

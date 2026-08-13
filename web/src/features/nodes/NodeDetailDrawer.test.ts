@@ -37,6 +37,15 @@ const realityNode = {
   core_name: "sing-box",
   core_version: "1.13.18",
   core_running: true,
+  usage_enabled: true,
+  usage_available: true,
+  traffic_upload_bytes: 1024,
+  traffic_download_bytes: 2048,
+  traffic_unattributed_bytes: 0,
+  traffic_used_bytes: 3072,
+  online_users: 1,
+  online_connections: 2,
+  online_unknown_users: 0,
   uptime_seconds: 3600,
   cpu_percent: 2,
   memory_used_bytes: 128 * 1024 ** 2,
@@ -53,7 +62,7 @@ const realityNode = {
 } as NodeRecord;
 
 describe("NodeDetailDrawer", () => {
-  it("shows Reality endpoint identity and explicit MVP capability limits", async () => {
+  it("shows Reality endpoint identity and user-control telemetry", async () => {
     const wrapper = mount(NodeDetailDrawer, {
       attachTo: document.body,
       props: { show: true, node: realityNode },
@@ -66,10 +75,10 @@ describe("NodeDetailDrawer", () => {
     expect(wrapper.text()).toContain("www.cloudflare.com:443");
     expect(wrapper.text()).toContain("已应用 · 第 1 代");
     expect(wrapper.text()).toContain("目标身份代际");
-    expect(wrapper.text()).toContain("按用户流量");
-    expect(wrapper.text()).toContain("在线状态");
-    expect(wrapper.text()).toContain("踢下线");
-    expect(wrapper.text()).toContain("额度执行");
+    expect(wrapper.text()).toContain("在线用户 / 活跃连接");
+    expect(wrapper.text()).toContain("1 / 2");
+    expect(wrapper.text()).toContain("当前周期有效用量");
+    expect(wrapper.text()).not.toContain("暂不支持");
     expect(wrapper.text()).not.toContain("证书验证");
     wrapper.unmount();
   });

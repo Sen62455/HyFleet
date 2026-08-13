@@ -538,6 +538,7 @@ func TestVLESSRealityHeartbeatPersistsTypedProbeState(t *testing.T) {
 		OSVersion: "24.04", Architecture: "amd64",
 		Capabilities: []string{
 			"desired_state_v2", "credential_material_v1", "sing_box_vless_reality",
+			"reality_user_control_v1",
 		},
 		Adapter: protocol.EnrollmentAdapter{
 			Type: store.AdapterSingBoxVLESSReality, CoreName: "sing-box",

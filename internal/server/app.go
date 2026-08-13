@@ -76,6 +76,7 @@ func (a *App) Handler() (http.Handler, error) {
 			authenticated.Get("/nodes/{nodeID}/metrics", a.handleListNodeMetrics)
 			authenticated.Get("/nodes/{nodeID}/telemetry", a.handleGetNodeTelemetry)
 			authenticated.Put("/nodes/{nodeID}", a.handleUpdateNode)
+			authenticated.Post("/nodes/{nodeID}/traffic-calibration", a.handleCalibrateNodeTraffic)
 			authenticated.Delete("/nodes/{nodeID}", a.handleArchiveNode)
 			authenticated.Post("/nodes/{nodeID}/enrollment-token", a.handleEnrollmentToken)
 			authenticated.Post(

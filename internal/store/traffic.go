@@ -35,9 +35,6 @@ func (s *Store) IngestTrafficBatch(
 	if batch.InstallationID != identity.InstallationID {
 		return TrafficIngestResult{Status: "rejected", ErrorCode: "installation_conflict"}, nil
 	}
-	if identity.AdapterType == AdapterSingBoxVLESSReality {
-		return TrafficIngestResult{Status: "rejected", ErrorCode: "adapter_traffic_unsupported"}, nil
-	}
 	canonical, err := json.Marshal(batch)
 	if err != nil {
 		return TrafficIngestResult{}, fmt.Errorf("encode traffic batch fingerprint: %w", err)
@@ -125,7 +122,10 @@ func (s *Store) IngestTrafficBatch(
 			return TrafficIngestResult{}, err
 		}
 	}
-	if err := addNodeTrafficTx(ctx, tx, identity.NodeID, uploadTotal, downloadTotal, unattributed, now); err != nil {
+	if err := addNodeTrafficTx(
+		ctx, tx, identity.NodeID, uploadTotal, downloadTotal, unattributed,
+		batch.SampledAt, now,
+	); err != nil {
 		return TrafficIngestResult{}, err
 	}
 
@@ -262,25 +262,60 @@ func addNodeTrafficTx(
 	tx *sql.Tx,
 	nodeID string,
 	upload, download, unattributed int64,
+	sampledAt time.Time,
 	now time.Time,
 ) error {
 	var currentUpload, currentDownload, currentUnattributed int64
+	var resetDay int
+	var storedCycleStarted sql.NullInt64
+	var cycleUpload, cycleDownload int64
+	var calibratedAt sql.NullInt64
 	if err := tx.QueryRowContext(ctx, `
-		SELECT traffic_upload_bytes, traffic_download_bytes, traffic_unattributed_bytes
+		SELECT traffic_upload_bytes, traffic_download_bytes, traffic_unattributed_bytes,
+		       traffic_reset_day, traffic_cycle_started_at,
+		       traffic_cycle_upload_bytes, traffic_cycle_download_bytes,
+		       traffic_calibrated_at
 		FROM nodes WHERE id = ?
-	`, nodeID).Scan(&currentUpload, &currentDownload, &currentUnattributed); err != nil {
+	`, nodeID).Scan(
+		&currentUpload, &currentDownload, &currentUnattributed, &resetDay,
+		&storedCycleStarted, &cycleUpload, &cycleDownload, &calibratedAt,
+	); err != nil {
 		return fmt.Errorf("read node traffic cache: %w", err)
 	}
 	if currentUpload > math.MaxInt64-upload || currentDownload > math.MaxInt64-download ||
 		currentUnattributed > math.MaxInt64-unattributed {
 		return errors.New("node traffic aggregate exceeds SQLite integer range")
 	}
+	cycleStart := trafficCycleStart(now, resetDay)
+	nextStart := trafficCycleNextStart(cycleStart, resetDay)
+	cycleChanged := !storedCycleStarted.Valid || storedCycleStarted.Int64 != cycleStart.UnixMilli()
+	if cycleChanged {
+		var err error
+		cycleUpload, cycleDownload, err = trafficCycleTotalsTx(ctx, tx, nodeID, cycleStart, nextStart)
+		if err != nil {
+			return err
+		}
+	} else if !sampledAt.Before(cycleStart) && sampledAt.Before(nextStart) {
+		if cycleUpload > math.MaxInt64-upload || cycleDownload > math.MaxInt64-download {
+			return errors.New("node traffic cycle aggregate exceeds SQLite integer range")
+		}
+		cycleUpload += upload
+		cycleDownload += download
+	}
+	clearCalibration := cycleChanged && calibratedAt.Valid && calibratedAt.Int64 < cycleStart.UnixMilli()
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE nodes SET traffic_upload_bytes = ?, traffic_download_bytes = ?,
 			traffic_unattributed_bytes = ?, traffic_last_report_at = ?, updated_at = ?
+			, traffic_cycle_started_at = ?, traffic_cycle_upload_bytes = ?,
+			traffic_cycle_download_bytes = ?,
+			traffic_calibration_bytes = CASE WHEN ? THEN NULL ELSE traffic_calibration_bytes END,
+			traffic_calibration_proxy_bytes = CASE WHEN ? THEN NULL ELSE traffic_calibration_proxy_bytes END,
+			traffic_calibrated_at = CASE WHEN ? THEN NULL ELSE traffic_calibrated_at END
 		WHERE id = ?
 	`, currentUpload+upload, currentDownload+download,
-		currentUnattributed+unattributed, now.UnixMilli(), now.UnixMilli(), nodeID); err != nil {
+		currentUnattributed+unattributed, now.UnixMilli(), now.UnixMilli(),
+		cycleStart.UnixMilli(), cycleUpload, cycleDownload,
+		clearCalibration, clearCalibration, clearCalibration, nodeID); err != nil {
 		return fmt.Errorf("update node traffic cache: %w", err)
 	}
 	return nil
@@ -346,7 +381,7 @@ func requestKickTx(
 		}
 		return fmt.Errorf("read kick node adapter: %w", err)
 	}
-	if adapter != "native_hysteria2" {
+	if adapter != "native_hysteria2" && adapter != AdapterSingBoxVLESSReality {
 		return nil
 	}
 	if len(reason) > 64 {
@@ -398,9 +433,6 @@ func (s *Store) RecordOnlineSnapshot(
 ) (bool, error) {
 	if snapshot.InstallationID != identity.InstallationID {
 		return false, ErrConflict
-	}
-	if identity.AdapterType == AdapterSingBoxVLESSReality {
-		return false, ErrUnsupported
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -518,17 +550,14 @@ func (s *Store) RequestUserKick(
 		return 0, fmt.Errorf("list kick assignments: %w", err)
 	}
 	nodeIDs := make([]string, 0)
-	realityTargets := 0
 	for rows.Next() {
 		var current, adapter string
 		if err := rows.Scan(&current, &adapter); err != nil {
 			_ = rows.Close()
 			return 0, fmt.Errorf("scan kick assignment: %w", err)
 		}
-		if adapter == "native_hysteria2" {
+		if adapter == "native_hysteria2" || adapter == AdapterSingBoxVLESSReality {
 			nodeIDs = append(nodeIDs, current)
-		} else if adapter == AdapterSingBoxVLESSReality {
-			realityTargets++
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -537,9 +566,6 @@ func (s *Store) RequestUserKick(
 	}
 	if err := rows.Close(); err != nil {
 		return 0, fmt.Errorf("close kick assignments: %w", err)
-	}
-	if realityTargets > 0 {
-		return 0, ErrKickUnsupported
 	}
 	if len(nodeIDs) == 0 {
 		return 0, ErrNotFound

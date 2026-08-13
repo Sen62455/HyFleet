@@ -556,7 +556,7 @@ onBeforeUnmount(() => {
         <strong>{{ users.length }}</strong>
       </div>
       <div class="fleet-summary__item fleet-summary__item--healthy">
-        <span>在线设备</span>
+        <span>活跃连接</span>
         <strong>{{ onlineConnections }}</strong>
       </div>
       <div class="fleet-summary__item fleet-summary__item--warning">

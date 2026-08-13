@@ -89,16 +89,11 @@ function choose(key: string | number, node: NodeRecord) {
             <span class="network-value network-value--up">↑ {{ formatRate(node.network_tx_bps) }}</span>
           </td>
           <td>
-            <span v-if="node.adapter_type === 'sing_box_vless_reality'" class="traffic-value">暂不支持</span>
-            <span v-else class="traffic-value">{{ formatBytes(node.traffic_upload_bytes + node.traffic_download_bytes) }}</span>
-            <span
-              v-if="node.adapter_type === 'sing_box_vless_reality'"
-              class="table-secondary online-inline"
-            >
-              <wifi :size="12" aria-hidden="true" />在线不可用
+            <span class="traffic-value">
+              {{ formatBytes(node.traffic_used_bytes) }}<template v-if="node.traffic_limit_bytes"> / {{ formatBytes(node.traffic_limit_bytes) }}</template>
             </span>
-            <span v-else class="table-secondary online-inline" :class="{ 'online-inline--active': node.online_connections > 0 }">
-              <wifi :size="12" aria-hidden="true" />{{ node.online_connections }} 台设备
+            <span class="table-secondary online-inline" :class="{ 'online-inline--active': node.online_connections > 0 }">
+              <wifi :size="12" aria-hidden="true" />{{ node.online_connections }} 个活跃连接
             </span>
           </td>
           <td>
@@ -156,8 +151,7 @@ function choose(key: string | number, node: NodeRecord) {
         <span>↓ {{ formatRate(node.network_rx_bps) }}</span>
         <span>↑ {{ formatRate(node.network_tx_bps) }}</span>
         <span>配置 v{{ node.applied_version }} / {{ node.desired_version }}</span>
-        <span v-if="node.adapter_type === 'sing_box_vless_reality'"><wifi :size="11" aria-hidden="true" /> 用户统计暂不支持</span>
-        <span v-else><wifi :size="11" aria-hidden="true" /> {{ node.online_connections }} · {{ formatBytes(node.traffic_upload_bytes + node.traffic_download_bytes) }}</span>
+        <span><wifi :size="11" aria-hidden="true" /> {{ node.online_connections }} 个连接 · {{ formatBytes(node.traffic_used_bytes) }}</span>
       </footer>
     </article>
   </div>

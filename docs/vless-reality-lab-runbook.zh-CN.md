@@ -17,7 +17,7 @@ Reality adapter 的可执行边界不能通过安装参数调整：
 | --- | --- |
 | 安装器参数 | `--adapter vless-reality` |
 | Agent adapter | `sing_box_vless_reality` |
-| sing-box | `/usr/bin/sing-box`，仅 HyFleet 构建 `1.13.18-hyfleet-utls1.8.7` |
+| sing-box | `/usr/bin/sing-box`，仅 HyFleet 构建 `1.13.18-hyfleet-utls1.8.7-api2` |
 | systemd unit | `hyfleet-sing-box-reality.service` |
 | core config | `/etc/sing-box/hyfleet-reality.json` |
 | Reality identity | `/var/lib/hyfleet-agent-ops/reality-hyfleet-sing-box-reality.json` |
@@ -45,7 +45,7 @@ bash scripts/build-sing-box-reality.sh
 
 ```bash
 architecture=amd64 # arm64 主机改为 arm64
-artifact="sing-box-1.13.18-hyfleet-utls1.8.7-linux-${architecture}"
+artifact="sing-box-1.13.18-hyfleet-utls1.8.7-api2-linux-${architecture}"
 sha256sum ".codex-lab-build/sing-box-reality/${artifact}"
 grep "  ${artifact}$" deploy/sing-box-reality.sha256
 sudo install -o root -g root -m 0755 \
@@ -61,7 +61,7 @@ test ! -L /usr/bin/sing-box
 ```
 
 第一行必须精确为
-`sing-box version 1.13.18-hyfleet-utls1.8.7`。安装器还会按宿主架构读取 release
+`sing-box version 1.13.18-hyfleet-utls1.8.7-api2`。安装器还会按宿主架构读取 release
 内的清单并重新校验 SHA-256、root 所有权和 ELF machine；仅伪造版本字符串
 不能通过。主机需要 Debian 12、Debian 13 或 Ubuntu 24.04，使用 systemd，并能
 从 Agent 通过受信任 TLS 访问控制面。预先选择一个未被占用的 TCP 测试端口；

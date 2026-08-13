@@ -138,6 +138,12 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
+  calibrateNodeTraffic: (id: string, providerUsedBytes: number) =>
+    request<NodeRecord>(`/api/v1/nodes/${encodeURIComponent(id)}/traffic-calibration`, {
+      method: "POST",
+      body: JSON.stringify({ provider_used_bytes: providerUsedBytes }),
+    }),
+
   archiveNode: (id: string) =>
     request<void>(`/api/v1/nodes/${encodeURIComponent(id)}`, { method: "DELETE", body: "{}" }),
 

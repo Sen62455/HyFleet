@@ -132,6 +132,9 @@ jobs:
           package-json-file: web/package.json
       - name: Build clean-host test bundle
         shell: pwsh
+        run: bash scripts/build-sing-box-reality.sh
+      - name: Package clean-host test bundle
+        shell: pwsh
         run: ./scripts/build-release.ps1 -Architecture amd64 -Version v1.0.0-ci
       - uses: actions/upload-artifact@v7
         with:

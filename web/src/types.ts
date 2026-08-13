@@ -105,6 +105,14 @@ export interface NodeRecord {
   traffic_download_bytes: number;
   traffic_unattributed_bytes: number;
   traffic_last_report_at: string | null;
+  traffic_limit_bytes: number;
+  traffic_reset_day: number;
+  traffic_cycle_started_at: string | null;
+  traffic_cycle_upload_bytes: number;
+  traffic_cycle_download_bytes: number;
+  traffic_used_bytes: number;
+  traffic_calibration_bytes: number | null;
+  traffic_calibrated_at: string | null;
   online_users: number;
   online_connections: number;
   online_unknown_users: number;
@@ -195,6 +203,8 @@ export interface NodeInput {
   tls_cert_fingerprint: string;
   tls_public_key_sha256: string;
   reality?: NodeRealityInput | null;
+  traffic_limit_bytes?: number;
+  traffic_reset_day?: number;
   enabled?: boolean;
 }
 
@@ -434,7 +444,9 @@ export type AlertType =
   | "usage_error"
   | "sync_failed"
   | "sync_stuck"
-  | "operation_failed";
+  | "operation_failed"
+  | "traffic_quota_warning"
+  | "traffic_quota_exhausted";
 export type AlertStatus = "open" | "acknowledged" | "resolved";
 
 export interface AlertRecord {

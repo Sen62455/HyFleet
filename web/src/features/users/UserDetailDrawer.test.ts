@@ -139,26 +139,26 @@ describe("UserDetailDrawer", () => {
     wrapper.unmount();
   });
 
-  it("marks Reality traffic, online state, quotas, and kicking as unsupported", async () => {
+  it("supports Reality traffic, active connections, quotas, and targeted kicking", async () => {
     const realityAssignment: UserAssignment = {
       ...assignment,
       id: "assignment-reality",
       node_id: "node-reality",
       node_name: "Reality LA",
       node_adapter: "sing_box_vless_reality",
-      traffic_limit_bytes: 0,
-      traffic_upload_bytes: 0,
-      traffic_download_bytes: 0,
-      traffic_used_bytes: 0,
-      online_connections: 0,
+      traffic_limit_bytes: 5 * 1024 ** 3,
+      traffic_upload_bytes: 1024 ** 3,
+      traffic_download_bytes: 2 * 1024 ** 3,
+      traffic_used_bytes: 3 * 1024 ** 3,
+      online_connections: 2,
     };
     const realityUser: UserRecord = {
       ...user,
-      online_connections: 0,
-      online_nodes: 0,
-      traffic_upload_bytes: 0,
-      traffic_download_bytes: 0,
-      traffic_used_bytes: 0,
+      online_connections: 2,
+      online_nodes: 1,
+      traffic_upload_bytes: 1024 ** 3,
+      traffic_download_bytes: 2 * 1024 ** 3,
+      traffic_used_bytes: 3 * 1024 ** 3,
       assignments: [realityAssignment],
     };
     const wrapper = mount(UserDetailDrawer, {
@@ -176,10 +176,16 @@ describe("UserDetailDrawer", () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain("VLESS + Reality（sing-box）");
-    expect(wrapper.text()).toContain("按用户流量、在线状态和踢下线暂不支持");
-    expect(wrapper.text()).toContain("流量额度不会在此节点执行");
-    expect(wrapper.find('button[aria-label="保存 Reality LA 流量额度"]').exists()).toBe(false);
-    expect(wrapper.find('button[aria-label="将用户从 Reality LA 踢下线"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain("3.0 GiB / 5.0 GiB");
+    expect(wrapper.text()).toContain("活跃连接");
+    expect(wrapper.find('button[aria-label="保存 Reality LA 流量额度"]').exists()).toBe(true);
+    const targetedKick = wrapper.find('button[aria-label="将用户从 Reality LA 踢下线"]');
+    expect(targetedKick.exists()).toBe(true);
+    await targetedKick.trigger("click");
+    expect(wrapper.emitted("kick-assignment")?.[0]).toEqual([realityUser, realityAssignment]);
+    const globalKick = wrapper.findAll("button").find((button) => button.text().trim() === "全部踢下线");
+    expect(globalKick).toBeDefined();
+    expect(globalKick!.attributes("disabled")).toBeUndefined();
     wrapper.unmount();
   });
 

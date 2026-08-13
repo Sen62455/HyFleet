@@ -27,6 +27,7 @@ const emit = defineEmits<{
 
 const formRef = ref<FormInst | null>(null);
 type NodeFormModel = Omit<Required<NodeInput>, "reality"> & { reality: NodeRealityInput };
+type TrafficUnit = "GiB" | "TiB";
 
 const form = reactive<NodeFormModel>({
   name: "",
@@ -43,8 +44,12 @@ const form = reactive<NodeFormModel>({
     handshake_server: "",
     handshake_port: 443,
   },
+  traffic_limit_bytes: 0,
+  traffic_reset_day: 1,
   enabled: true,
 });
+const trafficLimitValue = ref(0);
+const trafficLimitUnit = ref<TrafficUnit>("TiB");
 
 const title = computed(() => (props.node ? "编辑节点" : "添加节点"));
 const adapterLocked = computed(() => Boolean(props.node?.agent_installation_id));
@@ -55,6 +60,14 @@ const adapterOptions = [
   { label: "独立 sing-box（迁移兼容）", value: "standalone_sing_box" },
   { label: "S-UI（迁移兼容）", value: "s_ui" },
 ];
+const trafficUnitOptions = [
+  { label: "GiB", value: "GiB" },
+  { label: "TiB", value: "TiB" },
+];
+const trafficUnitBytes: Record<TrafficUnit, number> = {
+  GiB: 1024 ** 3,
+  TiB: 1024 ** 4,
+};
 const rules: FormRules = {
   name: [
     { required: true, message: "请输入节点名称", trigger: "blur" },
@@ -94,6 +107,10 @@ watch(
     form.tls_public_key_sha256 = node?.tls_public_key_sha256 ?? "";
     form.reality.handshake_server = node?.reality?.handshake_server ?? "";
     form.reality.handshake_port = node?.reality?.handshake_port ?? 443;
+    form.traffic_limit_bytes = node?.traffic_limit_bytes ?? 0;
+    form.traffic_reset_day = node?.traffic_reset_day ?? 1;
+    trafficLimitUnit.value = (node?.traffic_limit_bytes ?? 0) >= 1024 ** 4 ? "TiB" : "GiB";
+    trafficLimitValue.value = (node?.traffic_limit_bytes ?? 0) / trafficUnitBytes[trafficLimitUnit.value];
     form.enabled = node?.enabled ?? true;
     formRef.value?.restoreValidation();
   },
@@ -123,6 +140,8 @@ async function submit() {
           handshake_port: 443,
         }
       : null,
+    traffic_limit_bytes: Math.round(trafficLimitValue.value * trafficUnitBytes[trafficLimitUnit.value]),
+    traffic_reset_day: form.traffic_reset_day,
     enabled: form.enabled,
   });
 }
@@ -207,6 +226,37 @@ async function submit() {
           placeholder="Base64 SHA-256"
         />
       </n-form-item>
+      <div class="form-section-label">月流量额度</div>
+      <div class="form-grid form-grid--endpoint">
+        <n-form-item label="节点总额度（双向）" path="traffic_limit_bytes">
+          <n-input-number
+            v-model:value="trafficLimitValue"
+            :min="0"
+            :max="8388607"
+            :precision="2"
+            placeholder="0 表示不限额"
+          >
+            <template #suffix>
+              <n-select
+                v-model:value="trafficLimitUnit"
+                :options="trafficUnitOptions"
+                :consistent-menu-width="false"
+                aria-label="流量额度单位"
+              />
+            </template>
+          </n-input-number>
+          <template #feedback>上传与下载合计；0 表示不限额。</template>
+        </n-form-item>
+        <n-form-item label="每月重置日（UTC）" path="traffic_reset_day">
+          <n-input-number
+            v-model:value="form.traffic_reset_day"
+            :min="1"
+            :max="31"
+            :precision="0"
+          />
+          <template #feedback>短月份自动使用当月最后一天。</template>
+        </n-form-item>
+      </div>
       <div class="switch-row">
         <div>
           <strong>启用节点</strong>

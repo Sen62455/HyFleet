@@ -318,7 +318,7 @@ func TestVLESSRealityCredentialMaterialAuthorizationMatrix(t *testing.T) {
 	assertDenied("expired user", identity, credentialRef, expiredNode.DesiredVersion, expiredHash)
 }
 
-func TestVLESSRealityRejectsUnsupportedQuotasKicksAndAllowsRetry(t *testing.T) {
+func TestVLESSRealitySupportsQuotasKicksAndRetry(t *testing.T) {
 	ctx := t.Context()
 	database, err := Open(ctx, filepath.Join(t.TempDir(), "server.db"))
 	if err != nil {
@@ -334,19 +334,30 @@ func TestVLESSRealityRejectsUnsupportedQuotasKicksAndAllowsRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser() error = %v", err)
 	}
-	if _, err := database.UpdateAssignment(ctx, user.ID, node.ID, AssignmentUpdate{
+	user, err = database.UpdateAssignment(ctx, user.ID, node.ID, AssignmentUpdate{
 		Enabled: true, TrafficLimitBytes: 1024, Now: now.Add(2 * time.Second),
-	}); !errors.Is(err, ErrQuotaUnsupported) {
+	})
+	if err != nil || user.Assignments[0].TrafficLimitBytes != 1024 {
 		t.Fatalf("Reality assignment quota error = %v", err)
 	}
-	if _, err := database.UpdateUser(ctx, user.ID, UpdateUser{
+	user, err = database.UpdateUser(ctx, user.ID, UpdateUser{
 		Username: user.Username, Enabled: true, TrafficLimitBytes: 1024,
 		Now: now.Add(3 * time.Second),
-	}); !errors.Is(err, ErrQuotaUnsupported) {
+	})
+	if err != nil || user.TrafficLimitBytes != 1024 {
 		t.Fatalf("Reality global quota error = %v", err)
 	}
-	if count, err := database.RequestUserKick(ctx, user.ID, node.ID, now.Add(4*time.Second)); count != 0 || !errors.Is(err, ErrKickUnsupported) {
+	if count, err := database.RequestUserKick(ctx, user.ID, node.ID, now.Add(4*time.Second)); count != 1 || err != nil {
 		t.Fatalf("Reality kick = %d, error = %v", count, err)
+	}
+	node, err = database.GetNode(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("GetNode(after kick) error = %v", err)
+	}
+	desired, err := database.GetDesiredSnapshot(ctx, node.ID, node.DesiredVersion)
+	if err != nil || len(desired.Snapshot.Users) != 1 ||
+		desired.Snapshot.Users[0].QuotaState != "active" || len(desired.Snapshot.Kicks) != 1 {
+		t.Fatalf("Reality quota/kick desired state = %#v, error = %v", desired.Snapshot, err)
 	}
 	if _, err := database.DB().ExecContext(ctx, `
 		UPDATE nodes SET agent_installation_id = ?, status = 'online' WHERE id = ?
@@ -657,6 +668,66 @@ func TestRealityEnrollmentRequiresAndPersistsCapabilities(t *testing.T) {
 	)
 	if err != nil || !has {
 		t.Fatalf("HasAgentCapabilities() = (%v, %v)", has, err)
+	}
+}
+
+func TestRealityHeartbeatCapabilityUpgradeTriggersOneResync(t *testing.T) {
+	ctx := t.Context()
+	database, err := Open(ctx, filepath.Join(t.TempDir(), "server.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer database.Close()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	node := createVLESSRealityTestNode(t, database, "Reality capability upgrade", now)
+	installationID := uuid.NewString()
+	if _, err := database.DB().ExecContext(ctx, `
+		UPDATE nodes SET agent_installation_id = ? WHERE id = ?
+	`, installationID, node.ID); err != nil {
+		t.Fatalf("bind Reality node: %v", err)
+	}
+	for _, capability := range []string{
+		"desired_state_v2", "credential_material_v1", "sing_box_vless_reality",
+	} {
+		if _, err := database.DB().ExecContext(ctx, `
+			INSERT INTO node_agent_capabilities(node_id, capability, reported_at)
+			VALUES (?, ?, ?)
+		`, node.ID, capability, now.UnixMilli()); err != nil {
+			t.Fatalf("seed capability %s: %v", capability, err)
+		}
+	}
+	identity := AgentIdentity{
+		NodeID: node.ID, InstallationID: installationID,
+		AdapterType: AdapterSingBoxVLESSReality, Enabled: true,
+	}
+	capabilities := []string{
+		"desired_state_v2", "credential_material_v1", "sing_box_vless_reality",
+		"traffic_stats_v1", "traffic_outbox_v1", "online_snapshot_v1",
+		"kick_generation_v1", "reality_user_control_v1",
+	}
+	heartbeat := protocol.HeartbeatRequest{
+		InstallationID: installationID, Capabilities: capabilities,
+		Agent:     protocol.AgentInfo{Version: "test", Protocol: protocol.MajorVersion},
+		Core:      protocol.CoreInfo{Name: "sing-box", Running: true},
+		Adapter:   protocol.AdapterInfo{Name: AdapterSingBoxVLESSReality, Status: "compatible"},
+		Host:      protocol.HostMetrics{MemoryTotalBytes: 1, DiskTotalBytes: 1},
+		SampledAt: now.Add(time.Minute),
+	}
+	desiredVersion, err := database.RecordHeartbeat(ctx, identity, heartbeat, now.Add(time.Minute))
+	if err != nil || desiredVersion != 2 {
+		t.Fatalf("RecordHeartbeat(upgrade) = (%d, %v), want version 2", desiredVersion, err)
+	}
+	upgraded, err := database.GetNode(ctx, node.ID)
+	if err != nil || upgraded.DesiredVersion != 2 || upgraded.Status != "pending" {
+		t.Fatalf("node after capability upgrade = (%#v, %v)", upgraded, err)
+	}
+	if _, err := database.GetDesiredSnapshot(ctx, node.ID, 2); err != nil {
+		t.Fatalf("GetDesiredSnapshot(2) error = %v", err)
+	}
+	heartbeat.SampledAt = now.Add(2 * time.Minute)
+	desiredVersion, err = database.RecordHeartbeat(ctx, identity, heartbeat, now.Add(2*time.Minute))
+	if err != nil || desiredVersion != 2 {
+		t.Fatalf("RecordHeartbeat(repeat) = (%d, %v), want unchanged version 2", desiredVersion, err)
 	}
 }
 

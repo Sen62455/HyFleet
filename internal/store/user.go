@@ -205,21 +205,6 @@ func (s *Store) CreateUser(
 		return User{}, nil, fmt.Errorf("begin create user: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if input.TrafficLimitBytes > 0 {
-		for _, nodeID := range input.NodeIDs {
-			var adapter string
-			if err := tx.QueryRowContext(ctx, `
-				SELECT adapter_type FROM nodes WHERE id = ? AND archived_at IS NULL
-			`, nodeID).Scan(&adapter); errors.Is(err, sql.ErrNoRows) {
-				return User{}, nil, ErrNotFound
-			} else if err != nil {
-				return User{}, nil, fmt.Errorf("check assignment quota support: %w", err)
-			}
-			if adapter == AdapterSingBoxVLESSReality {
-				return User{}, nil, ErrQuotaUnsupported
-			}
-		}
-	}
 	expiresAt := nullableUnixMilli(input.ExpiresAt)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO users(
@@ -270,20 +255,6 @@ func (s *Store) UpdateUser(ctx context.Context, id string, input UpdateUser) (Us
 			return User{}, ErrNotFound
 		}
 		return User{}, fmt.Errorf("read current user state: %w", err)
-	}
-	if input.TrafficLimitBytes > 0 {
-		var realityAssignments int
-		if err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*)
-			FROM node_user_assignments a
-			JOIN nodes n ON n.id = a.node_id AND n.archived_at IS NULL
-			WHERE a.user_id = ? AND n.adapter_type = ?
-		`, id, AdapterSingBoxVLESSReality).Scan(&realityAssignments); err != nil {
-			return User{}, fmt.Errorf("check Reality quota support: %w", err)
-		}
-		if realityAssignments > 0 {
-			return User{}, ErrQuotaUnsupported
-		}
 	}
 	nodeIDs, err := assignmentNodeIDs(ctx, tx, id)
 	if err != nil {
@@ -380,9 +351,6 @@ func (s *Store) UpdateAssignment(
 	}
 	if managementMode == "read_only" {
 		return User{}, ErrReadOnly
-	}
-	if adapter == AdapterSingBoxVLESSReality && input.TrafficLimitBytes != 0 {
-		return User{}, ErrQuotaUnsupported
 	}
 	beforeQuota, err := effectiveQuotaStatesTx(ctx, tx, []string{userID})
 	if err != nil {
@@ -785,9 +753,6 @@ func assignUserTxWithMode(
 	if !supportsManagedUsers(adapter) {
 		return CreatedCredential{}, ErrUnsupported
 	}
-	if adapter == AdapterSingBoxVLESSReality && trafficLimitBytes != 0 {
-		return CreatedCredential{}, ErrQuotaUnsupported
-	}
 	if managementMode != "managed" && managementMode != "read_only" {
 		return CreatedCredential{}, ErrUnsupported
 	}
@@ -797,19 +762,6 @@ func assignUserTxWithMode(
 	if adapter == AdapterSingBoxVLESSReality &&
 		(managementMode != "managed" || remoteClientID != 0) {
 		return CreatedCredential{}, ErrUnsupported
-	}
-	if adapter == AdapterSingBoxVLESSReality {
-		var globalTrafficLimit int64
-		if err := tx.QueryRowContext(ctx, `
-			SELECT traffic_limit_bytes FROM users WHERE id = ? AND archived_at IS NULL
-		`, userID).Scan(&globalTrafficLimit); errors.Is(err, sql.ErrNoRows) {
-			return CreatedCredential{}, ErrNotFound
-		} else if err != nil {
-			return CreatedCredential{}, fmt.Errorf("check Reality user quota support: %w", err)
-		}
-		if globalTrafficLimit != 0 {
-			return CreatedCredential{}, ErrQuotaUnsupported
-		}
 	}
 	if adapter == "s_ui" && managementMode == "managed" && remoteClientID == 0 {
 		var targetInboundIDs []int64

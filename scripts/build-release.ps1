@@ -16,6 +16,10 @@ $packageName = "hyfleet-$Version-linux-$Architecture"
 $bundlePath = Join-Path $releaseRoot $packageName
 $archivePath = Join-Path $releaseRoot "$packageName.tar.gz"
 $archiveChecksumPath = "$archivePath.sha256"
+$realityBuildVersion = "1.13.18-hyfleet-utls1.8.7-api2"
+$realityBinaryPath = Join-Path `
+    (Join-Path (Join-Path $repositoryRoot ".codex-lab-build") "sing-box-reality") `
+    "sing-box-$realityBuildVersion-linux-$Architecture"
 
 function Invoke-Checked {
     param(
@@ -36,6 +40,9 @@ foreach ($commandName in @("git", "go", "pnpm")) {
     if (-not (Get-Command $commandName -ErrorAction SilentlyContinue)) {
         throw "Required command is missing: $commandName"
     }
+}
+if (-not (Test-Path -LiteralPath $realityBinaryPath -PathType Leaf)) {
+    throw "Missing pinned Reality binary: run scripts/build-sing-box-reality.sh first"
 }
 
 New-Item -ItemType Directory -Force -Path $releaseRoot | Out-Null
@@ -151,6 +158,7 @@ foreach ($directory in @(
 Copy-Item (Join-Path $binaryOutput "hyfleet-server") (Join-Path $bundlePath "bin")
 Copy-Item (Join-Path $binaryOutput "hyfleet-agent") (Join-Path $bundlePath "bin")
 Copy-Item (Join-Path $binaryOutput "hyfleet-agent-ops") (Join-Path $bundlePath "bin")
+Copy-Item $realityBinaryPath (Join-Path (Join-Path $bundlePath "bin") "sing-box-reality")
 $configSource = Join-Path (Join-Path $repositoryRoot "configs") "*"
 $unitSource = Join-Path (Join-Path (Join-Path $repositoryRoot "deploy") "systemd") "*"
 Copy-Item $configSource (Join-Path $bundlePath "configs")

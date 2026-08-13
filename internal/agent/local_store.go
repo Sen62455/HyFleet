@@ -11,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hyfleet/hyfleet/internal/cryptoutil"
 	"github.com/hyfleet/hyfleet/internal/protocol"
 	_ "modernc.org/sqlite"
@@ -97,7 +98,8 @@ func (store *localStore) migrate(ctx context.Context) error {
 			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
 			source_epoch TEXT NOT NULL,
 			next_sequence INTEGER NOT NULL CHECK (next_sequence >= 1),
-			initialized INTEGER NOT NULL DEFAULT 0 CHECK (initialized IN (0, 1))
+			initialized INTEGER NOT NULL DEFAULT 0 CHECK (initialized IN (0, 1)),
+			counter_epoch TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS usage_baselines (
 			user_id TEXT PRIMARY KEY,
@@ -166,6 +168,10 @@ func (store *localStore) migrate(ctx context.Context) error {
 	}
 	if err := ensureLocalColumn(ctx, store.db, "usage_runtime", "initialized",
 		"ALTER TABLE usage_runtime ADD COLUMN initialized INTEGER NOT NULL DEFAULT 0 CHECK (initialized IN (0, 1))"); err != nil {
+		return err
+	}
+	if err := ensureLocalColumn(ctx, store.db, "usage_runtime", "counter_epoch",
+		"ALTER TABLE usage_runtime ADD COLUMN counter_epoch TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if _, err := store.db.ExecContext(ctx, `
@@ -465,6 +471,7 @@ func (store *localStore) recordTrafficSample(
 	installationID string,
 	counters map[string]trafficCounters,
 	sampledAt time.Time,
+	counterEpoch ...string,
 ) ([]protocol.TrafficBatch, error) {
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -475,10 +482,41 @@ func (store *localStore) recordTrafficSample(
 	var sourceEpoch string
 	var sequence int64
 	var initialized int
+	var storedCounterEpoch string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT source_epoch, next_sequence, initialized FROM usage_runtime WHERE singleton = 1
-	`).Scan(&sourceEpoch, &sequence, &initialized); err != nil {
+		SELECT source_epoch, next_sequence, initialized, counter_epoch
+		FROM usage_runtime WHERE singleton = 1
+	`).Scan(&sourceEpoch, &sequence, &initialized, &storedCounterEpoch); err != nil {
 		return nil, fmt.Errorf("read traffic source state: %w", err)
+	}
+	currentCounterEpoch := ""
+	if len(counterEpoch) > 0 {
+		currentCounterEpoch = counterEpoch[0]
+	}
+	if len(counterEpoch) > 1 {
+		return nil, errors.New("multiple traffic counter epochs supplied")
+	}
+	if currentCounterEpoch != "" {
+		if _, err := uuid.Parse(currentCounterEpoch); err != nil {
+			return nil, errors.New("traffic counter epoch is invalid")
+		}
+		if storedCounterEpoch != currentCounterEpoch && initialized == 1 {
+			sourceEpoch = cryptoutil.NewID()
+			sequence = 1
+			if _, err := tx.ExecContext(ctx, `
+				DELETE FROM usage_baselines;
+				UPDATE usage_runtime SET source_epoch = ?, next_sequence = 1,
+					counter_epoch = ? WHERE singleton = 1
+			`, sourceEpoch, currentCounterEpoch); err != nil {
+				return nil, fmt.Errorf("rotate traffic source after counter epoch change: %w", err)
+			}
+		} else if storedCounterEpoch == "" {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE usage_runtime SET counter_epoch = ? WHERE singleton = 1
+			`, currentCounterEpoch); err != nil {
+				return nil, fmt.Errorf("store traffic counter epoch: %w", err)
+			}
+		}
 	}
 
 	userIDs := make([]string, 0, len(counters))

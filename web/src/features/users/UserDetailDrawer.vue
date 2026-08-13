@@ -73,11 +73,6 @@ const availableOptions = computed(() =>
       disabled: !node.enabled,
     })),
 );
-const selectedNodeIsReality = computed(() =>
-  props.assignableNodes.some(
-    (node) => node.id === selectedNodeID.value && node.adapter_type === "sing_box_vless_reality",
-  ),
-);
 const activeSubscriptionTokens = computed(() =>
   props.subscriptionTokens.filter((token) => token.status === "active"),
 );
@@ -93,10 +88,7 @@ const managedAssignments = computed(
   () => props.user?.assignments.filter((assignment) => assignment.management_mode === "managed") ?? [],
 );
 const kickableAssignments = computed(
-  () => managedAssignments.value.filter((assignment) => assignment.node_adapter === "native_hysteria2"),
-);
-const realityAssignments = computed(
-  () => props.user?.assignments.filter((assignment) => assignment.node_adapter === "sing_box_vless_reality") ?? [],
+  () => managedAssignments.value.filter((assignment) => supportsKick(assignment)),
 );
 
 watch(
@@ -152,12 +144,15 @@ function handlePanelKeydown(event: KeyboardEvent) {
 
 function assign() {
   if (!props.user || !selectedNodeID.value) return;
-  const trafficLimitBytes = selectedNodeIsReality.value
-    ? 0
-    : Math.round(selectedLimitGiB.value * 1024 ** 3);
+  const trafficLimitBytes = Math.round(selectedLimitGiB.value * 1024 ** 3);
   emit("assign", props.user, selectedNodeID.value, trafficLimitBytes);
   selectedNodeID.value = null;
   selectedLimitGiB.value = 0;
+}
+
+function supportsKick(assignment: UserAssignment) {
+  return assignment.node_adapter === "native_hysteria2" ||
+    assignment.node_adapter === "sing_box_vless_reality";
 }
 
 function saveAssignmentLimit(assignment: UserAssignment) {
@@ -255,16 +250,13 @@ function formatLabel(format: string) {
     <div class="user-detail-shell__body user-detail-panel__body">
 
       <section class="user-overview-ledger" aria-label="账户概览">
-        <p v-if="realityAssignments.length" class="assignment-adoption">
-          Reality 节点暂不提供按用户流量或在线状态；本页汇总不包含这些节点，踢下线也不可用。
-        </p>
         <div class="user-overview-ledger__cell">
           <span>账户有效期</span>
           <strong>{{ formatDateTime(user.expires_at) }}</strong>
           <small>创建于 {{ formatDateTime(user.created_at, false) }}</small>
         </div>
         <div class="user-overview-ledger__cell">
-          <span>在线设备</span>
+          <span>活跃连接</span>
           <strong>{{ user.online_connections }}</strong>
           <small>{{ user.online_nodes }} / {{ user.assignments.length }} 个节点在线</small>
         </div>
@@ -393,8 +385,7 @@ function formatLabel(format: string) {
             :max="8388607"
             :precision="2"
             size="small"
-            :disabled="selectedNodeIsReality"
-            :placeholder="selectedNodeIsReality ? 'Reality 不支持额度' : '额度 GiB'"
+            placeholder="额度 GiB"
           />
           <n-button
             type="primary"
@@ -444,10 +435,7 @@ function formatLabel(format: string) {
                 打开节点
               </n-button>
             </div>
-            <div v-if="assignment.node_adapter === 'sing_box_vless_reality'" class="assignment-adoption">
-              <span>按用户流量、在线状态和踢下线暂不支持；流量额度不会在此节点执行。</span>
-            </div>
-            <div v-else class="assignment-usage">
+            <div class="assignment-usage">
               <div>
                 <span>{{ formatBytes(assignment.traffic_used_bytes) }}</span>
                 <span v-if="assignment.traffic_limit_bytes"> / {{ formatBytes(assignment.traffic_limit_bytes) }}</span>
@@ -458,14 +446,14 @@ function formatLabel(format: string) {
               </span>
             </div>
             <n-progress
-              v-if="assignment.node_adapter !== 'sing_box_vless_reality' && assignment.traffic_limit_bytes > 0"
+              v-if="assignment.traffic_limit_bytes > 0"
               type="line"
               :percentage="quotaPercent(assignment.traffic_used_bytes, assignment.traffic_limit_bytes)"
               :show-indicator="false"
               :status="assignment.quota_state === 'limited' ? 'error' : 'success'"
             />
             <div
-              v-if="assignment.management_mode === 'managed' && assignment.node_adapter !== 'sing_box_vless_reality'"
+              v-if="assignment.management_mode === 'managed'"
               class="assignment-limit-row"
             >
               <n-input-number
@@ -508,7 +496,7 @@ function formatLabel(format: string) {
                   @update:value="emit('toggle-assignment', user, assignment, $event)"
                 />
                 <n-tooltip
-                  v-if="assignment.management_mode === 'managed' && assignment.node_adapter === 'native_hysteria2'"
+                  v-if="assignment.management_mode === 'managed' && supportsKick(assignment)"
                   trigger="hover"
                 >
                   <template #trigger>

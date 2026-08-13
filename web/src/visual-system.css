@@ -2901,6 +2901,49 @@ button.fleet-register__cell:focus-visible {
   display: none;
 }
 
+.node-traffic-budget__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 2px 0 12px;
+  color: var(--hf-muted);
+  font-family: var(--hf-data);
+  font-size: 12px;
+}
+
+.node-traffic-budget__summary strong {
+  color: var(--hf-ink);
+  font-size: 22px;
+  font-weight: 620;
+}
+
+.node-traffic-budget__summary b {
+  margin-left: auto;
+  color: var(--hf-ink-soft);
+  font-size: 12px;
+}
+
+.node-traffic-budget > .n-progress {
+  margin-bottom: 18px;
+}
+
+.node-traffic-budget__calibration {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px auto;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+@media (max-width: 560px) {
+  .node-traffic-budget__calibration {
+    grid-template-columns: minmax(0, 1fr) 86px;
+  }
+
+  .node-traffic-budget__calibration .n-button {
+    grid-column: 1 / -1;
+  }
+}
+
 .code-section,
 .code-section__header {
   border-color: var(--hf-line) !important;

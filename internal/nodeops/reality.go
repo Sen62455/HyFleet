@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -29,7 +30,9 @@ const (
 	maxRealityUsers                   = 4096
 	maxRealityIdentityBytes           = 8 * 1024
 	maxRealityAppliedBytes            = 8 * 1024
-	supportedRealitySingBoxVersion    = "1.13.18-hyfleet-utls1.8.7"
+	supportedRealitySingBoxVersion    = "1.13.18-hyfleet-utls1.8.7-api2"
+	realitySingBoxSHA256AMD64         = "17b2fac82abaaf51c50632f21bb64412afe899868c3c44500c3274d189134928"
+	realitySingBoxSHA256ARM64         = "46e52d1ccde00ef5cde7415fb01c1b103720d394d858b559ab297f07a16bbd8c"
 	maxRealitySingBoxVersionOutputLen = 16 * 1024
 )
 
@@ -55,10 +58,21 @@ type realityAppliedState struct {
 }
 
 type singBoxRealityConfig struct {
-	Log       singBoxLog        `json:"log"`
-	Inbounds  []singBoxInbound  `json:"inbounds"`
-	Outbounds []singBoxOutbound `json:"outbounds"`
-	Route     singBoxRoute      `json:"route"`
+	Log          singBoxLog          `json:"log"`
+	Experimental singBoxExperimental `json:"experimental"`
+	Inbounds     []singBoxInbound    `json:"inbounds"`
+	Outbounds    []singBoxOutbound   `json:"outbounds"`
+	Route        singBoxRoute        `json:"route"`
+}
+
+type singBoxExperimental struct {
+	ClashAPI singBoxClashAPI `json:"clash_api"`
+}
+
+type singBoxClashAPI struct {
+	ExternalController string `json:"external_controller"`
+	Secret             string `json:"secret"`
+	HyFleetOnly        bool   `json:"hyfleet_only"`
 }
 
 type singBoxLog struct {
@@ -193,9 +207,23 @@ func (helper *Helper) applyReality(ctx context.Context, request RealityApplyRequ
 		response.ErrorMessage = err.Error()
 		return response
 	}
-	backup, createdConfig, applyStage, rolledBack, err := helper.applyRealityCandidate(
-		ctx, request.RequestID, request.Settings.ListenPort, candidate,
-	)
+	var backup *protocol.Backup
+	var createdConfig os.FileInfo
+	var applyStage string
+	var rolledBack bool
+	unchanged := false
+	if hasApplied && !identityChanged {
+		unchanged = helper.realityConfigMatches(candidate)
+	}
+	if unchanged {
+		if err = helper.checkRealityServiceHealth(ctx, request.Settings.ListenPort); err != nil {
+			applyStage = "health"
+		}
+	} else {
+		backup, createdConfig, applyStage, rolledBack, err = helper.applyRealityCandidate(
+			ctx, request.RequestID, request.Settings.ListenPort, candidate,
+		)
+	}
 	response.Backup = backup
 	response.RolledBack = rolledBack
 	if err != nil {
@@ -243,6 +271,28 @@ func (helper *Helper) applyReality(ctx context.Context, request RealityApplyRequ
 	return response
 }
 
+func (helper *Helper) realityConfigMatches(candidate []byte) bool {
+	info, err := os.Lstat(helper.CoreConfigPath)
+	if err != nil || !validRealityConfigTargetInfo(helper.CoreConfigPath, info) {
+		return false
+	}
+	_, err = verifyRealityConfigFile(
+		helper.CoreConfigPath, info, info, info.Mode().Perm(), candidate,
+	)
+	return err == nil
+}
+
+func (helper *Helper) checkRealityServiceHealth(ctx context.Context, listenPort int) error {
+	active, err := helper.command(ctx, "systemctl", "is-active", helper.ServiceUnit)
+	if err != nil || strings.TrimSpace(string(active)) != "active" {
+		return errors.New("managed sing-box service is not active")
+	}
+	if err := helper.waitTCPListener(ctx, listenPort); err != nil {
+		return errors.New("managed sing-box TCP listener is not ready")
+	}
+	return nil
+}
+
 func sameRealityIdentity(left, right realityIdentity) bool {
 	return left.NodeID == right.NodeID && left.KeyGeneration == right.KeyGeneration &&
 		left.PrivateKey == right.PrivateKey && left.PublicKey == right.PublicKey &&
@@ -271,7 +321,7 @@ func (helper *Helper) validateRealityApply(request RealityApplyRequest) error {
 		return errors.New("Reality server name or handshake server is invalid")
 	}
 	if settings.HandshakeServerPort != 443 || settings.Flow != "xtls-rprx-vision" ||
-		settings.Network != "tcp" || settings.KeyGeneration < 1 {
+		settings.Network != "tcp" || settings.KeyGeneration < 1 || !validRealityAPISecret(settings.APISecret) {
 		return errors.New("Reality settings are outside the managed profile")
 	}
 	if len(request.Users) > maxRealityUsers {
@@ -308,9 +358,16 @@ func (helper *Helper) validateRealityBinary(ctx context.Context) error {
 		return errors.New("managed sing-box binary could not be opened")
 	}
 	openedInfo, statErr := opened.Stat()
-	closeErr := opened.Close()
-	if statErr != nil || closeErr != nil || !os.SameFile(before, openedInfo) ||
+	if statErr != nil || !os.SameFile(before, openedInfo) ||
 		!validRealityBinaryInfo(helper.SingBoxBinaryPath, openedInfo) {
+		_ = opened.Close()
+		return errors.New("managed sing-box binary changed while opening")
+	}
+	if !validRealitySingBoxChecksum(helper.SingBoxBinaryPath, opened, openedInfo.Size()) {
+		_ = opened.Close()
+		return errors.New("managed sing-box checksum is not supported")
+	}
+	if err := opened.Close(); err != nil {
 		return errors.New("managed sing-box binary changed while opening")
 	}
 	output, commandErr := helper.command(ctx, helper.SingBoxBinaryPath, "version")
@@ -324,6 +381,28 @@ func (helper *Helper) validateRealityBinary(ctx context.Context) error {
 		return errors.New("managed sing-box binary changed during version check")
 	}
 	return nil
+}
+
+func validRealitySingBoxChecksum(path string, reader io.Reader, size int64) bool {
+	if path != "/usr/bin/sing-box" {
+		return true
+	}
+	expected := expectedRealitySingBoxSHA256()
+	digest := sha256.New()
+	written, err := io.Copy(digest, io.LimitReader(reader, size+1))
+	return err == nil && written == size && expected != "" &&
+		hex.EncodeToString(digest.Sum(nil)) == expected
+}
+
+func expectedRealitySingBoxSHA256() string {
+	switch runtime.GOARCH {
+	case "amd64":
+		return realitySingBoxSHA256AMD64
+	case "arm64":
+		return realitySingBoxSHA256ARM64
+	default:
+		return ""
+	}
 }
 
 func validRealityBinaryInfo(path string, info os.FileInfo) bool {
@@ -370,6 +449,10 @@ func renderRealityConfig(request RealityApplyRequest, identity realityIdentity) 
 	}
 	configuration := singBoxRealityConfig{
 		Log: singBoxLog{Disabled: true},
+		Experimental: singBoxExperimental{ClashAPI: singBoxClashAPI{
+			ExternalController: "127.0.0.1:18083", Secret: request.Settings.APISecret,
+			HyFleetOnly: true,
+		}},
 		Inbounds: []singBoxInbound{{
 			Type: "vless", Tag: "hyfleet-vless-reality-in", Listen: "::",
 			ListenPort: request.Settings.ListenPort, Users: users,
@@ -394,6 +477,19 @@ func renderRealityConfig(request RealityApplyRequest, identity realityIdentity) 
 		return nil, fmt.Errorf("encode managed sing-box configuration: %w", err)
 	}
 	return append(data, '\n'), nil
+}
+
+func validRealityAPISecret(value string) bool {
+	if len(value) < 43 || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'A' || character > 'Z') && (character < 'a' || character > 'z') &&
+			(character < '0' || character > '9') && character != '-' && character != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func (helper *Helper) ensureRealityIdentity(nodeID string, generation int64) (realityIdentity, error) {

@@ -149,6 +149,8 @@ type alertCondition struct {
 	desiredCreatedAt            time.Time
 	failedAssignments           bool
 	unrecoveredOperationFailure bool
+	trafficLimitBytes           int64
+	trafficUsedBytes            int64
 }
 
 func (s *Store) ReconcileAlerts(
@@ -195,7 +197,17 @@ func (s *Store) ReconcileAlerts(
 		                   AND recovered.sequence > failed.sequence
 		                   AND recovered.status = 'succeeded'
 		             )
-		       )
+		       ),
+		       n.traffic_limit_bytes,
+		       CASE
+		         WHEN n.traffic_calibration_bytes IS NULL OR n.traffic_calibration_proxy_bytes IS NULL
+		           THEN n.traffic_cycle_upload_bytes + n.traffic_cycle_download_bytes
+		         ELSE n.traffic_calibration_bytes + MAX(
+		           0,
+		           n.traffic_cycle_upload_bytes + n.traffic_cycle_download_bytes -
+		           n.traffic_calibration_proxy_bytes
+		         )
+		       END
 		FROM nodes n
 		LEFT JOIN node_snapshots s
 		  ON s.node_id = n.id AND s.version = n.desired_version
@@ -215,7 +227,7 @@ func (s *Store) ReconcileAlerts(
 			&installed, &coreRunning, &lastActivityAt, &usageEnabled,
 			&condition.usageErrorCode, &condition.desiredVersion,
 			&condition.appliedVersion, &desiredCreatedAt, &failedAssignments,
-			&operationFailure,
+			&operationFailure, &condition.trafficLimitBytes, &condition.trafficUsedBytes,
 		); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("scan alert condition: %w", err)
@@ -239,6 +251,11 @@ func (s *Store) ReconcileAlerts(
 	}
 	for _, condition := range conditions {
 		recent := now.Sub(condition.lastActivityAt) < offlineAfter
+		trafficWarning := condition.trafficLimitBytes > 0 &&
+			condition.trafficUsedBytes < condition.trafficLimitBytes &&
+			condition.trafficUsedBytes >= condition.trafficLimitBytes-condition.trafficLimitBytes/5
+		trafficExhausted := condition.trafficLimitBytes > 0 &&
+			condition.trafficUsedBytes >= condition.trafficLimitBytes
 		checks := []struct {
 			alertType string
 			severity  string
@@ -257,6 +274,8 @@ func (s *Store) ReconcileAlerts(
 				"desired state has not been applied within the expected window",
 			},
 			{"operation_failed", "warning", condition.unrecoveredOperationFailure, "a node operation failed or expired"},
+			{"traffic_quota_warning", "warning", trafficWarning, "node traffic has reached 80% of the configured monthly allowance"},
+			{"traffic_quota_exhausted", "critical", trafficExhausted, "node traffic has reached the configured monthly allowance"},
 		}
 		for _, check := range checks {
 			if check.active {

@@ -4,6 +4,12 @@
 [![Release](https://github.com/Sen62455/HyFleet/actions/workflows/release.yml/badge.svg)](https://github.com/Sen62455/HyFleet/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
+> [!IMPORTANT]
+> HyFleet is in light-maintenance mode and remains focused on Hysteria2.
+> Security and critical compatibility fixes may continue, but new features and
+> multi-protocol development have moved to
+> [PolyFleet](https://github.com/Sen62455/PolyFleet).
+
 HyFleet is a lightweight, self-hosted control plane for small fleets of
 Hysteria2 VPS nodes. It centralizes users, node assignments, traffic, unified
 subscriptions, host monitoring, alerts, and bounded operations while keeping the
